@@ -50,9 +50,15 @@ fun AppNavHost(navController: NavHostController) {
     NavHost(navController = navController, startDestination = Routes.Home) {
         composable(Routes.Home) { HomeScreen(navController) }
         composable(Routes.Scan) { com.vitol.inv3.ui.scan.ScanScreen(navController = navController) }
-        composable("review?uri={uri}") { backStackEntry ->
+        composable("review/{uri}") { backStackEntry ->
             val uriString = backStackEntry.arguments?.getString("uri")
-            val uri = if (uriString.isNullOrBlank()) null else android.net.Uri.parse(uriString)
+            val uri = if (uriString.isNullOrBlank()) null else {
+                try {
+                    android.net.Uri.parse(java.net.URLDecoder.decode(uriString, "UTF-8"))
+                } catch (e: Exception) {
+                    null
+                }
+            }
             if (uri != null) {
                 com.vitol.inv3.ui.review.ReviewScreen(imageUri = uri)
             } else {

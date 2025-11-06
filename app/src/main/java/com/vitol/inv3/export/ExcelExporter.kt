@@ -45,7 +45,12 @@ class ExcelExporter(private val context: Context) {
         val outFile = File(context.cacheDir, "invoices_$ts.xlsx")
         FileOutputStream(outFile).use { wb.write(it) }
         wb.close()
-        return Uri.fromFile(outFile)
+        // Use FileProvider for Android 7.0+ compatibility
+        return androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            outFile
+        )
     }
 }
 

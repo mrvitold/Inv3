@@ -4,8 +4,7 @@ import android.app.Application
 import com.vitol.inv3.BuildConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.createSupabaseClient
-import io.github.jan.supabase.auth.auth
-import io.github.jan.supabase.postgrest.postgrest
+import io.github.jan.supabase.postgrest.Postgrest
 
 object SupabaseFactory {
     fun create(app: Application): SupabaseClient? {
@@ -16,8 +15,7 @@ object SupabaseFactory {
             supabaseUrl = url,
             supabaseKey = key
         ) {
-            install(postgrest)
-            install(auth)
+            install(Postgrest)
         }
     }
 }

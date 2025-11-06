@@ -3,7 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("com.google.dagger.hilt.android")
     kotlin("kapt")
-    kotlin("plugin.serialization") version "1.9.24"
+    kotlin("plugin.serialization") version "1.9.25"
 }
 
 android {
@@ -65,10 +65,13 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.navigation:navigation-compose:2.8.3")
 
     // Hilt
@@ -95,16 +98,15 @@ dependencies {
     // Timber
     implementation("com.jakewharton.timber:timber:5.0.1")
 
-    // Supabase (Kotlin client)
-    implementation(platform("io.github.jan-tennert.supabase:bom:2.4.3"))
+    // Supabase (Kotlin client) - use BOM to manage versions
+    implementation(platform("io.github.jan-tennert.supabase:bom:2.5.0"))
     implementation("io.github.jan-tennert.supabase:postgrest-kt")
-    implementation("io.github.jan-tennert.supabase:auth-kt")
 
-    // Serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    // Serialization (compatible with Kotlin 1.9.25)
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
-    // Apache POI Lite for Excel export
-    implementation("org.apache.poi:poi-ooxml-lite:5.3.0")
+    // Apache POI for Excel export (full version for XSSF support)
+    implementation("org.apache.poi:poi-ooxml:5.3.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

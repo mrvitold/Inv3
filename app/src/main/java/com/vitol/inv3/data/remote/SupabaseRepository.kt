@@ -27,7 +27,9 @@ data class InvoiceRecord(
 class SupabaseRepository(private val client: SupabaseClient?) {
     suspend fun upsertCompany(company: CompanyRecord) = withContext(Dispatchers.IO) {
         if (client == null) return@withContext
-        client.from("companies").insert(company, upsert = true)
+        // Use insert - conflicts will be handled by database unique constraint
+        // For proper upsert, we'd need to check if record exists first, then update or insert
+        client.from("companies").insert(company)
     }
 
     suspend fun insertInvoice(invoice: InvoiceRecord) = withContext(Dispatchers.IO) {

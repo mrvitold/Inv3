@@ -21,8 +21,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.icons.Icons
-import androidx.compose.material3.icons.filled.Camera
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Camera
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavHostController
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -67,7 +68,7 @@ fun ScanScreen(modifier: Modifier = Modifier, navController: NavHostController) 
                 capturePhoto(context, capturer) { result ->
                     result.onSuccess { uri ->
                         scope.launch { snackbarHostState.showSnackbar("Saved: ${uri.lastPathSegment}") }
-                        navController.navigate("review?uri=${Uri.encode(uri.toString())}")
+                        navController.navigate("review/${Uri.encode(uri.toString())}")
                     }.onFailure { e ->
                         scope.launch { snackbarHostState.showSnackbar("Capture failed: ${e.message}") }
                     }
@@ -88,6 +89,8 @@ fun ScanScreen(modifier: Modifier = Modifier, navController: NavHostController) 
 @Composable
 private fun CameraPreview(onReady: (ImageCapture) -> Unit) {
     val context = LocalContext.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    
     AndroidView(
         factory = { ctx ->
             val previewView = PreviewView(ctx).apply {
@@ -116,7 +119,7 @@ private fun CameraPreview(onReady: (ImageCapture) -> Unit) {
                 try {
                     cameraProvider.unbindAll()
                     cameraProvider.bindToLifecycle(
-                        ctx as androidx.lifecycle.LifecycleOwner,
+                        lifecycleOwner,
                         cameraSelector,
                         preview,
                         imageCapture
@@ -150,14 +153,14 @@ private fun capturePhoto(
             }
 
             override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                onResult(Result.success(Uri.fromFile(photoFile)))
+                // Use FileProvider for Android 7.0+ compatibility
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    photoFile
+                )
+                onResult(Result.success(uri))
             }
         }
     )
 }
-
-@Composable
-fun ScanScreen(modifier: Modifier = Modifier, navController: NavHostController) {
-    // CameraX implementation will be added in the next task
-}
-

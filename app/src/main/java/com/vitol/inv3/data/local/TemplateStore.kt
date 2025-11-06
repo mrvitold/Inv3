@@ -27,7 +27,7 @@ class TemplateStore(private val context: Context) {
                 }
             })
         }.toString()
-        context.templateDataStore.edit { prefs: Preferences ->
+        context.templateDataStore.edit { prefs ->
             prefs[key] = json
         }
     }

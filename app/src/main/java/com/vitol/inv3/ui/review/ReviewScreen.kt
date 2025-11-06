@@ -47,9 +47,31 @@ fun ReviewScreen(imageUri: Uri, viewModel: ReviewViewModel = hiltViewModel()) {
 
     LaunchedEffect(imageUri) {
         viewModel.runOcr(imageUri) { result ->
-            val parsedText = result.getOrElse { it.message ?: "Error" }.toString()
-            text = parsedText
-            isLoading = false
+            result.onSuccess { parsed ->
+                text = parsed
+                // Parse the text to populate fields
+                val lines = parsed.split("\n")
+                lines.forEach { line ->
+                    val parts = line.split(":", limit = 2)
+                    if (parts.size == 2) {
+                        val key = parts[0].trim()
+                        val value = parts[1].trim()
+                        when (key) {
+                            "Invoice_ID" -> fields["Invoice_ID"] = value
+                            "Date" -> fields["Date"] = value
+                            "Company_name" -> fields["Company_name"] = value
+                            "Amount_without_VAT_EUR" -> fields["Amount_without_VAT_EUR"] = value
+                            "VAT_amount_EUR" -> fields["VAT_amount_EUR"] = value
+                            "VAT_number" -> fields["VAT_number"] = value
+                            "Company_number" -> fields["Company_number"] = value
+                        }
+                    }
+                }
+                isLoading = false
+            }.onFailure {
+                text = it.message ?: "Error"
+                isLoading = false
+            }
         }
     }
 
