@@ -1,0 +1,59 @@
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+captures/
+*.apk
+*.ap_*
+
+# Keystore files
+*.jks
+*.keystore
+
+# Log/Temp
+*.log
+.DS_Store
+
+# Generated
+app/build/
+**/build/
+*/captures/
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# IntelliJ
+out/
+.classpath
+.project
+.settings/
+
+# Misc
+/.gradle/
+/.gradle/*
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+**/gradle/wrapper/gradle-wrapper.jar
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties

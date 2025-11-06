@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Inv3</string>
+    <string name="scan_invoice">Scan Invoice</string>
+    <string name="review_queue">Review Queue</string>
+    <string name="companies">Companies</string>
+    <string name="exports">Exports</string>
+    <string name="settings">Settings</string>
+</resources>
+<resources>
+    <string name="app_name">Inv3</string>
+</resources>
