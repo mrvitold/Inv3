@@ -49,11 +49,19 @@ object Routes {
 fun AppNavHost(navController: NavHostController) {
     NavHost(navController = navController, startDestination = Routes.Home) {
         composable(Routes.Home) { HomeScreen(navController) }
-        composable(Routes.Scan) { PlaceholderScreen("Scan (Camera)") }
-        composable(Routes.Review) { PlaceholderScreen("Review Queue") }
-        composable(Routes.Companies) { PlaceholderScreen("Companies") }
-        composable(Routes.Exports) { PlaceholderScreen("Exports") }
-        composable(Routes.Settings) { PlaceholderScreen("Settings") }
+        composable(Routes.Scan) { com.vitol.inv3.ui.scan.ScanScreen(navController = navController) }
+        composable("review?uri={uri}") { backStackEntry ->
+            val uriString = backStackEntry.arguments?.getString("uri")
+            val uri = if (uriString.isNullOrBlank()) null else android.net.Uri.parse(uriString)
+            if (uri != null) {
+                com.vitol.inv3.ui.review.ReviewScreen(imageUri = uri)
+            } else {
+                PlaceholderScreen("Missing image")
+            }
+        }
+        composable(Routes.Companies) { com.vitol.inv3.ui.companies.CompaniesScreen() }
+        composable(Routes.Exports) { com.vitol.inv3.ui.exports.ExportsScreen() }
+        composable(Routes.Settings) { com.vitol.inv3.ui.settings.SettingsScreen() }
     }
 }
 

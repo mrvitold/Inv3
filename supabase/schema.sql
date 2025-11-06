@@ -1,0 +1,32 @@
+-- Supabase schema for Inv3
+
+create table if not exists public.invoices (
+  id uuid primary key default gen_random_uuid(),
+  invoice_id text,
+  date date,
+  company_name text,
+  amount_without_vat_eur numeric(12,2),
+  vat_amount_eur numeric(12,2),
+  vat_number text,
+  company_number text,
+  created_at timestamptz default now()
+);
+
+create table if not exists public.companies (
+  id uuid primary key default gen_random_uuid(),
+  company_number text unique,
+  company_name text,
+  vat_number text,
+  updated_at timestamptz default now()
+);
+
+-- Optional: per-company templates
+create table if not exists public.company_templates (
+  company_id uuid references public.companies(id) on delete cascade,
+  layout_signature text,
+  regions jsonb,
+  keywords_overrides jsonb,
+  updated_at timestamptz default now(),
+  primary key (company_id)
+);
+
