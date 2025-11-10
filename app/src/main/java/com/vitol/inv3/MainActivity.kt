@@ -60,7 +60,7 @@ fun AppNavHost(navController: NavHostController) {
                 }
             }
             if (uri != null) {
-                com.vitol.inv3.ui.review.ReviewScreen(imageUri = uri)
+                com.vitol.inv3.ui.review.ReviewScreen(imageUri = uri, navController = navController)
             } else {
                 PlaceholderScreen("Missing image")
             }
@@ -83,7 +83,8 @@ fun HomeScreen(navController: NavHostController) {
         Button(onClick = { navController.navigate(Routes.Scan) }) {
             Text(text = "Scan Invoice")
         }
-        Button(onClick = { navController.navigate(Routes.Review) }) {
+        // Review Queue - navigate to a list screen (to be implemented)
+        Button(onClick = { /* TODO: Navigate to review queue list */ }) {
             Text(text = "Review Queue")
         }
         Button(onClick = { navController.navigate(Routes.Companies) }) {

@@ -101,6 +101,8 @@ dependencies {
     // Supabase (Kotlin client) - use BOM to manage versions
     implementation(platform("io.github.jan-tennert.supabase:bom:2.5.0"))
     implementation("io.github.jan-tennert.supabase:postgrest-kt")
+    // Ktor HTTP client engine for Android (required by Supabase)
+    implementation("io.ktor:ktor-client-android:2.3.12")
 
     // Serialization (compatible with Kotlin 1.9.25)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
