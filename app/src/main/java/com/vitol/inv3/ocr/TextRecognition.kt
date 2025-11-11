@@ -7,12 +7,16 @@ import android.graphics.Canvas
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
+import android.graphics.Rect
 import android.net.Uri
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
-data class OcrBlock(val text: String)
+data class OcrBlock(
+    val text: String,
+    val boundingBox: Rect? = null  // Bounding box in image coordinates
+)
 
 class InvoiceTextRecognizer(
     private val context: Context
@@ -26,8 +30,20 @@ class InvoiceTextRecognizer(
             val bitmap = preprocess(srcBitmap)
             val image = InputImage.fromBitmap(bitmap, 0)
             val visionText = recognizer.process(image).await()
-            val lines = visionText.textBlocks.flatMap { block -> block.lines.map { it.text } }
-            Result.success(lines.filter { it.isNotBlank() }.map { OcrBlock(it) })
+            
+            // Extract text with bounding boxes
+            val blocks = visionText.textBlocks.flatMap { block ->
+                block.lines.flatMap { line ->
+                    line.elements.map { element ->
+                        OcrBlock(
+                            text = element.text,
+                            boundingBox = element.boundingBox
+                        )
+                    }
+                }
+            }
+            
+            Result.success(blocks.filter { it.text.isNotBlank() })
         } catch (e: Exception) {
             Result.failure(e)
         }

@@ -8,6 +8,14 @@ Android app for accountants to extract invoice information using OCR and export 
 
 ## Current Status: ✅ **APP BUILDS AND RUNS SUCCESSFULLY**
 
+### Latest Update (December 2024): Template Learning System Enhanced
+- ✅ Implemented incremental template learning with confidence scoring
+- ✅ Added field validation and outlier detection
+- ✅ Improved two-pass analysis (company first, then fields)
+- ✅ Enhanced UI with better field ordering and keyboard handling
+- ✅ Multi-key template storage for better reliability
+- See `TEMPLATE_LEARNING_IMPROVEMENTS.md` for detailed summary
+
 ### Tech Stack
 - **Language:** Kotlin 1.9.25
 - **UI Framework:** Jetpack Compose (Material3)
@@ -143,8 +151,8 @@ See `supabase/schema.sql` for table definitions.
 4. **Field Validation:** Validate invoice data before saving
 
 ### Medium Priority
-5. **Company Recognition:** Implement heuristic company matching
-6. **Template Learning:** Implement per-company field region learning
+5. ~~**Company Recognition:** Implement heuristic company matching~~ ✅ DONE
+6. ~~**Template Learning:** Implement per-company field region learning~~ ✅ DONE (Enhanced with incremental learning)
 7. **Export Filtering:** Add date range filters for Excel export
 8. **Review Queue:** Implement queue of pending invoices
 
@@ -157,7 +165,7 @@ See `supabase/schema.sql` for table definitions.
 ## Known Issues / Limitations
 - Upsert for companies uses simple insert (conflicts handled by DB unique constraint)
 - No authentication yet (using Supabase anon key)
-- Template learning not yet implemented
+- ~~Template learning not yet implemented~~ ✅ IMPLEMENTED (with incremental learning)
 - Export uses sample data (needs to fetch from Supabase)
 
 ## Dependencies (Key)
@@ -185,6 +193,6 @@ See `supabase/schema.sql` for table definitions.
 5. **Kotlin Version:** Must stay at 1.9.25 until Compose Compiler is updated
 
 ---
-**Last Updated:** After fixing all compilation errors - app successfully builds and runs
-**Status:** ✅ Ready for testing and feature development
+**Last Updated:** December 2024 - Template learning system enhanced with incremental learning, validation, and confidence scoring
+**Status:** ✅ Ready for testing - Template learning improvements complete, pending user testing
 

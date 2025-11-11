@@ -137,5 +137,15 @@ object DateFormatter {
             false
         }
     }
+    
+    /**
+     * Validates if a date string is in valid YYYY-MM-DD format.
+     * Used for field validation in template learning.
+     */
+    fun isValidYearMonthDay(dateString: String?): Boolean {
+        if (dateString.isNullOrBlank()) return false
+        // Try to format it - if it returns non-null, it's valid
+        return formatDateForDatabase(dateString) != null
+    }
 }
 

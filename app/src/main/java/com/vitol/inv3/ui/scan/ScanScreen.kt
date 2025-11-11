@@ -14,7 +14,9 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -57,9 +59,16 @@ fun ScanScreen(modifier: Modifier = Modifier, navController: NavHostController) 
 
     Box(modifier = modifier.fillMaxSize()) {
         if (hasPermission) {
-            CameraPreview(
-                onReady = { imageCapture = it }
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(3f / 4f) // 3:4 aspect ratio
+                    .align(Alignment.Center)
+            ) {
+                CameraPreview(
+                    onReady = { imageCapture = it }
+                )
+            }
         }
 
         FloatingActionButton(
@@ -77,7 +86,7 @@ fun ScanScreen(modifier: Modifier = Modifier, navController: NavHostController) 
             containerColor = MaterialTheme.colorScheme.primary,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(24.dp)
+                .padding(bottom = 80.dp) // Increased padding to avoid navigation buttons
         ) {
             Icon(Icons.Default.Camera, contentDescription = "Capture photo")
         }
@@ -104,13 +113,14 @@ private fun CameraPreview(onReady: (ImageCapture) -> Unit) {
             val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
             cameraProviderFuture.addListener({
                 val cameraProvider = cameraProviderFuture.get()
+                // 3:4 aspect ratio: width 1080, height 1440 (1080 * 4/3 = 1440)
                 val preview = Preview.Builder()
-                    .setTargetResolution(Size(1080, 1920))
+                    .setTargetResolution(Size(1080, 1440))
                     .build()
                     .also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
                 val imageCapture = ImageCapture.Builder()
-                    .setTargetResolution(Size(1080, 1920))
+                    .setTargetResolution(Size(1080, 1440))
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
 
