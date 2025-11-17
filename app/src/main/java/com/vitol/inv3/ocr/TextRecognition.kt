@@ -12,6 +12,7 @@ import android.net.Uri
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import timber.log.Timber
 
 data class OcrBlock(
     val text: String,
@@ -25,8 +26,39 @@ class InvoiceTextRecognizer(
 
     suspend fun recognize(uri: Uri): Result<List<OcrBlock>> {
         return try {
-            val stream = context.contentResolver.openInputStream(uri) ?: return Result.failure(IllegalStateException("Cannot open image"))
-            val srcBitmap = stream.use { BitmapFactory.decodeStream(it) }
+            // First, get image dimensions to ensure we load full resolution
+            val options = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            context.contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, options)
+            }
+            
+            // Calculate sample size to ensure good resolution for OCR (ML Kit works best with 1000-2000px)
+            val maxDimension = 2000
+            val sampleSize = when {
+                options.outWidth > maxDimension || options.outHeight > maxDimension -> {
+                    val widthRatio = options.outWidth / maxDimension
+                    val heightRatio = options.outHeight / maxDimension
+                    maxOf(widthRatio, heightRatio)
+                }
+                else -> 1
+            }
+            
+            Timber.d("OCR: Image dimensions ${options.outWidth}x${options.outHeight}, using sampleSize=$sampleSize")
+            
+            // Decode with calculated sample size
+            val decodeOptions = BitmapFactory.Options().apply {
+                this.inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565 // Faster decoding, still good quality
+            }
+            
+            val srcBitmap = context.contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, decodeOptions)
+            } ?: return Result.failure(IllegalStateException("Cannot decode image"))
+            
+            Timber.d("OCR: Decoded bitmap size ${srcBitmap.width}x${srcBitmap.height}")
+            
             val bitmap = preprocess(srcBitmap)
             val image = InputImage.fromBitmap(bitmap, 0)
             val visionText = recognizer.process(image).await()
@@ -43,16 +75,22 @@ class InvoiceTextRecognizer(
                 }
             }
             
+            Timber.d("OCR: Extracted ${blocks.size} text blocks")
+            if (blocks.isNotEmpty()) {
+                Timber.d("OCR: First 10 blocks: ${blocks.take(10).map { it.text }}")
+            }
+            
             Result.success(blocks.filter { it.text.isNotBlank() })
         } catch (e: Exception) {
+            Timber.e(e, "OCR recognition failed")
             Result.failure(e)
         }
     }
 
     private fun preprocess(src: Bitmap): Bitmap {
-        // Lightweight contrast enhancement
-        val contrast = 1.2f
-        val brightness = -10f
+        // Enhanced contrast and brightness for better OCR
+        val contrast = 1.5f  // Increased from 1.2f
+        val brightness = 0f  // Changed from -10f
         val cm = ColorMatrix(
             floatArrayOf(
                 contrast, 0f, 0f, 0f, brightness,
@@ -63,7 +101,11 @@ class InvoiceTextRecognizer(
         )
         val ret = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(ret)
-        val paint = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
+        val paint = Paint().apply { 
+            colorFilter = ColorMatrixColorFilter(cm)
+            isAntiAlias = true
+            isFilterBitmap = true
+        }
         canvas.drawBitmap(src, 0f, 0f, paint)
         return ret
     }

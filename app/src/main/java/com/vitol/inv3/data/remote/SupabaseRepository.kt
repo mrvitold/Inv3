@@ -179,5 +179,49 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             // Don't throw - just log the error to prevent app crash
         }
     }
+
+    suspend fun findCompanyByNumberOrVat(companyNumber: String?, vatNumber: String?): CompanyRecord? = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot find company")
+            return@withContext null
+        }
+        try {
+            // Try to find by company_number first
+            if (!companyNumber.isNullOrBlank()) {
+                val result = client.from("companies")
+                    .select {
+                        filter {
+                            eq("company_number", companyNumber)
+                        }
+                    }
+                    .decodeSingleOrNull<CompanyRecord>()
+                if (result != null) {
+                    Timber.d("Found company by company_number: ${result.company_name}")
+                    return@withContext result
+                }
+            }
+            
+            // Try to find by vat_number
+            if (!vatNumber.isNullOrBlank()) {
+                val result = client.from("companies")
+                    .select {
+                        filter {
+                            eq("vat_number", vatNumber)
+                        }
+                    }
+                    .decodeSingleOrNull<CompanyRecord>()
+                if (result != null) {
+                    Timber.d("Found company by vat_number: ${result.company_name}")
+                    return@withContext result
+                }
+            }
+            
+            Timber.d("No company found for company_number: $companyNumber, vat_number: $vatNumber")
+            null
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to find company by number or VAT")
+            null
+        }
+    }
 }
 

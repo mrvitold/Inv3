@@ -10,6 +10,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
@@ -22,7 +27,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
-import androidx.compose.ui.Alignment
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,6 +53,7 @@ import com.vitol.inv3.ocr.InvoiceParser
 import com.vitol.inv3.ocr.InvoiceTextRecognizer
 import com.vitol.inv3.ocr.OcrBlock
 import com.vitol.inv3.ocr.TemplateLearner
+import com.vitol.inv3.ocr.GoogleDocumentAiService
 import com.vitol.inv3.utils.DateFormatter
 import android.graphics.BitmapFactory
 import java.io.InputStream
@@ -90,6 +95,7 @@ fun ReviewScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var isCompanySelected by remember { mutableStateOf(false) } // Track if company is selected from existing
     var isReanalyzing by remember { mutableStateOf(false) } // Track if re-analysis is in progress
+    var ocrMethod by remember { mutableStateOf<String?>(null) } // Track which OCR method was used: "Google" or "Local"
     
     // Calculate initial date (previous month from today)
     val initialDateMillis = remember {
@@ -106,8 +112,9 @@ fun ReviewScreen(
         viewModel.loadCompanies()
     }
 
-    // First pass: Identify company only
+    // First pass: Identify company only (uses local OCR)
     LaunchedEffect(imageUri) {
+        ocrMethod = "Local" // First pass always uses local OCR
         viewModel.runOcrFirstPass(imageUri) { result ->
             result.onSuccess { companyInfo ->
                 // Populate only company name initially
@@ -125,40 +132,93 @@ fun ReviewScreen(
     var secondPassTriggered by remember { mutableStateOf(false) }
     
     // Second pass: Re-analyze with template after company is confirmed
+    // Try Document AI first (more accurate), fallback to local OCR
     LaunchedEffect(fields["Company_name"]) {
         val companyName = fields["Company_name"]
         // Trigger re-analysis once when company name is set and not empty, and we're not already re-analyzing
         if (!companyName.isNullOrBlank() && !isReanalyzing && !isLoading && !secondPassTriggered) {
             secondPassTriggered = true
             isReanalyzing = true
-            viewModel.runOcrSecondPass(imageUri, companyName) { result ->
-                result.onSuccess { parsed ->
-                    // Parse the text to populate all fields (but don't overwrite company name)
-                    val lines = parsed.split("\n")
-                    val newFields = fields.toMutableMap()
-                    lines.forEach { line ->
-                        val parts = line.split(":", limit = 2)
-                        if (parts.size == 2) {
-                            val key = parts[0].trim()
-                            val value = parts[1].trim()
-                            when (key) {
-                                "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
-                                "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
-                                "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
-                                "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
-                                "VAT_number" -> if (newFields["VAT_number"].isNullOrBlank()) newFields["VAT_number"] = value
-                                "Company_number" -> if (newFields["Company_number"].isNullOrBlank()) newFields["Company_number"] = value
+            // Try Document AI first
+            viewModel.runOcrWithDocumentAi(
+                imageUri,
+                onDone = { result ->
+                    result.onSuccess { parsed ->
+                        // If Document AI succeeded, use it
+                        // The parsed string already has the correct company name from database lookup
+                        val lines = parsed.split("\n")
+                        val newFields = fields.toMutableMap()
+                        lines.forEach { line ->
+                            val parts = line.split(":", limit = 2)
+                            if (parts.size == 2) {
+                                val key = parts[0].trim()
+                                val value = parts[1].trim()
+                                when (key) {
+                                    "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
+                                    "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
+                                    "Company_name" -> {
+                                        // Always update company name from Document AI result (it has database lookup applied)
+                                        if (value.isNotBlank()) {
+                                            newFields["Company_name"] = value
+                                            Timber.d("Document AI - Setting company name from result: '$value'")
+                                        }
+                                    }
+                                    "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
+                                    "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
+                                    "VAT_number" -> if (newFields["VAT_number"].isNullOrBlank()) newFields["VAT_number"] = value
+                                    "Company_number" -> if (newFields["Company_number"].isNullOrBlank()) newFields["Company_number"] = value
+                                }
+                            }
+                        }
+                        fields = newFields.toMap()
+                        isReanalyzing = false
+                        Timber.d("Document AI second pass complete - All fields extracted, Company_name: '${newFields["Company_name"]}'")
+                    }.onFailure {
+                        // Fallback to local OCR if Document AI fails
+                        Timber.w("Document AI failed, falling back to local OCR")
+                        ocrMethod = "Local" // Mark as using local OCR
+                        viewModel.runOcrSecondPass(imageUri, companyName) { localResult ->
+                            localResult.onSuccess { parsed ->
+                                // Parse the text to populate all fields
+                                // The parsed string already has the correct company name from database lookup
+                                val lines = parsed.split("\n")
+                                val newFields = fields.toMutableMap()
+                                lines.forEach { line ->
+                                    val parts = line.split(":", limit = 2)
+                                    if (parts.size == 2) {
+                                        val key = parts[0].trim()
+                                        val value = parts[1].trim()
+                                        when (key) {
+                                            "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
+                                            "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
+                                            "Company_name" -> {
+                                                // Always update company name from local OCR result (it has database lookup applied)
+                                                if (value.isNotBlank()) {
+                                                    newFields["Company_name"] = value
+                                                    Timber.d("Local OCR - Setting company name from result: '$value'")
+                                                }
+                                            }
+                                            "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
+                                            "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
+                                            "VAT_number" -> if (newFields["VAT_number"].isNullOrBlank()) newFields["VAT_number"] = value
+                                            "Company_number" -> if (newFields["Company_number"].isNullOrBlank()) newFields["Company_number"] = value
+                                        }
+                                    }
+                                }
+                                fields = newFields.toMap()
+                                isReanalyzing = false
+                                Timber.d("Local OCR second pass complete - All fields extracted, Company_name: '${newFields["Company_name"]}'")
+                            }.onFailure {
+                                Timber.e(it, "Second pass failed")
+                                isReanalyzing = false
                             }
                         }
                     }
-                    fields = newFields.toMap()
-                    isReanalyzing = false
-                    Timber.d("Second pass complete - All fields extracted")
-                }.onFailure {
-                    Timber.e(it, "Second pass failed")
-                    isReanalyzing = false
+                },
+                onMethodUsed = { method ->
+                    ocrMethod = method // Update OCR method indicator
                 }
-            }
+            )
         }
     }
 
@@ -175,10 +235,40 @@ fun ReviewScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            if (isLoading || isReanalyzing) {
-                CircularProgressIndicator()
-            } else {
-                Text("Verify fields")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isLoading || isReanalyzing) {
+                    CircularProgressIndicator()
+                } else {
+                    Text("Verify fields")
+                }
+                
+                // OCR method indicator in top right
+                ocrMethod?.let { method ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = when (method) {
+                            "Google" -> androidx.compose.material3.MaterialTheme.colorScheme.primaryContainer
+                            "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.secondaryContainer
+                            else -> androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant
+                        },
+                        modifier = Modifier.padding(start = 8.dp)
+                    ) {
+                        Text(
+                            text = method,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                            color = when (method) {
+                                "Google" -> androidx.compose.material3.MaterialTheme.colorScheme.onPrimaryContainer
+                                "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.onSecondaryContainer
+                                else -> androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
             }
         }
         
@@ -416,6 +506,9 @@ class ReviewViewModel @Inject constructor(
     // Store OCR blocks and image URI for template learning
     private var currentOcrBlocks: List<OcrBlock> = emptyList()
     private var currentImageUri: Uri? = null
+    
+    // Google Document AI service
+    private val documentAiService = GoogleDocumentAiService(getApplication())
 
     fun loadCompanies() {
         viewModelScope.launch {
@@ -574,22 +667,188 @@ class ReviewViewModel @Inject constructor(
                         } else {
                             Timber.d("Using keyword matching (no image size available)")
                         }
-                        InvoiceParser.parse(lines)
+                        Timber.d("Parsing ${lines.size} lines with InvoiceParser.parse")
+                        val parsedResult = InvoiceParser.parse(lines)
+                        Timber.d("Parsed result - InvoiceID: '${parsedResult.invoiceId}', Date: '${parsedResult.date}', " +
+                                "Company: '${parsedResult.companyName}', AmountNoVat: '${parsedResult.amountWithoutVatEur}', " +
+                                "VatAmount: '${parsedResult.vatAmountEur}', VatNumber: '${parsedResult.vatNumber}', " +
+                                "CompanyNumber: '${parsedResult.companyNumber}'")
+                        parsedResult
                     }
                     
-                    parsed
-                }
-                .map { parsed ->
-                    "Invoice_ID: ${parsed.invoiceId ?: ""}\n" +
-                            "Date: ${parsed.date ?: ""}\n" +
-                            "Company_name: ${parsed.companyName ?: ""}\n" +
-                            "Amount_without_VAT_EUR: ${parsed.amountWithoutVatEur ?: ""}\n" +
-                            "VAT_amount_EUR: ${parsed.vatAmountEur ?: ""}\n" +
-                            "VAT_number: ${parsed.vatNumber ?: ""}\n" +
-                            "Company_number: ${parsed.companyNumber ?: ""}"
+                    // ALWAYS look up company from database when VAT or company number is found
+                    // This ensures we get the correct company name from the database
+                    val finalParsed = if (parsed.companyNumber != null || parsed.vatNumber != null) {
+                        try {
+                            Timber.d("Local OCR - Looking up company in database - CompanyName: '${parsed.companyName}', CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
+                            val companyFromDb = repo.findCompanyByNumberOrVat(parsed.companyNumber, parsed.vatNumber)
+                            if (companyFromDb != null) {
+                                Timber.d("Local OCR - Found company in database: '${companyFromDb.company_name}', replacing extracted name '${parsed.companyName}'")
+                                parsed.copy(
+                                    companyName = companyFromDb.company_name ?: parsed.companyName,
+                                    companyNumber = companyFromDb.company_number ?: parsed.companyNumber,
+                                    vatNumber = companyFromDb.vat_number ?: parsed.vatNumber
+                                )
+                            } else {
+                                Timber.d("Local OCR - No company found in database for CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
+                                // If company name is invalid and not found in DB, set to null so it can be filled manually
+                                if (isInvalidCompanyName(parsed.companyName)) {
+                                    Timber.d("Local OCR - Company name '${parsed.companyName}' is invalid, setting to null")
+                                    parsed.copy(companyName = null)
+                                } else {
+                                    parsed
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Timber.e(e, "Failed to look up company from database")
+                            parsed
+                        }
+                    } else {
+                        Timber.d("Local OCR - No VAT or company number found, skipping database lookup")
+                        parsed
+                    }
+                    
+                    // Format the result string
+                    "Invoice_ID: ${finalParsed.invoiceId ?: ""}\n" +
+                            "Date: ${finalParsed.date ?: ""}\n" +
+                            "Company_name: ${finalParsed.companyName ?: ""}\n" +
+                            "Amount_without_VAT_EUR: ${finalParsed.amountWithoutVatEur ?: ""}\n" +
+                            "VAT_amount_EUR: ${finalParsed.vatAmountEur ?: ""}\n" +
+                            "VAT_number: ${finalParsed.vatNumber ?: ""}\n" +
+                            "Company_number: ${finalParsed.companyNumber ?: ""}"
                 }
             onDone(result)
         }
+    }
+    
+    /**
+     * Process invoice using Google Cloud Document AI (online, more accurate).
+     * Falls back to local OCR if Document AI fails or is not configured.
+     * @param onMethodUsed Optional callback to notify which OCR method was used ("Google" or "Local")
+     */
+    fun runOcrWithDocumentAi(uri: Uri, onDone: (Result<String>) -> Unit, onMethodUsed: ((String) -> Unit)? = null) {
+        viewModelScope.launch {
+            val result = try {
+                Timber.d("Starting Document AI processing for invoice")
+                
+                // Try Document AI first
+                val parsed = documentAiService.processInvoice(uri)
+                
+                if (parsed != null) {
+                    Timber.d("Document AI processing successful")
+                    onMethodUsed?.invoke("Google") // Notify that Google Document AI was used
+                    
+                    // Store blocks for template learning (create dummy blocks from text)
+                    currentOcrBlocks = parsed.lines.mapIndexed { index, text ->
+                        OcrBlock(
+                            text = text,
+                            boundingBox = android.graphics.Rect(0, index * 20, 100, (index + 1) * 20)
+                        )
+                    }
+                    currentImageUri = uri
+                    
+                    // ALWAYS look up company from database when VAT or company number is found
+                    // This ensures we get the correct company name from the database
+                    val finalParsed = if (parsed.companyNumber != null || parsed.vatNumber != null) {
+                        try {
+                            Timber.d("Document AI - Looking up company in database - CompanyName: '${parsed.companyName}', CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
+                            val companyFromDb = repo.findCompanyByNumberOrVat(
+                                parsed.companyNumber, 
+                                parsed.vatNumber
+                            )
+                            if (companyFromDb != null) {
+                                Timber.d("Document AI - Found company in database: '${companyFromDb.company_name}', replacing extracted name '${parsed.companyName}'")
+                                parsed.copy(
+                                    companyName = companyFromDb.company_name ?: parsed.companyName,
+                                    companyNumber = companyFromDb.company_number ?: parsed.companyNumber,
+                                    vatNumber = companyFromDb.vat_number ?: parsed.vatNumber
+                                )
+                            } else {
+                                Timber.d("Document AI - No company found in database for CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
+                                // If company name is invalid and not found in DB, set to null so it can be filled manually
+                                if (isInvalidCompanyName(parsed.companyName)) {
+                                    Timber.d("Document AI - Company name '${parsed.companyName}' is invalid, setting to null")
+                                    parsed.copy(companyName = null)
+                                } else {
+                                    parsed
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Timber.e(e, "Failed to look up company from database")
+                            parsed
+                        }
+                    } else {
+                        Timber.d("Document AI - No VAT or company number found, skipping database lookup")
+                        parsed
+                    }
+                    
+                    // Format result
+                    "Invoice_ID: ${finalParsed.invoiceId ?: ""}\n" +
+                    "Date: ${finalParsed.date ?: ""}\n" +
+                    "Company_name: ${finalParsed.companyName ?: ""}\n" +
+                    "Amount_without_VAT_EUR: ${finalParsed.amountWithoutVatEur ?: ""}\n" +
+                    "VAT_amount_EUR: ${finalParsed.vatAmountEur ?: ""}\n" +
+                    "VAT_number: ${finalParsed.vatNumber ?: ""}\n" +
+                    "Company_number: ${finalParsed.companyNumber ?: ""}"
+                } else {
+                    Timber.w("Document AI processing returned null, falling back to local OCR")
+                    onMethodUsed?.invoke("Local") // Notify that local OCR is being used
+                    // Fallback to local OCR
+                    runOcr(uri) { localResult ->
+                        localResult.onSuccess { parsed ->
+                            Timber.d("Local OCR fallback successful, extracted fields")
+                        }.onFailure { error ->
+                            Timber.e(error, "Local OCR fallback also failed")
+                        }
+                        onDone(localResult)
+                    }
+                    return@launch
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Document AI processing failed with exception, falling back to local OCR")
+                onMethodUsed?.invoke("Local") // Notify that local OCR is being used
+                // Fallback to local OCR on error
+                runOcr(uri) { localResult ->
+                    localResult.onSuccess { parsed ->
+                        Timber.d("Local OCR fallback successful after exception, extracted fields")
+                    }.onFailure { error ->
+                        Timber.e(error, "Local OCR fallback also failed after exception")
+                    }
+                    onDone(localResult)
+                }
+                return@launch
+            }
+            
+            onDone(Result.success(result))
+        }
+    }
+    
+    private fun isInvalidCompanyName(name: String?): Boolean {
+        if (name.isNullOrBlank()) return true
+        val lower = name.lowercase().trim()
+        
+        // Explicitly reject common invoice labels
+        if (lower == "saskaita" || lower == "faktura" || lower == "invoice" ||
+            lower.matches(Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier)$"))) {
+            return true
+        }
+        
+        // Reject if it contains invoice-related words
+        if (lower.contains("saskaita") || lower.contains("faktura") || lower.contains("invoice")) {
+            return true
+        }
+        
+        // Must have reasonable length
+        if (name.length < 5) {
+            return true
+        }
+        
+        // Must contain Lithuanian company type suffix (UAB, MB, IĮ, AB, etc.)
+        val hasCompanyType = lower.contains("uab") || lower.contains("mb") || lower.contains("iį") || 
+                            lower.contains("ab") || lower.contains("ltd") || lower.contains("as") || 
+                            lower.contains("sp") || lower.contains("oy")
+        
+        return !hasCompanyType
     }
     
     /**

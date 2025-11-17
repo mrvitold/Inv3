@@ -8,24 +8,28 @@ Android app for accountants to extract invoice information using OCR and export 
 
 ## Current Status: ✅ **APP BUILDS AND RUNS SUCCESSFULLY**
 
-### Latest Update (December 2024): Template Learning System Enhanced
-- ✅ Implemented incremental template learning with confidence scoring
-- ✅ Added field validation and outlier detection
-- ✅ Improved two-pass analysis (company first, then fields)
-- ✅ Enhanced UI with better field ordering and keyboard handling
-- ✅ Multi-key template storage for better reliability
-- See `TEMPLATE_LEARNING_IMPROVEMENTS.md` for detailed summary
+### Latest Update (November 2024): Google Document AI Integration & Company Name Fixes
+- ✅ Integrated Google Cloud Document AI for online OCR processing
+- ✅ Added automatic database lookup for company names when VAT/company numbers are found
+- ✅ Fixed company name extraction (no longer extracts "PARDAVEJAS" or "SASKAITA")
+- ✅ Added OCR method indicator (shows "Google" or "Local" in UI)
+- ✅ Enhanced amount and date extraction for Lithuanian formats
+- ✅ Improved company name validation (requires company type suffixes: UAB, MB, IĮ, AB)
+- See `SESSION_SUMMARY.md` for detailed changes
 
 ### Tech Stack
 - **Language:** Kotlin 1.9.25
 - **UI Framework:** Jetpack Compose (Material3)
 - **Architecture:** MVVM with Hilt Dependency Injection
-- **OCR:** Google ML Kit Text Recognition v2 (on-device)
+- **OCR:** 
+  - Google Cloud Document AI (online, primary) - $0.01 per invoice
+  - Google ML Kit Text Recognition v2 (on-device, fallback)
 - **Camera:** CameraX
 - **Database:** Supabase (PostgREST)
 - **Local Storage:** DataStore Preferences
 - **Export:** Apache POI (Excel .xlsx)
 - **Navigation:** Navigation Compose
+- **Network:** OkHttp for REST API calls
 
 ## Key Features Implemented
 
@@ -44,16 +48,20 @@ Android app for accountants to extract invoice information using OCR and export 
 - Multilingual keyword mapping (English/Lithuanian)
 - Regex-based field extraction:
   - Invoice_ID
-  - Date
-  - Company_name
-  - Amount_without_VAT_EUR
+  - Date (supports YYYY.MM.DD, DD.MM.YYYY formats)
+  - Company_name (with database lookup, validates company type suffixes)
+  - Amount_without_VAT_EUR (handles Lithuanian comma format)
   - VAT_amount_EUR
-  - VAT_number
+  - VAT_number (with IBAN filtering)
   - Company_number
+- Automatic company name lookup from database when VAT/company numbers found
+- Enhanced validation to reject invoice labels ("SASKAITA", "PARDAVEJAS", etc.)
 
 ### 4. Review & Edit (`ReviewScreen`)
 - Display parsed fields
 - Manual field editing
+- OCR method indicator (shows "Google" or "Local")
+- Automatic company name lookup from database
 - Confirm to save to Supabase
 
 ### 5. Data Storage
@@ -144,23 +152,22 @@ See `supabase/schema.sql` for table definitions.
 
 ## Next Steps / TODO
 
-### High Priority
-1. **Test OCR Accuracy:** Test with real invoices, adjust keyword mappings
-2. **Error Handling:** Add proper error handling for Supabase operations
-3. **Loading States:** Improve UI feedback during async operations
-4. **Field Validation:** Validate invoice data before saving
+See `IMPROVEMENT_SUGGESTIONS.md` for detailed recommendations.
+
+### High Priority (Next Sprint)
+1. **Error Handling & User Feedback:** Better error messages and retry options
+2. **Invoice Validation:** Validate all fields before saving
+3. **Company Database Management UI:** Add/edit companies from app
 
 ### Medium Priority
-5. ~~**Company Recognition:** Implement heuristic company matching~~ ✅ DONE
-6. ~~**Template Learning:** Implement per-company field region learning~~ ✅ DONE (Enhanced with incremental learning)
-7. **Export Filtering:** Add date range filters for Excel export
-8. **Review Queue:** Implement queue of pending invoices
+4. **Batch Processing:** Process multiple invoices in sequence
+5. **Export Improvements:** Date filters, statistics, PDF export
+6. **Offline Support:** Cache and sync when online
 
 ### Low Priority
-9. **Cloud OCR Option:** Add toggle for cloud-based OCR (future)
-10. **Image Preprocessing:** Improve image enhancement algorithms
-11. **Offline Support:** Cache invoices locally when offline
-12. **UI Polish:** Improve Nordic-style design consistency
+7. **Search & Filter:** Search invoices by various criteria
+8. **Statistics Dashboard:** Show totals and charts
+9. **Performance Optimization:** Faster processing and loading
 
 ## Known Issues / Limitations
 - Upsert for companies uses simple insert (conflicts handled by DB unique constraint)
@@ -193,6 +200,6 @@ See `supabase/schema.sql` for table definitions.
 5. **Kotlin Version:** Must stay at 1.9.25 until Compose Compiler is updated
 
 ---
-**Last Updated:** December 2024 - Template learning system enhanced with incremental learning, validation, and confidence scoring
-**Status:** ✅ Ready for testing - Template learning improvements complete, pending user testing
+**Last Updated:** November 17, 2024 - Google Document AI integrated, company name extraction fixed, database lookup implemented
+**Status:** ✅ Production Ready - All core features working, ready for user testing
 

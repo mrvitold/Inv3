@@ -57,3 +57,7 @@ out/
 .externalNativeBuild
 .cxx
 local.properties
+
+# Google Cloud credentials
+app/src/main/assets/documentai-credentials.json
+app/src/main/assets/*credentials*.json

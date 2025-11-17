@@ -48,6 +48,8 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/INDEX.LIST"
+            excludes += "/META-INF/DEPENDENCIES"
         }
     }
 
@@ -109,6 +111,11 @@ dependencies {
 
     // Apache POI for Excel export (full version for XSSF support)
     implementation("org.apache.poi:poi-ooxml:5.3.0")
+
+    // Google Cloud Document AI - REST API (better for Android than Java SDK)
+    implementation("com.google.auth:google-auth-library-oauth2-http:1.23.0")
+    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
