@@ -4,6 +4,7 @@ import android.graphics.Rect
 import com.vitol.inv3.data.local.FieldRegion
 import timber.log.Timber
 import kotlin.math.max
+import kotlin.math.min
 
 data class ParsedInvoice(
     val invoiceId: String? = null,
@@ -46,7 +47,15 @@ object InvoiceParser {
             val key = KeywordMapping.normalizeKey(line)
             when (key) {
                 "Invoice_ID" -> if (invoiceId == null) {
-                    invoiceId = extractInvoiceIdFromLine(line) ?: takeKeyValue(line)
+                    // First try to extract with serial and number combination from current and nearby lines
+                    val extracted = extractInvoiceIdWithSerialAndNumber(
+                        lines.subList(max(0, index - 2), min(lines.size, index + 3))
+                    )
+                    if (extracted != null) {
+                        invoiceId = extracted
+                    } else {
+                        invoiceId = extractInvoiceIdFromLine(line) ?: takeKeyValue(line)
+                    }
                 }
                 "Date" -> if (date == null) {
                     date = FieldExtractors.tryExtractDate(line) ?: takeKeyValue(line)
@@ -91,11 +100,16 @@ object InvoiceParser {
                     if (extracted != null && !isIban(extracted)) {
                         vatNumber = extracted
                     } else {
-                        vatNumber = takeKeyValue(line)
+                        // Try key-value extraction - but only if it has "LT" prefix
+                        val keyValue = takeKeyValue(line)
+                        if (keyValue != null && keyValue.uppercase().startsWith("LT")) {
+                            vatNumber = keyValue.uppercase()
+                        }
                     }
                 }
                 "Company_number" -> if (companyNumber == null) {
-                    companyNumber = FieldExtractors.tryExtractCompanyNumber(line)
+                    // Pass VAT number to exclude it from company number extraction
+                    companyNumber = FieldExtractors.tryExtractCompanyNumber(line, vatNumber)
                 }
             }
         }
@@ -114,12 +128,19 @@ object InvoiceParser {
         
         // Second pass: invoice ID extraction if still null
         if (invoiceId == null) {
-            for (line in lines) {
-                val extracted = extractInvoiceIdFromLine(line)
-                if (extracted != null) {
-                    invoiceId = extracted
-                    Timber.d("Extracted Invoice ID in second pass: $invoiceId")
-                    break
+            // First try to extract with serial and number combination
+            invoiceId = extractInvoiceIdWithSerialAndNumber(lines)
+            if (invoiceId != null) {
+                Timber.d("Extracted Invoice ID with serial+number in second pass: $invoiceId")
+            } else {
+                // Fallback to single-line extraction
+                for (line in lines) {
+                    val extracted = extractInvoiceIdFromLine(line)
+                    if (extracted != null) {
+                        invoiceId = extracted
+                        Timber.d("Extracted Invoice ID in second pass: $invoiceId")
+                        break
+                    }
                 }
             }
         }
@@ -150,6 +171,25 @@ object InvoiceParser {
             }
             if (sellerVatNumber != null) {
                 vatNumber = sellerVatNumber
+            }
+        }
+        
+        // Second pass: Company number - ensure it's different from VAT number
+        if (companyNumber == null || companyNumber == vatNumber?.removePrefix("LT")?.removePrefix("lt")) {
+            // Look for company number that's different from VAT number
+            for (i in lines.indices) {
+                val line = lines[i]
+                val l = line.lowercase()
+                val hasCompanyContext = l.contains("imones kodas") || l.contains("imoneskodas") || 
+                                       l.contains("registracijos kodas") || l.contains("registracijos numeris")
+                if (hasCompanyContext) {
+                    val extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber)
+                    if (extracted != null) {
+                        companyNumber = extracted
+                        Timber.d("Found company number with context: $extracted")
+                        break
+                    }
+                }
             }
         }
         
@@ -510,6 +550,140 @@ object InvoiceParser {
         return !hasCompanyType
     }
     
+    /**
+     * Extract invoice ID by combining serial and number when they appear separately.
+     * Example: Serial "25DF" + Number "2569" = "25DF2569"
+     * This is a public function so it can be called from GoogleDocumentAiService.
+     * Serial number usually goes after word "Serija", just before invoice number, or 1-2 words separated.
+     */
+    fun extractInvoiceIdWithSerialAndNumber(lines: List<String>): String? {
+        // Pattern for serial: 2-6 alphanumeric characters with at least one letter (e.g., "25DF", "SSP", "A1B2")
+        val serialPattern = Regex("\\b([A-Z0-9]{2,6})\\b", RegexOption.IGNORE_CASE)
+        // Pattern for invoice number: 3-15 digits (e.g., "2569", "000393734", "41222181749")
+        val numberPattern = Regex("\\b([0-9]{3,15})\\b")
+        
+        // Look for "Serija" keyword (primary keyword for serial)
+        val serialKeywords = listOf("serija", "series", "serijos", "serijos kodas", "serijos kodas:")
+        val numberKeywords = listOf("numeris", "number", "nr", "nr.", "numerio", "numerio:")
+        
+        // First pass: Look for "Serija" keyword and extract serial that comes RIGHT AFTER it
+        for (i in lines.indices) {
+            val line = lines[i].trim()
+            val lowerLine = line.lowercase()
+            
+            // Check if line contains "Serija" keyword
+            val serijaKeyword = serialKeywords.firstOrNull { keyword -> 
+                lowerLine.contains(Regex("\\b$keyword\\b", RegexOption.IGNORE_CASE))
+            }
+            
+            if (serijaKeyword != null) {
+                // Find the position of "Serija" keyword
+                val serijaIndex = lowerLine.indexOf(serijaKeyword, ignoreCase = true)
+                if (serijaIndex >= 0) {
+                    // Get the text after "Serija" keyword (within 1-2 words, ~50 characters)
+                    val afterSerija = line.substring(serijaIndex + serijaKeyword.length).take(50)
+                    
+                    // Extract serial number that comes immediately after "Serija" (within 1-2 words)
+                    val serialMatch = serialPattern.find(afterSerija)
+                    if (serialMatch != null) {
+                        val serialCandidate = serialMatch.groupValues[1].uppercase()
+                        
+                        // Validate serial: should contain at least one letter, not just digits
+                        if (serialCandidate.any { it.isLetter() } && serialCandidate.length >= 2 && serialCandidate.length <= 6) {
+                            if (!serialCandidate.matches(Regex("^[0-9]{4}$"))) { // Not a year
+                                // Now look for invoice number after the serial (within 1-2 words)
+                                val serialEndIndex = serialMatch.range.last + 1
+                                val afterSerial = afterSerija.substring(serialEndIndex).take(30)
+                                
+                                // Try to find number keyword first
+                                val hasNumberKeyword = numberKeywords.any { keyword ->
+                                    afterSerial.lowercase().contains(Regex("\\b$keyword\\b", RegexOption.IGNORE_CASE))
+                                }
+                                
+                                // Extract number that comes after serial (within 1-2 words)
+                                val numberMatch = numberPattern.find(afterSerial)
+                                if (numberMatch != null) {
+                                    val numberCandidate = numberMatch.groupValues[1]
+                                    
+                                    // Validate number: should be 3-15 digits, not a date component
+                                    if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                        val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
+                                            num in 1..31 && numberCandidate.length <= 2
+                                        } ?: false
+                                        if (!isDateComponent) {
+                                            val combined = "$serialCandidate$numberCandidate"
+                                            Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' in same line: $line -> $combined")
+                                            return combined
+                                        }
+                                    }
+                                }
+                                
+                                // If number not found in same line, try to find it in the same line or next line
+                                // Look for number keyword in the same line
+                                val numberKeywordInLine = numberKeywords.firstOrNull { keyword ->
+                                    lowerLine.contains(Regex("\\b$keyword\\b", RegexOption.IGNORE_CASE))
+                                }
+                                
+                                if (numberKeywordInLine != null) {
+                                    // Find number after the number keyword
+                                    val numberKeywordIndex = lowerLine.indexOf(numberKeywordInLine, ignoreCase = true)
+                                    if (numberKeywordIndex >= 0) {
+                                        val afterNumberKeyword = line.substring(numberKeywordIndex + numberKeywordInLine.length).take(30)
+                                        val numberMatch2 = numberPattern.find(afterNumberKeyword)
+                                        if (numberMatch2 != null) {
+                                            val numberCandidate = numberMatch2.groupValues[1]
+                                            if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                                val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
+                                                    num in 1..31 && numberCandidate.length <= 2
+                                                } ?: false
+                                                if (!isDateComponent) {
+                                                    val combined = "$serialCandidate$numberCandidate"
+                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' after number keyword in same line: $line -> $combined")
+                                                    return combined
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // If number not found in same line, check next 1-2 lines
+                                for (offset in 1..2) {
+                                    val nextLineIndex = i + offset
+                                    if (nextLineIndex < lines.size) {
+                                        val nextLine = lines[nextLineIndex].trim()
+                                        val nextLineLower = nextLine.lowercase()
+                                        
+                                        // Check if next line has number keyword
+                                        val hasNumberKeyword = numberKeywords.any { keyword ->
+                                            nextLineLower.contains(Regex("\\b$keyword\\b", RegexOption.IGNORE_CASE))
+                                        }
+                                        
+                                        val numberMatch3 = numberPattern.find(nextLine)
+                                        if (numberMatch3 != null) {
+                                            val numberCandidate = numberMatch3.groupValues[1]
+                                            if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                                val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
+                                                    num in 1..31 && numberCandidate.length <= 2
+                                                } ?: false
+                                                if (!isDateComponent) {
+                                                    val combined = "$serialCandidate$numberCandidate"
+                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' in line $i and number '$numberCandidate' in next line (offset $offset): $combined")
+                                                    return combined
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return null
+    }
+    
     private fun extractInvoiceIdFromLine(line: String): String? {
         // Pattern 1: "Nr. SSP000393734" or "Nr SSP000393734" or "Nr: SSP000393734"
         val nrPattern = Regex("nr\\.?\\s*:?\\s*([A-Z]{2,}[0-9]+)", RegexOption.IGNORE_CASE)
@@ -541,6 +715,19 @@ object InvoiceParser {
             if (id != null && id.length >= 6 && id.uppercase() != "INVOICE") {
                 Timber.d("Extracted Invoice ID from colon pattern: ${id.uppercase()}")
                 return id.uppercase()
+            }
+        }
+        
+        // Pattern 4: Combined serial and number on same line (e.g., "Serija: 25DF Numeris: 2569" or "Serija SS Nr. 41222181749")
+        val serialNumberPattern = Regex("(?:serija|series)[:.]?\\s*([A-Z0-9]{2,6})\\s+(?:numeris|number|nr)[:.]?\\s*([0-9]{3,15})", RegexOption.IGNORE_CASE)
+        val serialNumberMatch = serialNumberPattern.find(line)
+        if (serialNumberMatch != null) {
+            val serial = serialNumberMatch.groupValues.getOrNull(1)?.uppercase()
+            val number = serialNumberMatch.groupValues.getOrNull(2)
+            if (serial != null && number != null && serial.any { it.isLetter() }) {
+                val combined = "$serial$number"
+                Timber.d("Extracted Invoice ID from serial+number pattern: $combined")
+                return combined
             }
         }
         
@@ -635,7 +822,7 @@ object InvoiceParser {
         return null
     }
     
-    private fun extractCompanyNameAdvanced(lines: List<String>, companyNumber: String?, vatNumber: String?): String? {
+    fun extractCompanyNameAdvanced(lines: List<String>, companyNumber: String?, vatNumber: String?): String? {
         // Strategy 1: Use VAT/company number to find company name (look backwards)
         if (companyNumber != null || vatNumber != null) {
             val searchNumber = companyNumber ?: vatNumber

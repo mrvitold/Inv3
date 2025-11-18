@@ -4,7 +4,8 @@ object KeywordMapping {
     private val map: Map<String, List<String>> = mapOf(
         "Invoice_ID" to listOf(
             "invoice number", "saskaitos numeris", "saskaitos serija", "fakturos serija",
-            "nr.", "nr ", "numeris", "serija", "ssp", "saskaitos fakturos numeris"
+            "nr.", "nr ", "numeris", "serija", "serijos", "serijos kodas", "series",
+            "ssp", "saskaitos fakturos numeris", "numerio"
         ),
         "Date" to listOf(
             "data", "saskaitos data", "israsymo data", "invoice date", "proforma date",
@@ -52,8 +53,11 @@ object FieldExtractors {
         "([0-9]{1,6}(?:[\\s.,][0-9]{3})*[,\\.][0-9]{1,3}|[0-9]{1,6}[,\\.][0-9]{1,3}|[0-9]{1,6}(?:[\\s.,][0-9]{3})+[,\\.]?[0-9]{0,3})",
         RegexOption.IGNORE_CASE
     )
-    private val vatNumberRegex = Regex("(LT)?[0-9A-Z]{8,12}")
-    private val companyNumberRegex = Regex("[0-9]{7,14}")
+    // Lithuanian VAT number: MUST start with "LT" followed by digits (e.g., LT100008777514)
+    // If there's no "LT" prefix, it's NOT a VAT number
+    private val vatNumberRegex = Regex("\\b(LT[0-9A-Z]{8,12})\\b", RegexOption.IGNORE_CASE)
+    // Lithuanian company number: 9 digits starting with 1, 2, 3, or 4
+    private val companyNumberRegex = Regex("\\b([1-4][0-9]{8})\\b")
 
     fun tryExtractDate(line: String): String? {
         // Try with context first (date/data keyword)
@@ -94,8 +98,45 @@ object FieldExtractors {
         }
     }
     fun tryExtractAmount(line: String): String? = amountRegex.find(line)?.groupValues?.getOrNull(1)
-    fun tryExtractVatNumber(line: String): String? = vatNumberRegex.find(line)?.value
-    fun tryExtractCompanyNumber(line: String): String? = companyNumberRegex.find(line)?.value
+    
+    /**
+     * Extract VAT number - MUST have "LT" prefix to be identified as VAT number.
+     * If there's no "LT" prefix, it's not a VAT number.
+     */
+    fun tryExtractVatNumber(line: String): String? {
+        val match = vatNumberRegex.find(line)
+        if (match != null) {
+            val vatValue = match.groupValues.getOrNull(1)
+            if (vatValue != null) {
+                // Return as-is (already has LT prefix) - uppercase for consistency
+                return vatValue.uppercase()
+            }
+        }
+        return null
+    }
+    
+    /**
+     * Extract company number (9 digits starting with 1, 2, 3, or 4).
+     * Ensures it's different from VAT number.
+     */
+    fun tryExtractCompanyNumber(line: String, excludeVatNumber: String? = null): String? {
+        val match = companyNumberRegex.find(line)
+        if (match != null) {
+            val candidate = match.groupValues.getOrNull(1)
+            if (candidate != null) {
+                // Ensure it's different from VAT number (if provided)
+                if (excludeVatNumber != null) {
+                    // Remove "LT" prefix from VAT number for comparison
+                    val vatDigits = excludeVatNumber.removePrefix("LT").removePrefix("lt")
+                    if (candidate == vatDigits) {
+                        return null // Same as VAT number, skip it
+                    }
+                }
+                return candidate
+            }
+        }
+        return null
+    }
 
     /**
      * Normalize amount string to standard format (dot as decimal separator).

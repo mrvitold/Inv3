@@ -130,11 +130,15 @@ class CompaniesViewModel @Inject constructor(
 
     fun load() {
         viewModelScope.launch {
-            runCatching {
+            try {
                 // select() without parameters selects all columns including id
-                client?.from("companies")?.select()?.decodeList<CompanyRecord>() ?: emptyList()
-            }.onSuccess { list ->
-                items.clear(); items.addAll(list)
+                val list = client?.from("companies")?.select()?.decodeList<CompanyRecord>() ?: emptyList()
+                Timber.d("Loaded ${list.size} companies from Supabase")
+                items.clear()
+                items.addAll(list)
+                Timber.d("Updated items list, now contains ${items.size} companies")
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to load companies from Supabase")
             }
         }
     }
@@ -149,11 +153,33 @@ class CompaniesViewModel @Inject constructor(
     fun delete(company: CompanyRecord) {
         viewModelScope.launch {
             try {
+                Timber.d("Attempting to delete company: ${company.company_name ?: company.company_number}, id: ${company.id}")
+                
+                // Delete from Supabase first
                 repo.deleteCompany(company)
+                Timber.d("Delete call completed, waiting for Supabase to commit...")
+                
+                // Wait longer to ensure deletion is committed in Supabase
+                kotlinx.coroutines.delay(500)
+                
+                // Reload to get the updated list from Supabase
                 load()
+                
+                // Verify the company was actually deleted
+                val stillExists = items.any { it.id == company.id || 
+                    (it.company_number == company.company_number && !company.company_number.isNullOrBlank()) }
+                
+                if (stillExists) {
+                    Timber.w("Company still exists after deletion attempt - may be RLS policy issue or deletion failed silently")
+                    // Try one more reload after a longer delay
+                    kotlinx.coroutines.delay(500)
+                    load()
+                } else {
+                    Timber.d("Company successfully removed from list")
+                }
             } catch (e: Exception) {
                 Timber.e(e, "Failed to delete company: ${company.company_name ?: company.company_number}")
-                // Error is logged, but we still reload to refresh the list
+                // If deletion failed, reload to restore the correct state
                 load()
             }
         }

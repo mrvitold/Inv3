@@ -29,6 +29,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,7 +54,7 @@ import com.vitol.inv3.ocr.InvoiceParser
 import com.vitol.inv3.ocr.InvoiceTextRecognizer
 import com.vitol.inv3.ocr.OcrBlock
 import com.vitol.inv3.ocr.TemplateLearner
-import com.vitol.inv3.ocr.GoogleDocumentAiService
+import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
 import com.vitol.inv3.utils.DateFormatter
 import android.graphics.BitmapFactory
 import java.io.InputStream
@@ -72,7 +73,8 @@ import javax.inject.Inject
 fun ReviewScreen(
     imageUri: Uri,
     navController: NavController? = null,
-    viewModel: ReviewViewModel = hiltViewModel()
+    viewModel: ReviewViewModel = hiltViewModel(),
+    fileImportViewModel: com.vitol.inv3.ui.scan.FileImportViewModel = hiltViewModel()
 ) {
     var isLoading by remember { mutableStateOf(true) }
     var isSaving by remember { mutableStateOf(false) }
@@ -95,7 +97,7 @@ fun ReviewScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var isCompanySelected by remember { mutableStateOf(false) } // Track if company is selected from existing
     var isReanalyzing by remember { mutableStateOf(false) } // Track if re-analysis is in progress
-    var ocrMethod by remember { mutableStateOf<String?>(null) } // Track which OCR method was used: "Google" or "Local"
+    var ocrMethod by remember { mutableStateOf<String?>(null) } // Track which OCR method was used: "Azure" or "Local"
     
     // Calculate initial date (previous month from today)
     val initialDateMillis = remember {
@@ -112,15 +114,22 @@ fun ReviewScreen(
         viewModel.loadCompanies()
     }
 
-    // First pass: Identify company only (uses local OCR)
+    // First pass: Identify company NUMBER only (uses local OCR)
+    // Does NOT extract company name - only company number for template lookup
     LaunchedEffect(imageUri) {
         ocrMethod = "Local" // First pass always uses local OCR
         viewModel.runOcrFirstPass(imageUri) { result ->
             result.onSuccess { companyInfo ->
-                // Populate only company name initially
-                fields = fields + ("Company_name" to (companyInfo.companyName ?: ""))
+                // Only populate company number and VAT number (not company name)
+                if (companyInfo.companyNumber != null) {
+                    fields = fields + ("Company_number" to companyInfo.companyNumber)
+                    Timber.d("First pass complete - Company number: ${companyInfo.companyNumber}")
+                }
+                if (companyInfo.vatNumber != null) {
+                    fields = fields + ("VAT_number" to companyInfo.vatNumber)
+                    Timber.d("First pass complete - VAT number: ${companyInfo.vatNumber}")
+                }
                 isLoading = false
-                Timber.d("First pass complete - Company: ${companyInfo.companyName}")
             }.onFailure {
                 text = it.message ?: "Error"
                 isLoading = false
@@ -131,20 +140,29 @@ fun ReviewScreen(
     // Track if second pass has been triggered
     var secondPassTriggered by remember { mutableStateOf(false) }
     
-    // Second pass: Re-analyze with template after company is confirmed
-    // Try Document AI first (more accurate), fallback to local OCR
-    LaunchedEffect(fields["Company_name"]) {
-        val companyName = fields["Company_name"]
-        // Trigger re-analysis once when company name is set and not empty, and we're not already re-analyzing
-        if (!companyName.isNullOrBlank() && !isReanalyzing && !isLoading && !secondPassTriggered) {
+    // Second pass: Re-analyze with template after company number is found
+    // Try Azure Document Intelligence first (more accurate), fallback to local OCR
+    // Trigger when company number OR VAT number is found (for template lookup)
+    LaunchedEffect(fields["Company_number"], fields["VAT_number"]) {
+        val companyNumber = fields["Company_number"] ?: ""
+        val vatNumber = fields["VAT_number"] ?: ""
+        val lookupKey = companyNumber.ifBlank { vatNumber }
+        // Trigger re-analysis once when company number or VAT number is found
+        if (lookupKey.isNotBlank() && !isReanalyzing && !isLoading && !secondPassTriggered) {
             secondPassTriggered = true
             isReanalyzing = true
-            // Try Document AI first
+            // Store first pass values for database lookup
+            val firstPassCompanyNumber = fields["Company_number"]
+            val firstPassVatNumber = fields["VAT_number"]
+            
+            // Try Azure Document Intelligence first
             viewModel.runOcrWithDocumentAi(
                 imageUri,
+                firstPassCompanyNumber,
+                firstPassVatNumber,
                 onDone = { result ->
                     result.onSuccess { parsed ->
-                        // If Document AI succeeded, use it
+                        // If Azure Document Intelligence succeeded, use it
                         // The parsed string already has the correct company name from database lookup
                         val lines = parsed.split("\n")
                         val newFields = fields.toMutableMap()
@@ -157,10 +175,10 @@ fun ReviewScreen(
                                     "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
                                     "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
                                     "Company_name" -> {
-                                        // Always update company name from Document AI result (it has database lookup applied)
+                                        // Always update company name from Azure result (it has database lookup applied)
                                         if (value.isNotBlank()) {
                                             newFields["Company_name"] = value
-                                            Timber.d("Document AI - Setting company name from result: '$value'")
+                                            Timber.d("Azure - Setting company name from result: '$value'")
                                         }
                                     }
                                     "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
@@ -172,12 +190,12 @@ fun ReviewScreen(
                         }
                         fields = newFields.toMap()
                         isReanalyzing = false
-                        Timber.d("Document AI second pass complete - All fields extracted, Company_name: '${newFields["Company_name"]}'")
+                        Timber.d("Azure second pass complete - All fields extracted, Company_name: '${newFields["Company_name"]}'")
                     }.onFailure {
-                        // Fallback to local OCR if Document AI fails
-                        Timber.w("Document AI failed, falling back to local OCR")
+                        // Fallback to local OCR if Azure Document Intelligence fails
+                        Timber.w("Azure Document Intelligence failed, falling back to local OCR")
                         ocrMethod = "Local" // Mark as using local OCR
-                        viewModel.runOcrSecondPass(imageUri, companyName) { localResult ->
+                        viewModel.runOcrSecondPass(imageUri, lookupKey) { localResult ->
                             localResult.onSuccess { parsed ->
                                 // Parse the text to populate all fields
                                 // The parsed string already has the correct company name from database lookup
@@ -189,19 +207,55 @@ fun ReviewScreen(
                                         val key = parts[0].trim()
                                         val value = parts[1].trim()
                                         when (key) {
-                                            "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
-                                            "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
+                                            "Invoice_ID" -> {
+                                                // Local OCR fallback can replace if Azure didn't find it
+                                                if (value.isNotBlank() && newFields["Invoice_ID"].isNullOrBlank()) {
+                                                    newFields["Invoice_ID"] = value
+                                                    Timber.d("Local OCR fallback - Setting Invoice_ID: '$value'")
+                                                }
+                                            }
+                                            "Date" -> {
+                                                // Local OCR fallback can replace if Azure didn't find it
+                                                if (value.isNotBlank() && newFields["Date"].isNullOrBlank()) {
+                                                    newFields["Date"] = value
+                                                    Timber.d("Local OCR fallback - Setting Date: '$value'")
+                                                }
+                                            }
                                             "Company_name" -> {
                                                 // Always update company name from local OCR result (it has database lookup applied)
                                                 if (value.isNotBlank()) {
                                                     newFields["Company_name"] = value
-                                                    Timber.d("Local OCR - Setting company name from result: '$value'")
+                                                    Timber.d("Local OCR fallback - Setting company name from result: '$value'")
                                                 }
                                             }
-                                            "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
-                                            "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
-                                            "VAT_number" -> if (newFields["VAT_number"].isNullOrBlank()) newFields["VAT_number"] = value
-                                            "Company_number" -> if (newFields["Company_number"].isNullOrBlank()) newFields["Company_number"] = value
+                                            "Amount_without_VAT_EUR" -> {
+                                                // Local OCR fallback can replace if Azure didn't find it
+                                                if (value.isNotBlank() && newFields["Amount_without_VAT_EUR"].isNullOrBlank()) {
+                                                    newFields["Amount_without_VAT_EUR"] = value
+                                                    Timber.d("Local OCR fallback - Setting Amount_without_VAT_EUR: '$value'")
+                                                }
+                                            }
+                                            "VAT_amount_EUR" -> {
+                                                // Local OCR fallback can replace if Azure didn't find it
+                                                if (value.isNotBlank() && newFields["VAT_amount_EUR"].isNullOrBlank()) {
+                                                    newFields["VAT_amount_EUR"] = value
+                                                    Timber.d("Local OCR fallback - Setting VAT_amount_EUR: '$value'")
+                                                }
+                                            }
+                                            "VAT_number" -> {
+                                                // Local OCR fallback can replace if Azure didn't find it
+                                                if (value.isNotBlank() && newFields["VAT_number"].isNullOrBlank()) {
+                                                    newFields["VAT_number"] = value
+                                                    Timber.d("Local OCR fallback - Setting VAT_number: '$value'")
+                                                }
+                                            }
+                                            "Company_number" -> {
+                                                // Local OCR fallback can replace if Azure didn't find it
+                                                if (value.isNotBlank() && newFields["Company_number"].isNullOrBlank()) {
+                                                    newFields["Company_number"] = value
+                                                    Timber.d("Local OCR fallback - Setting Company_number: '$value'")
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -240,10 +294,32 @@ fun ReviewScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (isLoading || isReanalyzing) {
-                    CircularProgressIndicator()
-                } else {
-                    Text("Verify fields")
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isLoading || isReanalyzing) {
+                        CircularProgressIndicator()
+                        // Progress indicator (X of Y) next to loading circle
+                        val processingQueue by fileImportViewModel.processingQueue.collectAsState()
+                        val currentIndex by fileImportViewModel.currentIndex.collectAsState()
+                        if (processingQueue.isNotEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = androidx.compose.material3.MaterialTheme.colorScheme.tertiaryContainer,
+                                modifier = Modifier.padding(start = 8.dp)
+                            ) {
+                                Text(
+                                    text = "${currentIndex + 1} of ${processingQueue.size}",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                    color = androidx.compose.material3.MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                            }
+                        }
+                    } else {
+                        Text("Verify fields")
+                    }
                 }
                 
                 // OCR method indicator in top right
@@ -251,7 +327,7 @@ fun ReviewScreen(
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = when (method) {
-                            "Google" -> androidx.compose.material3.MaterialTheme.colorScheme.primaryContainer
+                            "Azure" -> androidx.compose.material3.MaterialTheme.colorScheme.primaryContainer
                             "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.secondaryContainer
                             else -> androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant
                         },
@@ -262,7 +338,7 @@ fun ReviewScreen(
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
                             color = when (method) {
-                                "Google" -> androidx.compose.material3.MaterialTheme.colorScheme.onPrimaryContainer
+                                "Azure" -> androidx.compose.material3.MaterialTheme.colorScheme.onPrimaryContainer
                                 "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.onSecondaryContainer
                                 else -> androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
                             }
@@ -444,8 +520,17 @@ fun ReviewScreen(
                     ) { success ->
                         isSaving = false
                         if (success) {
-                            // Navigate back to home screen after successful save
-                            navController?.popBackStack()
+                            // Check if there are more items in processing queue
+                            if (fileImportViewModel.hasNext()) {
+                                // Move to next item in queue
+                                fileImportViewModel.moveToNext()
+                                // Navigate back - ScanScreen will handle navigating to next item
+                                navController?.popBackStack()
+                            } else {
+                                // No more items, clear queue and navigate back to home screen
+                                fileImportViewModel.clearQueue()
+                                navController?.popBackStack()
+                            }
                         } else {
                             errorMessage = "Failed to save invoice. Please try again."
                         }
@@ -507,8 +592,8 @@ class ReviewViewModel @Inject constructor(
     private var currentOcrBlocks: List<OcrBlock> = emptyList()
     private var currentImageUri: Uri? = null
     
-    // Google Document AI service
-    private val documentAiService = GoogleDocumentAiService(getApplication())
+    // Azure Document Intelligence service
+    private val documentAiService = AzureDocumentIntelligenceService(getApplication())
 
     fun loadCompanies() {
         viewModelScope.launch {
@@ -522,7 +607,8 @@ class ReviewViewModel @Inject constructor(
         }
     }
     /**
-     * First pass: Identify company only (fast, for initial display)
+     * First pass: Identify company NUMBER only (fast, for initial display)
+     * Does NOT extract company name - only company number and VAT number
      */
     fun runOcrFirstPass(uri: Uri, onDone: (Result<CompanyRecognition.Candidate>) -> Unit) {
         viewModelScope.launch {
@@ -534,11 +620,13 @@ class ReviewViewModel @Inject constructor(
                     blocks
                 }
                 .map { blocks ->
-                    // Try to identify company first
+                    // Try to identify company NUMBER only (not name)
                     val lines = blocks.map { it.text }
                     val companyCandidate = CompanyRecognition.recognize(lines)
-                    Timber.d("First pass - Company recognition: ${companyCandidate.companyName}, ${companyCandidate.companyNumber}")
-                    companyCandidate
+                    // Return candidate with company name set to null (we don't want it in first pass)
+                    val candidateWithoutName = companyCandidate.copy(companyName = null)
+                    Timber.d("First pass - Company recognition: companyNumber=${candidateWithoutName.companyNumber}, vatNumber=${candidateWithoutName.vatNumber} (company name skipped)")
+                    candidateWithoutName
                 }
             onDone(result)
         }
@@ -547,7 +635,7 @@ class ReviewViewModel @Inject constructor(
     /**
      * Second pass: Re-analyze with template knowledge after company is confirmed
      */
-    fun runOcrSecondPass(uri: Uri, companyName: String, onDone: (Result<String>) -> Unit) {
+    fun runOcrSecondPass(uri: Uri, lookupKey: String, onDone: (Result<String>) -> Unit) {
         viewModelScope.launch {
             val result = recognizer.recognize(uri)
                 .map { blocks ->
@@ -557,13 +645,14 @@ class ReviewViewModel @Inject constructor(
                     // Try to load template for this company using multiple possible keys
                     val lines = blocks.map { it.text }
                     val companyCandidate = CompanyRecognition.recognize(lines)
+                    // Use company number/VAT number for template lookup (not company name)
                     val possibleKeys = listOfNotNull(
-                        normalizeCompanyKey(companyName),
+                        normalizeCompanyKey(lookupKey), // Company number or VAT number from first pass
                         normalizeCompanyKey(companyCandidate.companyNumber),
                         normalizeCompanyKey(companyCandidate.vatNumber)
                     ).filterNotNull().distinct()
                     
-                    Timber.d("Second pass - Company: '$companyName', normalized keys: $possibleKeys")
+                    Timber.d("Second pass - Lookup key: '$lookupKey', normalized keys: $possibleKeys")
                     
                     // Try to load template for this company using multiple possible keys
                     var template = emptyList<FieldRegion>()
@@ -722,21 +811,29 @@ class ReviewViewModel @Inject constructor(
     }
     
     /**
-     * Process invoice using Google Cloud Document AI (online, more accurate).
+     * Process invoice using Azure Document Intelligence (online, more accurate).
      * Falls back to local OCR if Document AI fails or is not configured.
-     * @param onMethodUsed Optional callback to notify which OCR method was used ("Google" or "Local")
+     * @param firstPassCompanyNumber Company number from first pass (more reliable than Azure extraction)
+     * @param firstPassVatNumber VAT number from first pass (more reliable than Azure extraction)
+     * @param onMethodUsed Optional callback to notify which OCR method was used ("Azure" or "Local")
      */
-    fun runOcrWithDocumentAi(uri: Uri, onDone: (Result<String>) -> Unit, onMethodUsed: ((String) -> Unit)? = null) {
+    fun runOcrWithDocumentAi(
+        uri: Uri, 
+        firstPassCompanyNumber: String? = null,
+        firstPassVatNumber: String? = null,
+        onDone: (Result<String>) -> Unit, 
+        onMethodUsed: ((String) -> Unit)? = null
+    ) {
         viewModelScope.launch {
             val result = try {
-                Timber.d("Starting Document AI processing for invoice")
+                Timber.d("Starting Azure Document Intelligence processing for invoice")
                 
-                // Try Document AI first
+                // Try Azure Document Intelligence first
                 val parsed = documentAiService.processInvoice(uri)
                 
                 if (parsed != null) {
-                    Timber.d("Document AI processing successful")
-                    onMethodUsed?.invoke("Google") // Notify that Google Document AI was used
+                    Timber.d("Azure Document Intelligence processing successful")
+                    onMethodUsed?.invoke("Azure") // Notify that Azure Document Intelligence was used
                     
                     // Store blocks for template learning (create dummy blocks from text)
                     currentOcrBlocks = parsed.lines.mapIndexed { index, text ->
@@ -747,29 +844,37 @@ class ReviewViewModel @Inject constructor(
                     }
                     currentImageUri = uri
                     
+                    // Use first pass values for database lookup (more reliable than Azure extraction)
+                    // If first pass values are not available, fall back to Azure extracted values
+                    val lookupCompanyNumber = firstPassCompanyNumber?.takeIf { it.isNotBlank() } ?: parsed.companyNumber
+                    val lookupVatNumber = firstPassVatNumber?.takeIf { it.isNotBlank() } ?: parsed.vatNumber
+                    
                     // ALWAYS look up company from database when VAT or company number is found
                     // This ensures we get the correct company name from the database
-                    val finalParsed = if (parsed.companyNumber != null || parsed.vatNumber != null) {
+                    val finalParsed = if (lookupCompanyNumber != null || lookupVatNumber != null) {
                         try {
-                            Timber.d("Document AI - Looking up company in database - CompanyName: '${parsed.companyName}', CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
+                            Timber.d("Azure - Looking up company in database using first pass values - CompanyName: '${parsed.companyName}', FirstPassCompanyNumber: '$firstPassCompanyNumber', FirstPassVatNumber: '$firstPassVatNumber', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber'")
                             val companyFromDb = repo.findCompanyByNumberOrVat(
-                                parsed.companyNumber, 
-                                parsed.vatNumber
+                                lookupCompanyNumber, 
+                                lookupVatNumber
                             )
                             if (companyFromDb != null) {
-                                Timber.d("Document AI - Found company in database: '${companyFromDb.company_name}', replacing extracted name '${parsed.companyName}'")
+                                Timber.d("Azure - Found company in database: '${companyFromDb.company_name}', replacing extracted name '${parsed.companyName}'")
                                 parsed.copy(
                                     companyName = companyFromDb.company_name ?: parsed.companyName,
                                     companyNumber = companyFromDb.company_number ?: parsed.companyNumber,
                                     vatNumber = companyFromDb.vat_number ?: parsed.vatNumber
                                 )
                             } else {
-                                Timber.d("Document AI - No company found in database for CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
-                                // If company name is invalid and not found in DB, set to null so it can be filled manually
+                                Timber.d("Azure - No company found in database for CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
+                                // Keep the extracted company name if it's valid (contains UAB, MB, IĮ, AB, etc.)
+                                // Only set to null if it's invalid (like "SASKAITA", "PARDAVEJAS", etc.)
                                 if (isInvalidCompanyName(parsed.companyName)) {
-                                    Timber.d("Document AI - Company name '${parsed.companyName}' is invalid, setting to null")
+                                    Timber.d("Azure - Company name '${parsed.companyName}' is invalid, setting to null")
                                     parsed.copy(companyName = null)
                                 } else {
+                                    // Keep the extracted company name even if not in database
+                                    Timber.d("Azure - Keeping extracted company name '${parsed.companyName}' (not in database but valid)")
                                     parsed
                                 }
                             }
@@ -778,7 +883,7 @@ class ReviewViewModel @Inject constructor(
                             parsed
                         }
                     } else {
-                        Timber.d("Document AI - No VAT or company number found, skipping database lookup")
+                        Timber.d("Azure - No VAT or company number found, skipping database lookup")
                         parsed
                     }
                     
@@ -791,7 +896,7 @@ class ReviewViewModel @Inject constructor(
                     "VAT_number: ${finalParsed.vatNumber ?: ""}\n" +
                     "Company_number: ${finalParsed.companyNumber ?: ""}"
                 } else {
-                    Timber.w("Document AI processing returned null, falling back to local OCR")
+                    Timber.w("Azure Document Intelligence processing returned null, falling back to local OCR")
                     onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                     // Fallback to local OCR
                     runOcr(uri) { localResult ->
@@ -805,7 +910,7 @@ class ReviewViewModel @Inject constructor(
                     return@launch
                 }
             } catch (e: Exception) {
-                Timber.e(e, "Document AI processing failed with exception, falling back to local OCR")
+                Timber.e(e, "Azure Document Intelligence processing failed with exception, falling back to local OCR")
                 onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                 // Fallback to local OCR on error
                 runOcr(uri) { localResult ->

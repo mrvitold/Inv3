@@ -213,7 +213,11 @@ class GoogleDocumentAiService(private val context: Context) {
                 normalizedType.contains("invoice_id") || 
                 normalizedType.contains("invoice_number") || 
                 normalizedType.contains("invoice_no") -> {
-                    if (invoiceId == null) invoiceId = value
+                    if (invoiceId == null) {
+                        invoiceId = value
+                        // Try to combine with serial if found separately
+                        // Document AI might return them separately, so we'll handle in post-processing
+                    }
                 }
                 normalizedType.contains("invoice_date") || 
                 normalizedType.contains("receipt_date") || 
@@ -254,6 +258,15 @@ class GoogleDocumentAiService(private val context: Context) {
         // Also extract text for fallback parsing
         val text = document.get("text")?.asString ?: ""
         val lines = text.split("\n").filter { it.isNotBlank() }
+        
+        // If invoice ID is not found or incomplete, try to extract from text using local parser
+        if (invoiceId == null || invoiceId.length < 6) {
+            val extractedId = InvoiceParser.extractInvoiceIdWithSerialAndNumber(lines)
+            if (extractedId != null) {
+                invoiceId = extractedId
+                Timber.d("Document AI: Extracted Invoice ID from text fallback: $invoiceId")
+            }
+        }
         
         Timber.d("Extracted - InvoiceID: $invoiceId, Date: $date, Company: $companyName, " +
                 "AmountNoVat: $amountNoVat, VatAmount: $vatAmount, " +

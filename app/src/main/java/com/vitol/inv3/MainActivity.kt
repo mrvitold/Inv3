@@ -1,25 +1,46 @@
 package com.vitol.inv3
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.vitol.inv3.ui.scan.FileImportViewModel
+import com.vitol.inv3.ui.scan.processSelectedFile
+import com.vitol.inv3.utils.FileImportService
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -42,7 +63,7 @@ object Routes {
     const val Review = "review"
     const val Companies = "companies"
     const val Exports = "exports"
-    const val Settings = "settings"
+    const val EditInvoice = "editInvoice"
 }
 
 @Composable
@@ -66,36 +87,124 @@ fun AppNavHost(navController: NavHostController) {
             }
         }
         composable(Routes.Companies) { com.vitol.inv3.ui.companies.CompaniesScreen() }
-        composable(Routes.Exports) { com.vitol.inv3.ui.exports.ExportsScreen() }
-        composable(Routes.Settings) { com.vitol.inv3.ui.settings.SettingsScreen() }
+        composable(Routes.Exports) { com.vitol.inv3.ui.exports.ExportsScreen(navController = navController) }
+        composable("${Routes.EditInvoice}/{invoiceId}") { backStackEntry ->
+            val invoiceId = backStackEntry.arguments?.getString("invoiceId") ?: ""
+            if (invoiceId.isNotBlank()) {
+                com.vitol.inv3.ui.exports.EditInvoiceScreen(invoiceId = invoiceId, navController = navController)
+            } else {
+                PlaceholderScreen("Invalid invoice ID")
+            }
+        }
     }
 }
 
 @Composable
-fun HomeScreen(navController: NavHostController) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Button(onClick = { navController.navigate(Routes.Scan) }) {
-            Text(text = "Scan Invoice")
+fun HomeScreen(
+    navController: NavHostController,
+    fileImportViewModel: FileImportViewModel = hiltViewModel()
+) {
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val fileImportService = remember { FileImportService(context) }
+    
+    val processingQueue by fileImportViewModel.processingQueue.collectAsState()
+    val currentIndex by fileImportViewModel.currentIndex.collectAsState()
+
+    // File picker launcher for Import button
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                processSelectedFile(uri, fileImportService, snackbarHostState) { uris ->
+                    if (uris.isNotEmpty()) {
+                        fileImportViewModel.addToQueue(uris)
+                        // Navigate to first item
+                        val firstUri = uris[0]
+                        navController.navigate("review/${Uri.encode(firstUri.toString())}")
+                    }
+                }
+            }
         }
-        // Review Queue - navigate to a list screen (to be implemented)
-        Button(onClick = { /* TODO: Navigate to review queue list */ }) {
-            Text(text = "Review Queue")
+    }
+
+    // Check if there are more items in queue when screen is resumed
+    LaunchedEffect(processingQueue.size, currentIndex) {
+        // When returning from ReviewScreen, check if there are more items
+        if (processingQueue.isNotEmpty()) {
+            val nextUri = fileImportViewModel.getNextUri()
+            if (nextUri != null && currentIndex < processingQueue.size) {
+                // Small delay to ensure navigation is ready
+                kotlinx.coroutines.delay(500)
+                navController.navigate("review/${Uri.encode(nextUri.toString())}")
+            } else if (processingQueue.isNotEmpty() && currentIndex >= processingQueue.size) {
+                // Queue completed
+                scope.launch {
+                    snackbarHostState.showSnackbar("All invoices processed!")
+                }
+                fileImportViewModel.clearQueue()
+            }
         }
-        Button(onClick = { navController.navigate(Routes.Companies) }) {
-            Text(text = "Companies")
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Scan Invoice and Import buttons in a Row, centered
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = { navController.navigate(Routes.Scan) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(text = "Scan Invoice")
+                }
+                Spacer(modifier = Modifier.width(16.dp))
+                Button(
+                    onClick = { filePickerLauncher.launch("*/*") },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(text = "Import")
+                }
+            }
+            
+            Spacer(modifier = Modifier.padding(16.dp))
+            
+            // Other buttons
+            Button(
+                onClick = { /* TODO: Navigate to review queue list */ },
+                modifier = Modifier.fillMaxWidth(0.6f)
+            ) {
+                Text(text = "Review Queue")
+            }
+            Button(
+                onClick = { navController.navigate(Routes.Companies) },
+                modifier = Modifier.fillMaxWidth(0.6f)
+            ) {
+                Text(text = "Companies")
+            }
+            Button(
+                onClick = { navController.navigate(Routes.Exports) },
+                modifier = Modifier.fillMaxWidth(0.6f)
+            ) {
+                Text(text = "Exports")
+            }
         }
-        Button(onClick = { navController.navigate(Routes.Exports) }) {
-            Text(text = "Exports")
-        }
-        Button(onClick = { navController.navigate(Routes.Settings) }) {
-            Text(text = "Settings")
-        }
+        
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
 

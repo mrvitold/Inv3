@@ -11,7 +11,8 @@ object CompanyRecognition {
     fun recognize(lines: List<String>): Candidate {
         val joined = lines.joinToString("\n").lowercase()
         val vat = FieldExtractors.tryExtractVatNumber(joined)
-        val compNo = FieldExtractors.tryExtractCompanyNumber(joined)
+        // Extract company number, excluding VAT number to avoid duplicates
+        val compNo = FieldExtractors.tryExtractCompanyNumber(joined, vat)
 
         val possibleName = lines.firstOrNull { line ->
             val l = line.lowercase()

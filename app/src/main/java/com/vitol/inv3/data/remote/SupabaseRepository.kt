@@ -17,6 +17,7 @@ data class CompanyRecord(
 
 @Serializable
 data class InvoiceRecord(
+    val id: String? = null,
     val invoice_id: String?,
     val date: String?,
     val company_name: String?,
@@ -106,16 +107,28 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             // Try to delete by id first (most reliable - primary key)
             if (!company.id.isNullOrBlank()) {
                 try {
-                    client.from("companies").delete {
+                    // Verify company exists before deletion
+                    val existing = client.from("companies").select {
                         filter {
                             eq("id", company.id)
                         }
+                    }.decodeList<CompanyRecord>()
+                    
+                    if (existing.isNotEmpty()) {
+                        client.from("companies").delete {
+                            filter {
+                                eq("id", company.id)
+                            }
+                        }
+                        Timber.d("Company deleted successfully by id: ${company.id}")
+                        deleted = true
+                    } else {
+                        Timber.w("Company with id ${company.id} not found, may have been already deleted")
+                        deleted = true // Consider it deleted if it doesn't exist
                     }
-                    Timber.d("Company deleted successfully by id: ${company.id}")
-                    deleted = true
                 } catch (e: Exception) {
                     lastError = e
-                    Timber.w(e, "Failed to delete by id: ${company.id}")
+                    Timber.w(e, "Failed to delete by id: ${company.id}, error: ${e.message}")
                 }
             }
             
@@ -131,7 +144,7 @@ class SupabaseRepository(private val client: SupabaseClient?) {
                     deleted = true
                 } catch (e: Exception) {
                     lastError = e
-                    Timber.w(e, "Failed to delete by company_number: ${company.company_number}")
+                    Timber.w(e, "Failed to delete by company_number: ${company.company_number}, error: ${e.message}")
                 }
             }
             
@@ -147,7 +160,7 @@ class SupabaseRepository(private val client: SupabaseClient?) {
                     deleted = true
                 } catch (e: Exception) {
                     lastError = e
-                    Timber.w(e, "Failed to delete by company_name: ${company.company_name}")
+                    Timber.w(e, "Failed to delete by company_name: ${company.company_name}, error: ${e.message}")
                 }
             }
             
@@ -163,20 +176,23 @@ class SupabaseRepository(private val client: SupabaseClient?) {
                     deleted = true
                 } catch (e: Exception) {
                     lastError = e
-                    Timber.w(e, "Failed to delete by vat_number: ${company.vat_number}")
+                    Timber.w(e, "Failed to delete by vat_number: ${company.vat_number}, error: ${e.message}")
                 }
             }
             
             if (!deleted) {
                 if (lastError != null) {
                     Timber.e(lastError, "Failed to delete company after trying all methods: ${company.company_name ?: company.company_number ?: company.vat_number ?: company.id ?: "unknown"}")
+                    throw lastError // Throw the error so the ViewModel can handle it
                 } else {
-                    Timber.w("Cannot delete company: all fields (id, company_number, company_name, vat_number) are null or blank")
+                    val errorMsg = "Cannot delete company: all fields (id, company_number, company_name, vat_number) are null or blank"
+                    Timber.w(errorMsg)
+                    throw IllegalStateException(errorMsg)
                 }
             }
         } catch (e: Exception) {
             Timber.e(e, "Failed to delete company: ${company.company_name ?: company.company_number ?: company.vat_number ?: company.id ?: "unknown"}")
-            // Don't throw - just log the error to prevent app crash
+            throw e // Re-throw to let the ViewModel handle it
         }
     }
 
@@ -221,6 +237,91 @@ class SupabaseRepository(private val client: SupabaseClient?) {
         } catch (e: Exception) {
             Timber.e(e, "Failed to find company by number or VAT")
             null
+        }
+    }
+
+    suspend fun getAllInvoices(): List<InvoiceRecord> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot fetch invoices")
+            return@withContext emptyList()
+        }
+        try {
+            val invoices = client.from("invoices")
+                .select()
+                .decodeList<InvoiceRecord>()
+            Timber.d("Fetched ${invoices.size} invoices from Supabase")
+            invoices
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to fetch invoices from Supabase")
+            emptyList()
+        }
+    }
+
+    suspend fun getInvoicesByMonth(year: Int, month: Int): List<InvoiceRecord> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot fetch invoices")
+            return@withContext emptyList()
+        }
+        try {
+            // Format month as YYYY-MM for filtering
+            val monthStr = String.format("%04d-%02d", year, month)
+            val invoices = client.from("invoices")
+                .select {
+                    filter {
+                        // Filter by date starting with YYYY-MM
+                        like("date", "$monthStr%")
+                    }
+                }
+                .decodeList<InvoiceRecord>()
+            Timber.d("Fetched ${invoices.size} invoices for $monthStr from Supabase")
+            invoices
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to fetch invoices by month from Supabase")
+            emptyList()
+        }
+    }
+
+    suspend fun updateInvoice(invoice: InvoiceRecord) = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot update invoice")
+            return@withContext
+        }
+        try {
+            if (invoice.id.isNullOrBlank()) {
+                Timber.w("Cannot update invoice: id is null or blank")
+                throw IllegalStateException("Invoice id is required for update")
+            }
+            client.from("invoices").update(invoice) {
+                filter {
+                    eq("id", invoice.id)
+                }
+            }
+            Timber.d("Invoice updated successfully: ${invoice.invoice_id}")
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update invoice: ${invoice.invoice_id}")
+            throw e
+        }
+    }
+
+    suspend fun deleteInvoice(invoice: InvoiceRecord) = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot delete invoice")
+            return@withContext
+        }
+        try {
+            if (invoice.id.isNullOrBlank()) {
+                Timber.w("Cannot delete invoice: id is null or blank")
+                throw IllegalStateException("Invoice id is required for deletion")
+            }
+            client.from("invoices").delete {
+                filter {
+                    eq("id", invoice.id)
+                }
+            }
+            Timber.d("Invoice deleted successfully: ${invoice.invoice_id}")
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to delete invoice: ${invoice.invoice_id}")
+            throw e
         }
     }
 }
