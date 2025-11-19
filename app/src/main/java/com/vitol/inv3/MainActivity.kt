@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
@@ -25,8 +26,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -36,6 +39,11 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
+import com.vitol.inv3.data.local.setActiveOwnCompanyId
+import com.vitol.inv3.data.remote.SupabaseRepository
+import com.vitol.inv3.ui.home.OwnCompanySelector
+import com.vitol.inv3.ui.home.OwnCompanyViewModel
 import com.vitol.inv3.ui.scan.FileImportViewModel
 import com.vitol.inv3.ui.scan.processSelectedFile
 import com.vitol.inv3.utils.FileImportService
@@ -62,6 +70,7 @@ object Routes {
     const val Scan = "scan"
     const val Review = "review"
     const val Companies = "companies"
+    const val AddOwnCompany = "addOwnCompany"
     const val Exports = "exports"
     const val EditInvoice = "editInvoice"
 }
@@ -86,7 +95,28 @@ fun AppNavHost(navController: NavHostController) {
                 PlaceholderScreen("Missing image")
             }
         }
-        composable(Routes.Companies) { com.vitol.inv3.ui.companies.CompaniesScreen() }
+        composable(Routes.Companies) { 
+            com.vitol.inv3.ui.companies.CompaniesScreen(
+                markAsOwnCompany = false,
+                navController = navController
+            ) 
+        }
+        composable(Routes.AddOwnCompany) { 
+            val context = LocalContext.current
+            val scope = rememberCoroutineScope()
+            
+            com.vitol.inv3.ui.companies.CompaniesScreen(
+                markAsOwnCompany = true,
+                navController = navController,
+                onCompanySaved = { companyId ->
+                    scope.launch {
+                        if (companyId != null) {
+                            context.setActiveOwnCompanyId(companyId)
+                        }
+                    }
+                }
+            ) 
+        }
         composable(Routes.Exports) { com.vitol.inv3.ui.exports.ExportsScreen(navController = navController) }
         composable("${Routes.EditInvoice}/{invoiceId}") { backStackEntry ->
             val invoiceId = backStackEntry.arguments?.getString("invoiceId") ?: ""
@@ -102,7 +132,9 @@ fun AppNavHost(navController: NavHostController) {
 @Composable
 fun HomeScreen(
     navController: NavHostController,
-    fileImportViewModel: FileImportViewModel = hiltViewModel()
+    fileImportViewModel: FileImportViewModel = hiltViewModel(),
+    ownCompanyViewModel: OwnCompanyViewModel = hiltViewModel(),
+    repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -111,6 +143,22 @@ fun HomeScreen(
     
     val processingQueue by fileImportViewModel.processingQueue.collectAsState()
     val currentIndex by fileImportViewModel.currentIndex.collectAsState()
+    
+    // Get active own company ID from DataStore
+    val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
+    val activeCompanyId by activeCompanyIdFlow.collectAsState(initial = null)
+    
+    // Load active company name
+    var activeCompanyName by remember { mutableStateOf<String?>(null) }
+    
+    LaunchedEffect(activeCompanyId) {
+        if (activeCompanyId != null) {
+            val company = repo.getCompanyById(activeCompanyId!!)
+            activeCompanyName = company?.company_name
+        } else {
+            activeCompanyName = null
+        }
+    }
 
     // File picker launcher for Import button
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -153,11 +201,44 @@ fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
+                .padding(vertical = 24.dp),
+            verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Scan Invoice and Import buttons in a Row, centered
+            // Your Company section at the top
+            OwnCompanySelector(
+                activeCompanyId = activeCompanyId,
+                activeCompanyName = activeCompanyName,
+                onCompanySelected = { newCompanyId ->
+                    scope.launch {
+                        if (newCompanyId != null) {
+                            val company = repo.getCompanyById(newCompanyId)
+                            activeCompanyName = company?.company_name
+                        } else {
+                            activeCompanyName = null
+                        }
+                    }
+                },
+                onShowSnackbar = { message ->
+                    scope.launch {
+                        snackbarHostState.showSnackbar(message)
+                    }
+                },
+                navController = navController,
+                viewModel = ownCompanyViewModel
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // Rest of the buttons (centered)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Scan Invoice and Import buttons in a Row, centered
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Center,
@@ -178,26 +259,21 @@ fun HomeScreen(
                 }
             }
             
-            Spacer(modifier = Modifier.padding(16.dp))
-            
-            // Other buttons
-            Button(
-                onClick = { /* TODO: Navigate to review queue list */ },
-                modifier = Modifier.fillMaxWidth(0.6f)
-            ) {
-                Text(text = "Review Queue")
-            }
-            Button(
-                onClick = { navController.navigate(Routes.Companies) },
-                modifier = Modifier.fillMaxWidth(0.6f)
-            ) {
-                Text(text = "Companies")
-            }
-            Button(
-                onClick = { navController.navigate(Routes.Exports) },
-                modifier = Modifier.fillMaxWidth(0.6f)
-            ) {
-                Text(text = "Exports")
+                Spacer(modifier = Modifier.padding(16.dp))
+                
+                // Other buttons
+                Button(
+                    onClick = { navController.navigate(Routes.Companies) },
+                    modifier = Modifier.fillMaxWidth(0.6f)
+                ) {
+                    Text(text = "Companies")
+                }
+                Button(
+                    onClick = { navController.navigate(Routes.Exports) },
+                    modifier = Modifier.fillMaxWidth(0.6f)
+                ) {
+                    Text(text = "Exports")
+                }
             }
         }
         

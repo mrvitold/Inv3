@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -66,6 +67,7 @@ fun ExportsScreen(
     val availableYears = viewModel.getAvailableYears()
     
     var exportDialogState by remember { mutableStateOf<ExportDialogState?>(null) }
+    var invoiceToDelete by remember { mutableStateOf<com.vitol.inv3.data.remote.InvoiceRecord?>(null) }
     
     // Auto-refresh when screen is resumed (after returning from EditInvoice)
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -83,6 +85,36 @@ fun ExportsScreen(
             onRefresh = { viewModel.loadInvoices() }
         )
     }
+    
+    // Show delete confirmation dialog
+    invoiceToDelete?.let { invoice ->
+        AlertDialog(
+            onDismissRequest = { invoiceToDelete = null },
+            title = { Text("Delete Invoice") },
+            text = {
+                Text("Are you sure you want to delete invoice \"${invoice.invoice_id ?: "this invoice"}\"? This action cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteInvoice(invoice) {
+                            invoiceToDelete = null
+                            viewModel.loadInvoices()
+                        }
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { invoiceToDelete = null }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -90,11 +122,40 @@ fun ExportsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        YearFilterDropdown(
-            selectedYear = selectedYear,
-            availableYears = availableYears,
-            onYearSelected = { viewModel.setSelectedYear(it) }
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            YearFilterDropdown(
+                selectedYear = selectedYear,
+                availableYears = availableYears,
+                onYearSelected = { viewModel.setSelectedYear(it) },
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = {
+                    val allInvoices = viewModel.getAllInvoicesForYear(selectedYear)
+                    val exportInvoices = allInvoices.map { invoice ->
+                        ExportInvoice(
+                            invoiceId = invoice.invoice_id,
+                            date = invoice.date,
+                            companyName = invoice.company_name,
+                            amountWithoutVatEur = invoice.amount_without_vat_eur,
+                            vatAmountEur = invoice.vat_amount_eur,
+                            vatNumber = invoice.vat_number,
+                            companyNumber = invoice.company_number
+                        )
+                    }
+                    exportDialogState = ExportDialogState(
+                        invoices = exportInvoices,
+                        month = "$selectedYear-All"
+                    )
+                }
+            ) {
+                Text("Export All")
+            }
+        }
 
         if (isLoading) {
             CircularProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -133,7 +194,8 @@ fun ExportsScreen(
                         viewModel = viewModel,
                         navController = navController,
                         month = summary.month,
-                        expandedCompanies = expandedCompanies
+                        expandedCompanies = expandedCompanies,
+                        onDeleteInvoice = { invoice -> invoiceToDelete = invoice }
                     )
                 }
             }
@@ -146,13 +208,15 @@ fun ExportsScreen(
 fun YearFilterDropdown(
     selectedYear: Int,
     availableYears: List<Int>,
-    onYearSelected: (Int) -> Unit
+    onYearSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
 
     ExposedDropdownMenuBox(
         expanded = expanded,
-        onExpandedChange = { expanded = !expanded }
+        onExpandedChange = { expanded = !expanded },
+        modifier = modifier
     ) {
         OutlinedTextField(
             value = selectedYear.toString(),
@@ -191,7 +255,8 @@ fun MonthlySummaryCard(
     viewModel: ExportsViewModel,
     navController: androidx.navigation.NavController?,
     month: String,
-    expandedCompanies: Set<String>
+    expandedCompanies: Set<String>,
+    onDeleteInvoice: (com.vitol.inv3.data.remote.InvoiceRecord) -> Unit
 ) {
     val numberFormat = NumberFormat.getNumberInstance(Locale.US).apply {
         minimumFractionDigits = 2
@@ -255,11 +320,11 @@ fun MonthlySummaryCard(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    text = "amount sum: ${numberFormat.format(summary.totalAmount)} EUR",
+                    text = "${numberFormat.format(summary.totalAmount)} EUR (without VAT)",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    text = "vat amount sum: ${numberFormat.format(summary.totalVat)} EUR",
+                    text = "${numberFormat.format(summary.totalVat)} EUR (VAT)",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -314,11 +379,11 @@ fun MonthlySummaryCard(
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
-                                        text = "amount without vat: ${numberFormat.format(company.totalAmount)} EUR",
+                                        text = "${numberFormat.format(company.totalAmount)} EUR (without VAT)",
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
-                                        text = "vat amount: ${numberFormat.format(company.totalVat)} EUR",
+                                        text = "${numberFormat.format(company.totalVat)} EUR (VAT)",
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                 }
@@ -358,7 +423,11 @@ fun MonthlySummaryCard(
                                                     style = MaterialTheme.typography.bodySmall
                                                 )
                                                 Text(
-                                                    text = "${numberFormat.format(invoice.amount_without_vat_eur ?: 0.0)} EUR",
+                                                    text = "${numberFormat.format(invoice.amount_without_vat_eur ?: 0.0)} EUR (without VAT)",
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
+                                                Text(
+                                                    text = "${numberFormat.format(invoice.vat_amount_eur ?: 0.0)} EUR (VAT)",
                                                     style = MaterialTheme.typography.bodySmall
                                                 )
                                             }
@@ -372,6 +441,17 @@ fun MonthlySummaryCard(
                                                 Icon(
                                                     imageVector = Icons.Default.Edit,
                                                     contentDescription = "Edit invoice"
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    onDeleteInvoice(invoice)
+                                                }
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Delete invoice",
+                                                    tint = MaterialTheme.colorScheme.error
                                                 )
                                             }
                                         }

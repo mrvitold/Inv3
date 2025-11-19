@@ -249,5 +249,49 @@ class ExportsViewModel @Inject constructor(
         }
         return years.sortedDescending().ifEmpty { listOf(Calendar.getInstance().get(Calendar.YEAR)) }
     }
+
+    fun deleteInvoice(invoice: InvoiceRecord, onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                repo.deleteInvoice(invoice)
+                Timber.d("Invoice deleted successfully: ${invoice.invoice_id}")
+                // Reload invoices to refresh the UI
+                loadInvoices()
+                onComplete()
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to delete invoice: ${invoice.invoice_id}")
+                // Still reload to ensure UI is in sync
+                loadInvoices()
+                onComplete()
+            }
+        }
+    }
+
+    fun getAllInvoicesForYear(year: Int): List<InvoiceRecord> {
+        return _invoices.value.filter { invoice ->
+            val dateStr = invoice.date
+            if (!dateStr.isNullOrBlank()) {
+                try {
+                    val invoiceYear = when {
+                        dateStr.contains("-") -> {
+                            dateStr.substring(0, 4).toIntOrNull()
+                        }
+                        dateStr.contains(".") -> {
+                            val parts = dateStr.split(".")
+                            if (parts.size == 3) {
+                                parts[2].trim().toIntOrNull()
+                            } else null
+                        }
+                        else -> null
+                    }
+                    invoiceYear == year
+                } catch (e: Exception) {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+    }
 }
 

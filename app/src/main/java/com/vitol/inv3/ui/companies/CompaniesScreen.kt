@@ -16,12 +16,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -29,32 +30,44 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavController
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.jan.supabase.postgrest.from
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
 
 @Composable
-fun CompaniesScreen(viewModel: CompaniesViewModel = hiltViewModel()) {
+fun CompaniesScreen(
+    markAsOwnCompany: Boolean = false,
+    onCompanySaved: ((String?) -> Unit)? = null,
+    navController: NavController? = null,
+    viewModel: CompaniesViewModel = hiltViewModel()
+) {
     var name by remember { mutableStateOf("") }
     var number by remember { mutableStateOf("") }
     var vat by remember { mutableStateOf("") }
-    val companies = viewModel.items
+    // Observe companies from ViewModel using StateFlow
+    val allCompanies by viewModel.items.collectAsState()
+    // Filter out own companies - show only regular companies
+    val companies = allCompanies.filter { !it.is_own_company }
     var companyToDelete by remember { mutableStateOf<CompanyRecord?>(null) }
 
     LaunchedEffect(Unit) { viewModel.load() }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Companies")
+        Text(if (markAsOwnCompany) "Add Your Company" else "Companies")
         if (companies.isEmpty()) {
             Text("No companies yet or Supabase not configured.")
         }
-        companies.forEach { c ->
+        for (company in companies) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -65,16 +78,16 @@ fun CompaniesScreen(viewModel: CompaniesViewModel = hiltViewModel()) {
                     modifier = Modifier
                         .weight(1f)
                         .clickable {
-                            name = c.company_name.orEmpty()
-                            number = c.company_number.orEmpty()
-                            vat = c.vat_number.orEmpty()
+                            name = company.company_name.orEmpty()
+                            number = company.company_number.orEmpty()
+                            vat = company.vat_number.orEmpty()
                         }
                 ) {
-                    Text("${c.company_name} • ${c.company_number} • ${c.vat_number}")
+                    Text("${company.company_name} • ${company.company_number} • ${company.vat_number}")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 IconButton(
-                    onClick = { companyToDelete = c }
+                    onClick = { companyToDelete = company }
                 ) {
                     Icon(
                         imageVector = Icons.Default.Delete,
@@ -87,7 +100,20 @@ fun CompaniesScreen(viewModel: CompaniesViewModel = hiltViewModel()) {
         OutlinedTextField(value = number, onValueChange = { number = it }, label = { Text("Company number") })
         OutlinedTextField(value = vat, onValueChange = { vat = it }, label = { Text("VAT number") })
         Button(onClick = {
-            viewModel.upsert(CompanyRecord(company_name = name, company_number = number, vat_number = vat))
+            val company = CompanyRecord(
+                company_name = name, 
+                company_number = number, 
+                vat_number = vat,
+                is_own_company = markAsOwnCompany
+            )
+            viewModel.upsert(company) { savedCompanyId ->
+                // Call callback with saved company ID
+                onCompanySaved?.invoke(savedCompanyId)
+                // If marking as own company, navigate back
+                if (markAsOwnCompany) {
+                    navController?.popBackStack()
+                }
+            }
             name = ""; number = ""; vat = ""
         }) { Text("Save") }
     }
@@ -126,7 +152,8 @@ class CompaniesViewModel @Inject constructor(
     private val repo: SupabaseRepository,
     private val client: io.github.jan.supabase.SupabaseClient?
 ) : ViewModel() {
-    val items = mutableStateListOf<CompanyRecord>()
+    private val _items = MutableStateFlow<List<CompanyRecord>>(emptyList())
+    val items: StateFlow<List<CompanyRecord>> = _items.asStateFlow()
 
     fun load() {
         viewModelScope.launch {
@@ -134,19 +161,23 @@ class CompaniesViewModel @Inject constructor(
                 // select() without parameters selects all columns including id
                 val list = client?.from("companies")?.select()?.decodeList<CompanyRecord>() ?: emptyList()
                 Timber.d("Loaded ${list.size} companies from Supabase")
-                items.clear()
-                items.addAll(list)
-                Timber.d("Updated items list, now contains ${items.size} companies")
+                _items.value = list
+                Timber.d("Updated items list, now contains ${_items.value.size} companies")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to load companies from Supabase")
             }
         }
     }
 
-    fun upsert(company: CompanyRecord) {
+    fun upsert(company: CompanyRecord, onComplete: (String?) -> Unit = {}) {
         viewModelScope.launch {
-            repo.upsertCompany(company)
+            val savedCompany = repo.upsertCompany(company)
             load()
+            // If marking as own company and company already existed, ensure it's marked
+            if (company.is_own_company && savedCompany != null) {
+                ensureMarkedAsOwn(savedCompany.company_name, savedCompany.company_number, savedCompany.vat_number)
+            }
+            onComplete(savedCompany?.id)
         }
     }
 
@@ -166,7 +197,7 @@ class CompaniesViewModel @Inject constructor(
                 load()
                 
                 // Verify the company was actually deleted
-                val stillExists = items.any { it.id == company.id || 
+                val stillExists = _items.value.any { it.id == company.id || 
                     (it.company_number == company.company_number && !company.company_number.isNullOrBlank()) }
                 
                 if (stillExists) {
@@ -181,6 +212,53 @@ class CompaniesViewModel @Inject constructor(
                 Timber.e(e, "Failed to delete company: ${company.company_name ?: company.company_number}")
                 // If deletion failed, reload to restore the correct state
                 load()
+            }
+        }
+    }
+
+    fun markAsOwnCompany(companyId: String) {
+        viewModelScope.launch {
+            try {
+                repo.markAsOwnCompany(companyId)
+                load()
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to mark company as own: $companyId")
+            }
+        }
+    }
+
+    fun ensureMarkedAsOwn(companyName: String?, companyNumber: String?, vatNumber: String?) {
+        viewModelScope.launch {
+            try {
+                // Find the company by name, number, or VAT
+                val company = if (!companyNumber.isNullOrBlank()) {
+                    client?.from("companies")
+                        ?.select {
+                            filter { eq("company_number", companyNumber) }
+                        }
+                        ?.decodeSingleOrNull<CompanyRecord>()
+                } else if (!vatNumber.isNullOrBlank()) {
+                    client?.from("companies")
+                        ?.select {
+                            filter { eq("vat_number", vatNumber) }
+                        }
+                        ?.decodeSingleOrNull<CompanyRecord>()
+                } else if (!companyName.isNullOrBlank()) {
+                    client?.from("companies")
+                        ?.select {
+                            filter { eq("company_name", companyName) }
+                        }
+                        ?.decodeSingleOrNull<CompanyRecord>()
+                } else {
+                    null
+                }
+                
+                company?.id?.let { id ->
+                    repo.markAsOwnCompany(id)
+                    load()
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to mark newly created company as own")
             }
         }
     }

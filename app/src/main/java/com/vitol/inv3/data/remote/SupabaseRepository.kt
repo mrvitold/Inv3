@@ -12,7 +12,8 @@ data class CompanyRecord(
     val id: String? = null,
     val company_number: String?,
     val company_name: String?,
-    val vat_number: String?
+    val vat_number: String?,
+    val is_own_company: Boolean = false
 )
 
 @Serializable
@@ -28,15 +29,68 @@ data class InvoiceRecord(
 )
 
 class SupabaseRepository(private val client: SupabaseClient?) {
-    suspend fun upsertCompany(company: CompanyRecord) = withContext(Dispatchers.IO) {
+    suspend fun upsertCompany(company: CompanyRecord): CompanyRecord? = withContext(Dispatchers.IO) {
         if (client == null) {
             Timber.w("Supabase client is null, cannot upsert company")
-            return@withContext
+            return@withContext null
         }
         try {
-            // Try to insert first
-            client.from("companies").insert(company)
-            Timber.d("Company inserted successfully: ${company.company_name}")
+            // If company has an ID, update it directly
+            if (!company.id.isNullOrBlank()) {
+                val updated = client.from("companies").update(company) {
+                    filter {
+                        eq("id", company.id)
+                    }
+                    select()
+                }.decodeSingle<CompanyRecord>()
+                Timber.d("Company updated successfully by ID: ${updated.company_name}")
+                return@withContext updated
+            }
+            
+            // Check if company already exists before inserting
+            // This handles the case where user wants to mark an existing company as "own"
+            val existingCompany = findExistingCompany(company)
+            if (existingCompany != null && !existingCompany.id.isNullOrBlank()) {
+                // If marking as own company, find and delete duplicate records (same company_number/VAT but not marked as own)
+                if (company.is_own_company == true) {
+                    deleteDuplicateCompanies(company, existingCompany.id!!)
+                }
+                
+                // Company exists, update it with new data (including is_own_company flag)
+                val updated = client.from("companies").update(company.copy(id = existingCompany.id)) {
+                    filter {
+                        eq("id", existingCompany.id!!)
+                    }
+                    select()
+                }.decodeSingle<CompanyRecord>()
+                Timber.d("Company updated (marked as own): ${updated.company_name}")
+                return@withContext updated
+            }
+            
+            // Company doesn't exist, insert it
+            // But first, if marking as own company, check for and delete any duplicates
+            if (company.is_own_company == true) {
+                // Find duplicates before inserting
+                val duplicates = findDuplicateCompanies(company)
+                // Delete duplicates that are NOT marked as own
+                duplicates.filter { it.is_own_company != true && !it.id.isNullOrBlank() }
+                    .forEach { duplicate ->
+                        try {
+                            client.from("companies").delete {
+                                filter { eq("id", duplicate.id!!) }
+                            }
+                            Timber.d("Deleted duplicate company before insert: ${duplicate.company_name}")
+                        } catch (e: Exception) {
+                            Timber.w(e, "Failed to delete duplicate before insert: ${duplicate.id}")
+                        }
+                    }
+            }
+            
+            val inserted = client.from("companies").insert(company) {
+                select()
+            }.decodeSingle<CompanyRecord>()
+            Timber.d("Company inserted successfully: ${inserted.company_name}")
+            return@withContext inserted
         } catch (e: Exception) {
             // If insert fails (likely due to unique constraint), try to update
             val isDuplicateError = e.message?.contains("duplicate", ignoreCase = true) == true ||
@@ -44,40 +98,215 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             
             if (isDuplicateError) {
                 try {
-                    if (!company.company_number.isNullOrBlank()) {
+                    val existingCompany = findExistingCompany(company)
+                    if (existingCompany != null && !existingCompany.id.isNullOrBlank()) {
+                        // If marking as own company, delete duplicates first
+                        if (company.is_own_company == true) {
+                            deleteDuplicateCompanies(company, existingCompany.id!!)
+                        }
+                        
+                        val updated = client.from("companies").update(company.copy(id = existingCompany.id)) {
+                            filter {
+                                eq("id", existingCompany.id!!)
+                            }
+                            select()
+                        }.decodeSingle<CompanyRecord>()
+                        Timber.d("Company updated successfully: ${updated.company_name}")
+                        return@withContext updated
+                    }
+                    
+                    // Fallback: try to update by company_number or company_name
+                    val updated = if (!company.company_number.isNullOrBlank()) {
                         client.from("companies").update(company) {
                             filter {
                                 eq("company_number", company.company_number)
                             }
-                        }
-                        Timber.d("Company updated successfully: ${company.company_name}")
-                    } else {
-                        // If company_number is blank, try to update by company_name if available
-                        if (!company.company_name.isNullOrBlank()) {
-                            try {
-                                client.from("companies").update(company) {
-                                    filter {
-                                        eq("company_name", company.company_name)
-                                    }
-                                }
-                                Timber.d("Company updated successfully by name: ${company.company_name}")
-                            } catch (nameUpdateException: Exception) {
-                                Timber.e(nameUpdateException, "Failed to update company by name: ${company.company_name}")
-                                // Don't throw - just log the error
+                            select()
+                        }.decodeSingle<CompanyRecord>()
+                    } else if (!company.company_name.isNullOrBlank()) {
+                        client.from("companies").update(company) {
+                            filter {
+                                eq("company_name", company.company_name)
                             }
-                        } else {
-                            Timber.e(e, "Cannot update company without company_number or company_name")
-                            // Don't throw - just log the error
-                        }
+                            select()
+                        }.decodeSingle<CompanyRecord>()
+                    } else {
+                        null
+                    }
+                    
+                    if (updated != null) {
+                        Timber.d("Company updated successfully: ${updated.company_name}")
+                        return@withContext updated
+                    } else {
+                        Timber.e(e, "Cannot update company without company_number or company_name")
+                        return@withContext null
                     }
                 } catch (updateException: Exception) {
                     Timber.e(updateException, "Failed to update company: ${company.company_name}")
-                    // Don't throw - just log the error to prevent app crash
+                    return@withContext null
                 }
             } else {
                 Timber.e(e, "Failed to insert company: ${company.company_name}")
-                // Don't throw - just log the error to prevent app crash
+                return@withContext null
             }
+        }
+    }
+    
+    private suspend fun findExistingCompany(company: CompanyRecord): CompanyRecord? {
+        if (client == null) return null
+        
+        return try {
+            // Try to find by company_number first (most reliable - unique constraint)
+            if (!company.company_number.isNullOrBlank()) {
+                val result = client.from("companies")
+                    .select {
+                        filter {
+                            eq("company_number", company.company_number)
+                        }
+                    }
+                    .decodeSingleOrNull<CompanyRecord>()
+                if (result != null) {
+                    Timber.d("Found existing company by company_number: ${result.company_name}")
+                    return result
+                }
+            }
+            
+            // Try to find by VAT number
+            if (!company.vat_number.isNullOrBlank()) {
+                val result = client.from("companies")
+                    .select {
+                        filter {
+                            eq("vat_number", company.vat_number)
+                        }
+                    }
+                    .decodeSingleOrNull<CompanyRecord>()
+                if (result != null) {
+                    Timber.d("Found existing company by vat_number: ${result.company_name}")
+                    return result
+                }
+            }
+            
+            // Try to find by company name (less reliable, but useful if number/VAT not provided)
+            if (!company.company_name.isNullOrBlank()) {
+                val result = client.from("companies")
+                    .select {
+                        filter {
+                            eq("company_name", company.company_name)
+                        }
+                    }
+                    .decodeSingleOrNull<CompanyRecord>()
+                if (result != null) {
+                    Timber.d("Found existing company by company_name: ${result.company_name}")
+                    return result
+                }
+            }
+            
+            null
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to find existing company")
+            null
+        }
+    }
+
+    /**
+     * Find duplicate company records that have the same company_number or VAT number
+     */
+    private suspend fun findDuplicateCompanies(company: CompanyRecord): List<CompanyRecord> = withContext(Dispatchers.IO) {
+        if (client == null) return@withContext emptyList()
+        
+        val duplicates = mutableListOf<CompanyRecord>()
+        
+        try {
+            if (!company.company_number.isNullOrBlank()) {
+                val byNumber = client.from("companies")
+                    .select {
+                        filter {
+                            eq("company_number", company.company_number)
+                        }
+                    }
+                    .decodeList<CompanyRecord>()
+                duplicates.addAll(byNumber)
+            }
+            
+            if (!company.vat_number.isNullOrBlank()) {
+                val byVat = client.from("companies")
+                    .select {
+                        filter {
+                            eq("vat_number", company.vat_number)
+                        }
+                    }
+                    .decodeList<CompanyRecord>()
+                // Add only if not already in duplicates list
+                duplicates.addAll(byVat.filter { dup -> 
+                    !duplicates.any { it.id == dup.id }
+                })
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to find duplicate companies")
+        }
+        
+        return@withContext duplicates
+    }
+
+    /**
+     * Delete duplicate company records that have the same company_number or VAT number
+     * but are NOT marked as own company. This prevents duplicates when marking a company as "own".
+     */
+    private suspend fun deleteDuplicateCompanies(company: CompanyRecord, keepId: String) = withContext(Dispatchers.IO) {
+        if (client == null) return@withContext
+        
+        try {
+            // Find all companies with the same company_number or VAT number
+            val duplicates = mutableListOf<CompanyRecord>()
+            
+            if (!company.company_number.isNullOrBlank()) {
+                val byNumber = client.from("companies")
+                    .select {
+                        filter {
+                            eq("company_number", company.company_number)
+                            neq("id", keepId) // Exclude the one we're keeping
+                        }
+                    }
+                    .decodeList<CompanyRecord>()
+                duplicates.addAll(byNumber)
+            }
+            
+            if (!company.vat_number.isNullOrBlank()) {
+                val byVat = client.from("companies")
+                    .select {
+                        filter {
+                            eq("vat_number", company.vat_number)
+                            neq("id", keepId) // Exclude the one we're keeping
+                        }
+                    }
+                    .decodeList<CompanyRecord>()
+                // Add only if not already in duplicates list
+                duplicates.addAll(byVat.filter { dup -> 
+                    !duplicates.any { it.id == dup.id }
+                })
+            }
+            
+            // Delete all duplicates that are NOT marked as own company
+            duplicates.forEach { duplicate ->
+                if (duplicate.is_own_company != true && !duplicate.id.isNullOrBlank()) {
+                    try {
+                        client.from("companies").delete {
+                            filter {
+                                eq("id", duplicate.id!!)
+                            }
+                        }
+                        Timber.d("Deleted duplicate company: ${duplicate.company_name} (id: ${duplicate.id})")
+                    } catch (e: Exception) {
+                        Timber.w(e, "Failed to delete duplicate company: ${duplicate.id}")
+                    }
+                }
+            }
+            
+            if (duplicates.isNotEmpty()) {
+                Timber.d("Cleaned up ${duplicates.size} duplicate company records")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to delete duplicate companies")
         }
     }
 
@@ -196,7 +425,11 @@ class SupabaseRepository(private val client: SupabaseClient?) {
         }
     }
 
-    suspend fun findCompanyByNumberOrVat(companyNumber: String?, vatNumber: String?): CompanyRecord? = withContext(Dispatchers.IO) {
+    suspend fun findCompanyByNumberOrVat(
+        companyNumber: String?, 
+        vatNumber: String?,
+        excludeCompanyId: String? = null
+    ): CompanyRecord? = withContext(Dispatchers.IO) {
         if (client == null) {
             Timber.w("Supabase client is null, cannot find company")
             return@withContext null
@@ -204,13 +437,24 @@ class SupabaseRepository(private val client: SupabaseClient?) {
         try {
             // Try to find by company_number first
             if (!companyNumber.isNullOrBlank()) {
-                val result = client.from("companies")
-                    .select {
-                        filter {
-                            eq("company_number", companyNumber)
+                val result = if (excludeCompanyId != null) {
+                    client.from("companies")
+                        .select {
+                            filter {
+                                eq("company_number", companyNumber)
+                                neq("id", excludeCompanyId)
+                            }
                         }
-                    }
-                    .decodeSingleOrNull<CompanyRecord>()
+                        .decodeSingleOrNull<CompanyRecord>()
+                } else {
+                    client.from("companies")
+                        .select {
+                            filter {
+                                eq("company_number", companyNumber)
+                            }
+                        }
+                        .decodeSingleOrNull<CompanyRecord>()
+                }
                 if (result != null) {
                     Timber.d("Found company by company_number: ${result.company_name}")
                     return@withContext result
@@ -219,13 +463,24 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             
             // Try to find by vat_number
             if (!vatNumber.isNullOrBlank()) {
-                val result = client.from("companies")
-                    .select {
-                        filter {
-                            eq("vat_number", vatNumber)
+                val result = if (excludeCompanyId != null) {
+                    client.from("companies")
+                        .select {
+                            filter {
+                                eq("vat_number", vatNumber)
+                                neq("id", excludeCompanyId)
+                            }
                         }
-                    }
-                    .decodeSingleOrNull<CompanyRecord>()
+                        .decodeSingleOrNull<CompanyRecord>()
+                } else {
+                    client.from("companies")
+                        .select {
+                            filter {
+                                eq("vat_number", vatNumber)
+                            }
+                        }
+                        .decodeSingleOrNull<CompanyRecord>()
+                }
                 if (result != null) {
                     Timber.d("Found company by vat_number: ${result.company_name}")
                     return@withContext result
@@ -321,6 +576,86 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             Timber.d("Invoice deleted successfully: ${invoice.invoice_id}")
         } catch (e: Exception) {
             Timber.e(e, "Failed to delete invoice: ${invoice.invoice_id}")
+            throw e
+        }
+    }
+
+    suspend fun getAllOwnCompanies(): List<CompanyRecord> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot get own companies")
+            return@withContext emptyList()
+        }
+        try {
+            val companies = client.from("companies")
+                .select {
+                    filter {
+                        eq("is_own_company", true)
+                    }
+                }
+                .decodeList<CompanyRecord>()
+            Timber.d("Fetched ${companies.size} own companies from Supabase")
+            companies
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to fetch own companies from Supabase")
+            emptyList()
+        }
+    }
+
+    suspend fun getCompanyById(companyId: String): CompanyRecord? = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot get company by id")
+            return@withContext null
+        }
+        try {
+            val company = client.from("companies")
+                .select {
+                    filter {
+                        eq("id", companyId)
+                    }
+                }
+                .decodeSingleOrNull<CompanyRecord>()
+            Timber.d("Fetched company by id: ${company?.company_name}")
+            company
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to fetch company by id: $companyId")
+            null
+        }
+    }
+
+    suspend fun markAsOwnCompany(companyId: String) = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot mark company as own")
+            return@withContext
+        }
+        try {
+            client.from("companies")
+                .update(mapOf("is_own_company" to true)) {
+                    filter {
+                        eq("id", companyId)
+                    }
+                }
+            Timber.d("Marked company $companyId as own company")
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to mark company as own: $companyId")
+            throw e
+        }
+    }
+
+    suspend fun unmarkAsOwnCompany(companyId: String) = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot unmark company as own")
+            return@withContext
+        }
+        try {
+            client.from("companies")
+                .update(mapOf("is_own_company" to false)) {
+                    filter {
+                        eq("id", companyId)
+                    }
+                }
+            Timber.d("Unmarked company $companyId as own company")
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to unmark company as own: $companyId")
             throw e
         }
     }

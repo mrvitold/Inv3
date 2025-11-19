@@ -44,6 +44,7 @@ import androidx.lifecycle.viewModelScope
 import android.app.Application
 import androidx.navigation.NavController
 import com.vitol.inv3.Routes
+import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.InvoiceRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
@@ -76,6 +77,12 @@ fun ReviewScreen(
     viewModel: ReviewViewModel = hiltViewModel(),
     fileImportViewModel: com.vitol.inv3.ui.scan.FileImportViewModel = hiltViewModel()
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    
+    // Get active own company ID to exclude from matching
+    val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
+    val activeCompanyId by activeCompanyIdFlow.collectAsState(initial = null)
+    
     var isLoading by remember { mutableStateOf(true) }
     var isSaving by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -160,6 +167,7 @@ fun ReviewScreen(
                 imageUri,
                 firstPassCompanyNumber,
                 firstPassVatNumber,
+                excludeCompanyId = activeCompanyId,
                 onDone = { result ->
                     result.onSuccess { parsed ->
                         // If Azure Document Intelligence succeeded, use it
@@ -696,7 +704,7 @@ class ReviewViewModel @Inject constructor(
         }
     }
     
-    fun runOcr(uri: Uri, onDone: (Result<String>) -> Unit) {
+    fun runOcr(uri: Uri, excludeCompanyId: String? = null, onDone: (Result<String>) -> Unit) {
         viewModelScope.launch {
             val result = recognizer.recognize(uri)
                 .map { blocks ->
@@ -769,8 +777,8 @@ class ReviewViewModel @Inject constructor(
                     // This ensures we get the correct company name from the database
                     val finalParsed = if (parsed.companyNumber != null || parsed.vatNumber != null) {
                         try {
-                            Timber.d("Local OCR - Looking up company in database - CompanyName: '${parsed.companyName}', CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
-                            val companyFromDb = repo.findCompanyByNumberOrVat(parsed.companyNumber, parsed.vatNumber)
+                            Timber.d("Local OCR - Looking up company in database - CompanyName: '${parsed.companyName}', CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}', ExcludingOwnCompany: '$excludeCompanyId'")
+                            val companyFromDb = repo.findCompanyByNumberOrVat(parsed.companyNumber, parsed.vatNumber, excludeCompanyId = excludeCompanyId)
                             if (companyFromDb != null) {
                                 Timber.d("Local OCR - Found company in database: '${companyFromDb.company_name}', replacing extracted name '${parsed.companyName}'")
                                 parsed.copy(
@@ -821,6 +829,7 @@ class ReviewViewModel @Inject constructor(
         uri: Uri, 
         firstPassCompanyNumber: String? = null,
         firstPassVatNumber: String? = null,
+        excludeCompanyId: String? = null,
         onDone: (Result<String>) -> Unit, 
         onMethodUsed: ((String) -> Unit)? = null
     ) {
@@ -853,10 +862,11 @@ class ReviewViewModel @Inject constructor(
                     // This ensures we get the correct company name from the database
                     val finalParsed = if (lookupCompanyNumber != null || lookupVatNumber != null) {
                         try {
-                            Timber.d("Azure - Looking up company in database using first pass values - CompanyName: '${parsed.companyName}', FirstPassCompanyNumber: '$firstPassCompanyNumber', FirstPassVatNumber: '$firstPassVatNumber', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber'")
+                            Timber.d("Azure - Looking up company in database using first pass values - CompanyName: '${parsed.companyName}', FirstPassCompanyNumber: '$firstPassCompanyNumber', FirstPassVatNumber: '$firstPassVatNumber', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber', ExcludingOwnCompany: '$excludeCompanyId'")
                             val companyFromDb = repo.findCompanyByNumberOrVat(
                                 lookupCompanyNumber, 
-                                lookupVatNumber
+                                lookupVatNumber,
+                                excludeCompanyId = excludeCompanyId
                             )
                             if (companyFromDb != null) {
                                 Timber.d("Azure - Found company in database: '${companyFromDb.company_name}', replacing extracted name '${parsed.companyName}'")
@@ -899,7 +909,7 @@ class ReviewViewModel @Inject constructor(
                     Timber.w("Azure Document Intelligence processing returned null, falling back to local OCR")
                     onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                     // Fallback to local OCR
-                    runOcr(uri) { localResult ->
+                    runOcr(uri, excludeCompanyId) { localResult ->
                         localResult.onSuccess { parsed ->
                             Timber.d("Local OCR fallback successful, extracted fields")
                         }.onFailure { error ->
@@ -913,7 +923,7 @@ class ReviewViewModel @Inject constructor(
                 Timber.e(e, "Azure Document Intelligence processing failed with exception, falling back to local OCR")
                 onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                 // Fallback to local OCR on error
-                runOcr(uri) { localResult ->
+                runOcr(uri, excludeCompanyId) { localResult ->
                     localResult.onSuccess { parsed ->
                         Timber.d("Local OCR fallback successful after exception, extracted fields")
                     }.onFailure { error ->

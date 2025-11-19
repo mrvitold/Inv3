@@ -20,6 +20,14 @@ create table if not exists public.companies (
   updated_at timestamptz default now()
 );
 
+-- Add is_own_company column if it doesn't exist (for existing databases)
+ALTER TABLE public.companies
+ADD COLUMN IF NOT EXISTS is_own_company BOOLEAN DEFAULT FALSE;
+
+-- Create index for faster filtering of own companies
+create index if not exists idx_companies_is_own_company 
+on public.companies(is_own_company);
+
 -- Optional: per-company templates
 create table if not exists public.company_templates (
   company_id uuid references public.companies(id) on delete cascade,
