@@ -7,6 +7,13 @@ kotlin.incremental=true
 android.defaults.buildfeatures.buildconfig=true
 android.defaults.buildfeatures.compose=true
 android.suppressUnsupportedCompileSdk=35
+
+# Azure Document Intelligence credentials
+# Copy this file to gradle.properties and add your actual credentials
+# SECURITY: Never commit gradle.properties with real credentials to git
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+AZURE_DOCUMENT_INTELLIGENCE_API_KEY=your-api-key-here
+
 # Project-wide Gradle settings.
 # IDE (e.g. Android Studio) users:
 # Gradle settings configured through the IDE *will override*
@@ -30,3 +37,4 @@ kotlin.code.style=official
 # resources declared in the library itself and none from the library's dependencies,
 # thereby reducing the size of the R class for that library
 android.nonTransitiveRClass=true
+

@@ -148,7 +148,7 @@ fun ReviewScreen(
     var secondPassTriggered by remember { mutableStateOf(false) }
     
     // Second pass: Re-analyze with template after company number is found
-    // Try Azure Document Intelligence first (more accurate), fallback to local OCR
+            // Try Azure Document Intelligence first (more accurate), fallback to local OCR
     // Trigger when company number OR VAT number is found (for template lookup)
     LaunchedEffect(fields["Company_number"], fields["VAT_number"]) {
         val companyNumber = fields["Company_number"] ?: ""
@@ -183,7 +183,7 @@ fun ReviewScreen(
                                     "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
                                     "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
                                     "Company_name" -> {
-                                        // Always update company name from Azure result (it has database lookup applied)
+                                        // Always update company name from Azure Document Intelligence result (it has database lookup applied)
                                         if (value.isNotBlank()) {
                                             newFields["Company_name"] = value
                                             Timber.d("Azure - Setting company name from result: '$value'")

@@ -21,6 +21,8 @@ android {
         vectorDrawables { useSupportLibrary = true }
         buildConfigField("String", "SUPABASE_URL", "\"${project.findProperty("SUPABASE_URL") ?: ""}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${project.findProperty("SUPABASE_ANON_KEY") ?: ""}\"")
+        buildConfigField("String", "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "\"${project.findProperty("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT") ?: ""}\"")
+        buildConfigField("String", "AZURE_DOCUMENT_INTELLIGENCE_API_KEY", "\"${project.findProperty("AZURE_DOCUMENT_INTELLIGENCE_API_KEY") ?: ""}\"")
     }
 
     buildTypes {
@@ -112,8 +114,7 @@ dependencies {
     // Apache POI for Excel export (full version for XSSF support)
     implementation("org.apache.poi:poi-ooxml:5.3.0")
 
-    // Google Cloud Document AI - REST API (better for Android than Java SDK)
-    implementation("com.google.auth:google-auth-library-oauth2-http:1.23.0")
+    // Azure Document Intelligence - REST API
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 

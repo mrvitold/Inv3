@@ -58,6 +58,12 @@ out/
 .cxx
 local.properties
 
-# Google Cloud credentials
+# Gradle properties (may contain sensitive credentials)
+# NOTE: Root gradle.properties contains Azure credentials - do NOT commit if it has sensitive data
+# For team projects, store credentials in ~/.gradle/gradle.properties instead
+gradle.properties
+
+# Credentials files (Google, Azure, etc.)
 app/src/main/assets/documentai-credentials.json
 app/src/main/assets/*credentials*.json
+app/src/main/assets/*azure*.json

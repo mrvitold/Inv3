@@ -25,10 +25,10 @@ import android.util.Base64
 class AzureDocumentIntelligenceService(private val context: Context) {
     
     // Azure Document Intelligence configuration
-    // TODO: Replace with your Azure endpoint and API key
-    // Get these from: https://portal.azure.com -> Your Document Intelligence resource -> Keys and Endpoint
-    private val endpoint = "YOUR_AZURE_ENDPOINT_HERE"  // e.g., "https://your-resource.cognitiveservices.azure.com/"
-    private val apiKey = "YOUR_AZURE_API_KEY_HERE"  // Your API key from Azure Portal
+    // Credentials are loaded from BuildConfig (set in gradle.properties)
+    // For security, credentials are stored in gradle.properties (not committed to git)
+    private val endpoint = com.vitol.inv3.BuildConfig.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
+    private val apiKey = com.vitol.inv3.BuildConfig.AZURE_DOCUMENT_INTELLIGENCE_API_KEY
     private val apiVersion = "2023-07-31"  // API version
     
     private val analyzeUrl = "${endpoint}formrecognizer/documentModels/prebuilt-invoice:analyze?api-version=$apiVersion"
@@ -45,8 +45,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     suspend fun processInvoice(imageUri: Uri): ParsedInvoice? = withContext(Dispatchers.IO) {
         try {
             // Validate configuration
-            if (apiKey.isBlank()) {
-                Timber.e("Azure Document Intelligence not configured. Please update apiKey in AzureDocumentIntelligenceService.kt")
+            if (apiKey.isBlank() || endpoint.isBlank()) {
+                Timber.e("Azure Document Intelligence not configured. Please add AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and AZURE_DOCUMENT_INTELLIGENCE_API_KEY to gradle.properties")
                 return@withContext null
             }
             

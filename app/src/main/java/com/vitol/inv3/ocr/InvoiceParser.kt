@@ -553,7 +553,7 @@ object InvoiceParser {
     /**
      * Extract invoice ID by combining serial and number when they appear separately.
      * Example: Serial "25DF" + Number "2569" = "25DF2569"
-     * This is a public function so it can be called from GoogleDocumentAiService.
+     * This is a public function so it can be called from AzureDocumentIntelligenceService.
      * Serial number usually goes after word "Serija", just before invoice number, or 1-2 words separated.
      */
     fun extractInvoiceIdWithSerialAndNumber(lines: List<String>): String? {
