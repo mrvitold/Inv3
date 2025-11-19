@@ -27,6 +27,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -82,6 +87,16 @@ fun ReviewScreen(
     // Get active own company ID to exclude from matching
     val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
     val activeCompanyId by activeCompanyIdFlow.collectAsState(initial = null)
+    
+    // Get processing queue state (for Skip/Stop buttons)
+    val processingQueue by fileImportViewModel.processingQueue.collectAsState()
+    val currentIndex by fileImportViewModel.currentIndex.collectAsState()
+    
+    // Debug: Log queue state
+    LaunchedEffect(processingQueue.size, currentIndex) {
+        Timber.d("ReviewScreen: Processing queue size = ${processingQueue.size}, isEmpty = ${processingQueue.isEmpty()}, currentIndex = $currentIndex")
+        Timber.d("ReviewScreen: Queue contents = ${processingQueue.map { it.toString() }}")
+    }
     
     var isLoading by remember { mutableStateOf(true) }
     var isSaving by remember { mutableStateOf(false) }
@@ -309,7 +324,6 @@ fun ReviewScreen(
                     if (isLoading || isReanalyzing) {
                         CircularProgressIndicator()
                         // Progress indicator (X of Y) next to loading circle
-                        val processingQueue by fileImportViewModel.processingQueue.collectAsState()
                         val currentIndex by fileImportViewModel.currentIndex.collectAsState()
                         if (processingQueue.isNotEmpty()) {
                             Surface(
@@ -551,6 +565,72 @@ fun ReviewScreen(
                     CircularProgressIndicator(modifier = Modifier.padding(8.dp))
                 } else {
                     Text("Confirm")
+                }
+            }
+        }
+        
+        // Skip and Stop buttons (only shown when processing queue is active)
+        // Show buttons when there are multiple items in the queue (batch import mode)
+        item {
+            // Show buttons if queue has more than 1 item (batch processing)
+            // OR if queue has exactly 1 item but we want to show buttons for single-item batches too
+            // For now, show when queue is not empty (covers both single and batch imports)
+            val shouldShowButtons = processingQueue.isNotEmpty()
+            
+            if (shouldShowButtons) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Skip button
+                    OutlinedButton(
+                        onClick = {
+                            // Skip current invoice without saving
+                            if (fileImportViewModel.hasNext()) {
+                                // Move to next item in queue
+                                fileImportViewModel.moveToNext()
+                                // Navigate back - ScanScreen will handle navigating to next item
+                                navController?.popBackStack()
+                            } else {
+                                // No more items, clear queue and navigate back to home screen
+                                fileImportViewModel.clearQueue()
+                                navController?.popBackStack()
+                            }
+                        },
+                        enabled = !isSaving && processingQueue.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipNext,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                        Text("Skip")
+                    }
+                    
+                    // Stop button
+                    OutlinedButton(
+                        onClick = {
+                            // Stop processing queue and return to home
+                            fileImportViewModel.clearQueue()
+                            // Navigate back to home screen
+                            navController?.navigate(Routes.Home) {
+                                // Clear back stack to prevent going back to review screen
+                                popUpTo(Routes.Home) { inclusive = false }
+                            }
+                        },
+                        enabled = !isSaving && processingQueue.isNotEmpty(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Stop,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                        Text("Stop")
+                    }
                 }
             }
         }
