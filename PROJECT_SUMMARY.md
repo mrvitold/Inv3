@@ -1,9 +1,9 @@
 # Inv3 Invoice Processing App - Project Summary
 
-**Last Updated:** January 2025  
+**Last Updated:** November 20, 2025  
 **Status:** ✅ Active Development
 
-## Recent Session Accomplishments (January 2025)
+## Recent Session Accomplishments (November 20, 2025)
 
 ### 1. Your Own Company Feature ✅ COMPLETED
 - **Purpose:** Distinguish between partner's company info and user's own company info
@@ -426,6 +426,6 @@
 ---
 
 **Project Status:** Active Development  
-**Last Major Update:** January 2025  
+**Last Major Update:** November 20, 2025  
 **Next Review:** After testing all new features (own company, skip/stop buttons, VAT exclusion)
 
