@@ -1,6 +1,5 @@
 package com.vitol.inv3.ui.companies
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,8 +8,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -31,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.vitol.inv3.Routes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vitol.inv3.data.remote.CompanyRecord
@@ -62,7 +65,13 @@ fun CompaniesScreen(
 
     LaunchedEffect(Unit) { viewModel.load() }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         Text(if (markAsOwnCompany) "Add Your Company" else "Companies")
         if (companies.isEmpty()) {
             Text("No companies yet or Supabase not configured.")
@@ -74,18 +83,24 @@ fun CompaniesScreen(
                     .padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable {
-                            name = company.company_name.orEmpty()
-                            number = company.company_number.orEmpty()
-                            vat = company.vat_number.orEmpty()
-                        }
-                ) {
-                    Text("${company.company_name} • ${company.company_number} • ${company.vat_number}")
-                }
+                Text(
+                    text = "${company.company_name} • ${company.company_number} • ${company.vat_number}",
+                    modifier = Modifier.weight(1f)
+                )
                 Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = { 
+                        // Navigate to edit screen with company ID
+                        company.id?.let { companyId ->
+                            navController?.navigate("${Routes.EditCompany}/$companyId")
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit company"
+                    )
+                }
                 IconButton(
                     onClick = { companyToDelete = company }
                 ) {

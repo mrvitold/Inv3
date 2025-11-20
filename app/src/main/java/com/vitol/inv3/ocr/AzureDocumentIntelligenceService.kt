@@ -6,7 +6,9 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlin.math.pow
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -42,7 +44,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
      * @param imageUri URI of the invoice image
      * @return ParsedInvoice with extracted fields, or null if processing failed
      */
-    suspend fun processInvoice(imageUri: Uri): ParsedInvoice? = withContext(Dispatchers.IO) {
+    suspend fun processInvoice(imageUri: Uri, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null): ParsedInvoice? = withContext(Dispatchers.IO) {
         try {
             // Validate configuration
             if (apiKey.isBlank() || endpoint.isBlank()) {
@@ -71,7 +73,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
             
             // Step 3: Parse results to ParsedInvoice
-            parseResultsToInvoice(result)
+            parseResultsToInvoice(result, excludeOwnCompanyNumber, excludeOwnVatNumber)
             
         } catch (e: Exception) {
             Timber.e(e, "Failed to process invoice with Azure Document Intelligence")
@@ -80,31 +82,71 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     }
     
     private suspend fun submitDocumentForAnalysis(imageBytes: ByteArray, mimeType: String): String? = withContext(Dispatchers.IO) {
-        try {
-            val request = Request.Builder()
-                .url(analyzeUrl)
-                .addHeader("Ocp-Apim-Subscription-Key", apiKey)
-                .addHeader("Content-Type", mimeType)
-                .post(imageBytes.toRequestBody(mimeType.toMediaType()))
-                .build()
-            
-            Timber.d("Submitting document to Azure: $analyzeUrl")
-            val response = httpClient.newCall(request).execute()
-            
-            if (!response.isSuccessful) {
-                val errorBody = response.body?.string()
-                Timber.e("Azure API error: ${response.code} - $errorBody")
-                return@withContext null
+        var retryCount = 0
+        val maxRetries = 3
+        val baseDelayMs = 2000L // Start with 2 seconds
+        
+        while (retryCount <= maxRetries) {
+            try {
+                val request = Request.Builder()
+                    .url(analyzeUrl)
+                    .addHeader("Ocp-Apim-Subscription-Key", apiKey)
+                    .addHeader("Content-Type", mimeType)
+                    .post(imageBytes.toRequestBody(mimeType.toMediaType()))
+                    .build()
+                
+                Timber.d("Submitting document to Azure: $analyzeUrl (attempt ${retryCount + 1}/${maxRetries + 1})")
+                val response = httpClient.newCall(request).execute()
+                
+                if (response.code == 429) {
+                    // Rate limited - retry with exponential backoff
+                    val retryAfter = response.header("Retry-After")?.toLongOrNull()
+                    val delayMs = if (retryAfter != null) {
+                        retryAfter * 1000 // Convert seconds to milliseconds
+                    } else {
+                        baseDelayMs * (2.0.pow(retryCount.toDouble())).toLong() // Exponential backoff
+                    }
+                    
+                    if (retryCount < maxRetries) {
+                        Timber.w("Azure rate limited (429). Retrying after ${delayMs}ms...")
+                        response.close()
+                        delay(delayMs)
+                        retryCount++
+                        continue
+                    } else {
+                        val errorBody = response.body?.string()
+                        Timber.e("Azure API rate limit exceeded after $maxRetries retries: $errorBody")
+                        response.close()
+                        return@withContext null
+                    }
+                }
+                
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string()
+                    Timber.e("Azure API error: ${response.code} - $errorBody")
+                    response.close()
+                    return@withContext null
+                }
+                
+                // Azure returns operation location in headers
+                val operationLocation = response.header("Operation-Location")
+                Timber.d("Document submitted, operation location: $operationLocation")
+                response.close()
+                return@withContext operationLocation
+            } catch (e: Exception) {
+                if (retryCount < maxRetries) {
+                    val delayMs = baseDelayMs * (2.0.pow(retryCount.toDouble())).toLong()
+                    Timber.w(e, "Failed to submit document, retrying after ${delayMs}ms...")
+                    delay(delayMs)
+                    retryCount++
+                } else {
+                    Timber.e(e, "Failed to submit document after $maxRetries retries")
+                    return@withContext null
+                }
             }
-            
-            // Azure returns operation location in headers
-            val operationLocation = response.header("Operation-Location")
-            Timber.d("Document submitted, operation location: $operationLocation")
-            operationLocation
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to submit document")
-            null
         }
+        
+        null
     }
     
     private suspend fun pollForResults(operationLocation: String): JsonObject? = withContext(Dispatchers.IO) {
@@ -121,8 +163,25 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 
                 val response = httpClient.newCall(request).execute()
                 
+                if (response.code == 429) {
+                    // Rate limited - retry with exponential backoff
+                    val retryAfter = response.header("Retry-After")?.toLongOrNull()
+                    val delayMs = if (retryAfter != null) {
+                        retryAfter * 1000 // Convert seconds to milliseconds
+                    } else {
+                        2000L * (2.0.pow(attempts.toDouble())).toLong() // Exponential backoff
+                    }
+                    
+                    Timber.w("Azure rate limited (429) while polling. Waiting ${delayMs}ms...")
+                    response.close()
+                    delay(delayMs)
+                    attempts++
+                    continue
+                }
+                
                 if (!response.isSuccessful) {
                     Timber.e("Failed to get results: ${response.code}")
+                    response.close()
                     return@withContext null
                 }
                 
@@ -166,7 +225,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         }
     }
     
-    private fun parseResultsToInvoice(result: JsonObject): ParsedInvoice {
+    private fun parseResultsToInvoice(result: JsonObject, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null): ParsedInvoice {
         var invoiceId: String? = null
         var date: String? = null
         var companyName: String? = null
@@ -246,10 +305,12 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 
                 // Vendor Tax ID (VAT number) - only accept if it has "LT" prefix
                 // If there's no "LT", it's not a VAT number
+                // Exclude own company VAT number
                 fields.get("VendorTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
                     val vatValue = it.trim().uppercase()
                     // Only accept if it starts with "LT" - otherwise it's not a VAT number
-                    if (vatValue.startsWith("LT")) {
+                    // Exclude own company VAT number
+                    if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
                         vatNumber = vatValue
                     }
                 }
@@ -299,7 +360,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         // If amounts are still null, or company name doesn't have company type suffix, try to extract from text using local parser
         if (amountNoVat == null || vatAmount == null || companyName == null || 
             !hasCompanyTypeSuffix(companyName)) {
-            val parsedFromText = InvoiceParser.parse(lines)
+            val parsedFromText = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
             if (amountNoVat == null && parsedFromText.amountWithoutVatEur != null) {
                 amountNoVat = parsedFromText.amountWithoutVatEur
                 Timber.d("Azure: Extracted amount without VAT from text: $amountNoVat")
@@ -319,16 +380,26 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 }
             }
             // Also extract company number from text if not found
-            // Ensure it's different from VAT number
+            // Ensure it's different from VAT number and own company number
             if (companyNumber == null && parsedFromText.companyNumber != null) {
                 val extractedCompanyNo = parsedFromText.companyNumber
                 val vatDigits = vatNumber?.removePrefix("LT")?.removePrefix("lt")
-                // Only use if different from VAT number
-                if (extractedCompanyNo != vatDigits) {
+                // Only use if different from VAT number and own company number
+                if (extractedCompanyNo != vatDigits && (excludeOwnCompanyNumber == null || extractedCompanyNo != excludeOwnCompanyNumber)) {
                     companyNumber = extractedCompanyNo
                     Timber.d("Azure: Extracted company number from text: $companyNumber")
                 } else {
-                    Timber.d("Azure: Skipped company number '$extractedCompanyNo' (same as VAT number)")
+                    Timber.d("Azure: Skipped company number '$extractedCompanyNo' (same as VAT number or own company number)")
+                }
+            }
+            // Also extract VAT number from text if not found and exclude own company VAT
+            if (vatNumber == null && parsedFromText.vatNumber != null) {
+                val extractedVat = parsedFromText.vatNumber
+                if (excludeOwnVatNumber == null || !extractedVat.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                    vatNumber = extractedVat
+                    Timber.d("Azure: Extracted VAT number from text: $vatNumber")
+                } else {
+                    Timber.d("Azure: Skipped VAT number '$extractedVat' (same as own company VAT number)")
                 }
             }
         }

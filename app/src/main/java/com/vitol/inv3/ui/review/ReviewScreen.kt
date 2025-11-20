@@ -29,6 +29,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
@@ -42,8 +43,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.activity.ComponentActivity
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import android.app.Application
@@ -80,7 +84,21 @@ fun ReviewScreen(
     imageUri: Uri,
     navController: NavController? = null,
     viewModel: ReviewViewModel = hiltViewModel(),
-    fileImportViewModel: com.vitol.inv3.ui.scan.FileImportViewModel = hiltViewModel()
+    fileImportViewModel: com.vitol.inv3.ui.scan.FileImportViewModel = run {
+        // Get Activity-scoped ViewModel to share state across navigation routes
+        // This ensures the same ViewModel instance is used across all screens
+        val activity = androidx.compose.ui.platform.LocalContext.current as? ComponentActivity
+        if (activity != null) {
+            // Use Activity's ViewModelStoreOwner with Hilt's factory
+            // Since Activity is @AndroidEntryPoint, defaultViewModelProviderFactory is Hilt's factory
+            androidx.lifecycle.viewmodel.compose.viewModel<com.vitol.inv3.ui.scan.FileImportViewModel>(
+                viewModelStoreOwner = activity,
+                factory = activity.defaultViewModelProviderFactory
+            )
+        } else {
+            hiltViewModel()
+        }
+    }
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     
@@ -88,14 +106,43 @@ fun ReviewScreen(
     val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
     val activeCompanyId by activeCompanyIdFlow.collectAsState(initial = null)
     
+    // Get own company details to exclude from extraction
+    var ownCompanyNumber by remember { mutableStateOf<String?>(null) }
+    var ownCompanyVatNumber by remember { mutableStateOf<String?>(null) }
+    
+    // Get repo from MainActivityViewModel to access company data
+    val mainActivityViewModel: com.vitol.inv3.MainActivityViewModel = hiltViewModel()
+    val repo = mainActivityViewModel.repo
+    
+    LaunchedEffect(activeCompanyId) {
+        if (activeCompanyId != null) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val ownCompany = repo.getCompanyById(activeCompanyId!!)
+                ownCompanyNumber = ownCompany?.company_number
+                ownCompanyVatNumber = ownCompany?.vat_number
+                Timber.d("Own company details - CompanyNumber: $ownCompanyNumber, VatNumber: $ownCompanyVatNumber")
+            }
+        } else {
+            ownCompanyNumber = null
+            ownCompanyVatNumber = null
+        }
+    }
+    
     // Get processing queue state (for Skip/Stop buttons)
     val processingQueue by fileImportViewModel.processingQueue.collectAsState()
     val currentIndex by fileImportViewModel.currentIndex.collectAsState()
     
-    // Debug: Log queue state
-    LaunchedEffect(processingQueue.size, currentIndex) {
+    // Calculate if buttons should be shown (queue has multiple items = batch processing)
+    // Show buttons when queue has more than 1 item (batch processing mode)
+    // This means user is processing multiple invoices (e.g., PDF with multiple pages)
+    val shouldShowButtons = processingQueue.size > 1
+    
+    // Debug: Log queue state - log on every recomposition to track state changes
+    LaunchedEffect(processingQueue.size, currentIndex, imageUri) {
         Timber.d("ReviewScreen: Processing queue size = ${processingQueue.size}, isEmpty = ${processingQueue.isEmpty()}, currentIndex = $currentIndex")
+        Timber.d("ReviewScreen: Current imageUri = $imageUri")
         Timber.d("ReviewScreen: Queue contents = ${processingQueue.map { it.toString() }}")
+        Timber.d("ReviewScreen: Should show buttons = $shouldShowButtons")
     }
     
     var isLoading by remember { mutableStateOf(true) }
@@ -138,18 +185,23 @@ fun ReviewScreen(
 
     // First pass: Identify company NUMBER only (uses local OCR)
     // Does NOT extract company name - only company number for template lookup
-    LaunchedEffect(imageUri) {
+    LaunchedEffect(imageUri, ownCompanyNumber, ownCompanyVatNumber) {
         ocrMethod = "Local" // First pass always uses local OCR
-        viewModel.runOcrFirstPass(imageUri) { result ->
+        viewModel.runOcrFirstPass(imageUri, ownCompanyNumber, ownCompanyVatNumber) { result ->
             result.onSuccess { companyInfo ->
                 // Only populate company number and VAT number (not company name)
                 if (companyInfo.companyNumber != null) {
                     fields = fields + ("Company_number" to companyInfo.companyNumber)
                     Timber.d("First pass complete - Company number: ${companyInfo.companyNumber}")
                 }
-                if (companyInfo.vatNumber != null) {
+                // Only set VAT number if it's not the own company's VAT number
+                if (companyInfo.vatNumber != null && 
+                    (ownCompanyVatNumber == null || !companyInfo.vatNumber.equals(ownCompanyVatNumber, ignoreCase = true))) {
                     fields = fields + ("VAT_number" to companyInfo.vatNumber)
                     Timber.d("First pass complete - VAT number: ${companyInfo.vatNumber}")
+                } else if (companyInfo.vatNumber != null && ownCompanyVatNumber != null && 
+                           companyInfo.vatNumber.equals(ownCompanyVatNumber, ignoreCase = true)) {
+                    Timber.d("First pass - Skipped own company VAT number: ${companyInfo.vatNumber}")
                 }
                 isLoading = false
             }.onFailure {
@@ -183,6 +235,8 @@ fun ReviewScreen(
                 firstPassCompanyNumber,
                 firstPassVatNumber,
                 excludeCompanyId = activeCompanyId,
+                excludeOwnCompanyNumber = ownCompanyNumber,
+                excludeOwnVatNumber = ownCompanyVatNumber,
                 onDone = { result ->
                     result.onSuccess { parsed ->
                         // If Azure Document Intelligence succeeded, use it
@@ -206,7 +260,15 @@ fun ReviewScreen(
                                     }
                                     "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
                                     "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
-                                    "VAT_number" -> if (newFields["VAT_number"].isNullOrBlank()) newFields["VAT_number"] = value
+                                    "VAT_number" -> {
+                                        // Exclude own company VAT number
+                                        if (newFields["VAT_number"].isNullOrBlank() && 
+                                            (ownCompanyVatNumber == null || !value.equals(ownCompanyVatNumber, ignoreCase = true))) {
+                                            newFields["VAT_number"] = value
+                                        } else if (ownCompanyVatNumber != null && value.equals(ownCompanyVatNumber, ignoreCase = true)) {
+                                            Timber.d("Skipped own company VAT number from Azure result: $value")
+                                        }
+                                    }
                                     "Company_number" -> if (newFields["Company_number"].isNullOrBlank()) newFields["Company_number"] = value
                                 }
                             }
@@ -218,7 +280,7 @@ fun ReviewScreen(
                         // Fallback to local OCR if Azure Document Intelligence fails
                         Timber.w("Azure Document Intelligence failed, falling back to local OCR")
                         ocrMethod = "Local" // Mark as using local OCR
-                        viewModel.runOcrSecondPass(imageUri, lookupKey) { localResult ->
+                        viewModel.runOcrSecondPass(imageUri, lookupKey, ownCompanyNumber, ownCompanyVatNumber) { localResult ->
                             localResult.onSuccess { parsed ->
                                 // Parse the text to populate all fields
                                 // The parsed string already has the correct company name from database lookup
@@ -267,9 +329,13 @@ fun ReviewScreen(
                                             }
                                             "VAT_number" -> {
                                                 // Local OCR fallback can replace if Azure didn't find it
-                                                if (value.isNotBlank() && newFields["VAT_number"].isNullOrBlank()) {
+                                                // Exclude own company VAT number
+                                                if (value.isNotBlank() && newFields["VAT_number"].isNullOrBlank() &&
+                                                    (ownCompanyVatNumber == null || !value.equals(ownCompanyVatNumber, ignoreCase = true))) {
                                                     newFields["VAT_number"] = value
                                                     Timber.d("Local OCR fallback - Setting VAT_number: '$value'")
+                                                } else if (ownCompanyVatNumber != null && value.equals(ownCompanyVatNumber, ignoreCase = true)) {
+                                                    Timber.d("Skipped own company VAT number from local OCR result: $value")
                                                 }
                                             }
                                             "Company_number" -> {
@@ -324,7 +390,6 @@ fun ReviewScreen(
                     if (isLoading || isReanalyzing) {
                         CircularProgressIndicator()
                         // Progress indicator (X of Y) next to loading circle
-                        val currentIndex by fileImportViewModel.currentIndex.collectAsState()
                         if (processingQueue.isNotEmpty()) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
@@ -340,7 +405,27 @@ fun ReviewScreen(
                             }
                         }
                     } else {
-                        Text("Verify fields")
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Verify fields")
+                            // Show progress indicator when queue is active (even if not loading)
+                            if (processingQueue.isNotEmpty()) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = androidx.compose.material3.MaterialTheme.colorScheme.tertiaryContainer,
+                                    modifier = Modifier.padding(start = 12.dp)
+                                ) {
+                                    Text(
+                                        text = "${currentIndex + 1} of ${processingQueue.size}",
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                        color = androidx.compose.material3.MaterialTheme.colorScheme.onTertiaryContainer
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 
@@ -572,21 +657,60 @@ fun ReviewScreen(
         // Skip and Stop buttons (only shown when processing queue is active)
         // Show buttons when there are multiple items in the queue (batch import mode)
         item {
-            // Show buttons if queue has more than 1 item (batch processing)
-            // OR if queue has exactly 1 item but we want to show buttons for single-item batches too
-            // For now, show when queue is not empty (covers both single and batch imports)
-            val shouldShowButtons = processingQueue.isNotEmpty()
-            
-            if (shouldShowButtons) {
+            // Always render the item, but conditionally show buttons
+            // This ensures the item is in the composition tree
+            // Always show buttons when queue is not empty (for batch processing)
+            // Buttons are enabled only when queue has multiple items (size > 1)
+            if (processingQueue.isNotEmpty()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    // Previous button
+                    OutlinedButton(
+                        onClick = {
+                            Timber.d("ReviewScreen: Previous button clicked - queue size = ${processingQueue.size}, currentIndex = $currentIndex")
+                            if (currentIndex > 0) {
+                                // Get the previous URI before moving
+                                val previousIndex = currentIndex - 1
+                                if (previousIndex >= 0 && previousIndex < processingQueue.size) {
+                                    val previousUri = processingQueue[previousIndex]
+                                    // Move to previous item in queue
+                                    fileImportViewModel.moveToPrevious()
+                                    // Navigate to previous invoice
+                                    navController?.navigate("review/${android.net.Uri.encode(previousUri.toString())}") {
+                                        // Pop current screen and navigate to previous
+                                        popUpTo("review/${android.net.Uri.encode(imageUri.toString())}") { inclusive = true }
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !isSaving && currentIndex > 0,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SkipPrevious,
+                                contentDescription = null,
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                            Text(
+                                text = "Previous",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    
                     // Skip button
                     OutlinedButton(
                         onClick = {
+                            Timber.d("ReviewScreen: Skip button clicked - queue size = ${processingQueue.size}, currentIndex = $currentIndex")
                             // Skip current invoice without saving
                             if (fileImportViewModel.hasNext()) {
                                 // Move to next item in queue
@@ -599,20 +723,30 @@ fun ReviewScreen(
                                 navController?.popBackStack()
                             }
                         },
-                        enabled = !isSaving && processingQueue.isNotEmpty(),
+                        enabled = !isSaving && shouldShowButtons,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.SkipNext,
-                            contentDescription = null,
-                            modifier = Modifier.padding(end = 4.dp)
-                        )
-                        Text("Skip")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SkipNext,
+                                contentDescription = null,
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                            Text(
+                                text = "Skip",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                     
                     // Stop button
                     OutlinedButton(
                         onClick = {
+                            Timber.d("ReviewScreen: Stop button clicked - queue size = ${processingQueue.size}")
                             // Stop processing queue and return to home
                             fileImportViewModel.clearQueue()
                             // Navigate back to home screen
@@ -621,15 +755,24 @@ fun ReviewScreen(
                                 popUpTo(Routes.Home) { inclusive = false }
                             }
                         },
-                        enabled = !isSaving && processingQueue.isNotEmpty(),
+                        enabled = !isSaving && shouldShowButtons,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Stop,
-                            contentDescription = null,
-                            modifier = Modifier.padding(end = 4.dp)
-                        )
-                        Text("Stop")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Stop,
+                                contentDescription = null,
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                            Text(
+                                text = "Stop",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }
@@ -697,8 +840,10 @@ class ReviewViewModel @Inject constructor(
     /**
      * First pass: Identify company NUMBER only (fast, for initial display)
      * Does NOT extract company name - only company number and VAT number
+     * @param excludeOwnCompanyNumber Own company number to exclude (partner's company only)
+     * @param excludeOwnVatNumber Own company VAT number to exclude (partner's company only)
      */
-    fun runOcrFirstPass(uri: Uri, onDone: (Result<CompanyRecognition.Candidate>) -> Unit) {
+    fun runOcrFirstPass(uri: Uri, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, onDone: (Result<CompanyRecognition.Candidate>) -> Unit) {
         viewModelScope.launch {
             val result = recognizer.recognize(uri)
                 .map { blocks ->
@@ -710,7 +855,7 @@ class ReviewViewModel @Inject constructor(
                 .map { blocks ->
                     // Try to identify company NUMBER only (not name)
                     val lines = blocks.map { it.text }
-                    val companyCandidate = CompanyRecognition.recognize(lines)
+                    val companyCandidate = CompanyRecognition.recognize(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
                     // Return candidate with company name set to null (we don't want it in first pass)
                     val candidateWithoutName = companyCandidate.copy(companyName = null)
                     Timber.d("First pass - Company recognition: companyNumber=${candidateWithoutName.companyNumber}, vatNumber=${candidateWithoutName.vatNumber} (company name skipped)")
@@ -722,8 +867,10 @@ class ReviewViewModel @Inject constructor(
     
     /**
      * Second pass: Re-analyze with template knowledge after company is confirmed
+     * @param excludeOwnCompanyNumber Own company number to exclude (partner's company only)
+     * @param excludeOwnVatNumber Own company VAT number to exclude (partner's company only)
      */
-    fun runOcrSecondPass(uri: Uri, lookupKey: String, onDone: (Result<String>) -> Unit) {
+    fun runOcrSecondPass(uri: Uri, lookupKey: String, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, onDone: (Result<String>) -> Unit) {
         viewModelScope.launch {
             val result = recognizer.recognize(uri)
                 .map { blocks ->
@@ -732,7 +879,7 @@ class ReviewViewModel @Inject constructor(
                     
                     // Try to load template for this company using multiple possible keys
                     val lines = blocks.map { it.text }
-                    val companyCandidate = CompanyRecognition.recognize(lines)
+                    val companyCandidate = CompanyRecognition.recognize(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
                     // Use company number/VAT number for template lookup (not company name)
                     val possibleKeys = listOfNotNull(
                         normalizeCompanyKey(lookupKey), // Company number or VAT number from first pass
@@ -766,7 +913,7 @@ class ReviewViewModel @Inject constructor(
                         } else {
                             Timber.d("Using keyword matching (no image size available)")
                         }
-                        InvoiceParser.parse(blocks.map { it.text })
+                        InvoiceParser.parse(blocks.map { it.text }, excludeOwnCompanyNumber, excludeOwnVatNumber)
                     }
                     
                     parsed
@@ -784,7 +931,7 @@ class ReviewViewModel @Inject constructor(
         }
     }
     
-    fun runOcr(uri: Uri, excludeCompanyId: String? = null, onDone: (Result<String>) -> Unit) {
+    fun runOcr(uri: Uri, excludeCompanyId: String? = null, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, onDone: (Result<String>) -> Unit) {
         viewModelScope.launch {
             val result = recognizer.recognize(uri)
                 .map { blocks ->
@@ -799,7 +946,7 @@ class ReviewViewModel @Inject constructor(
                     
                     // Try to identify company first
                     val lines = blocks.map { it.text }
-                    val companyCandidate = CompanyRecognition.recognize(lines)
+                    val companyCandidate = CompanyRecognition.recognize(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
                     
                     // Try multiple keys in order of preference: company number, company name, VAT number
                     // This ensures we find the template even if company recognition varies between invoices
@@ -845,7 +992,7 @@ class ReviewViewModel @Inject constructor(
                             Timber.d("Using keyword matching (no image size available)")
                         }
                         Timber.d("Parsing ${lines.size} lines with InvoiceParser.parse")
-                        val parsedResult = InvoiceParser.parse(lines)
+                        val parsedResult = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
                         Timber.d("Parsed result - InvoiceID: '${parsedResult.invoiceId}', Date: '${parsedResult.date}', " +
                                 "Company: '${parsedResult.companyName}', AmountNoVat: '${parsedResult.amountWithoutVatEur}', " +
                                 "VatAmount: '${parsedResult.vatAmountEur}', VatNumber: '${parsedResult.vatNumber}', " +
@@ -910,6 +1057,8 @@ class ReviewViewModel @Inject constructor(
         firstPassCompanyNumber: String? = null,
         firstPassVatNumber: String? = null,
         excludeCompanyId: String? = null,
+        excludeOwnCompanyNumber: String? = null,
+        excludeOwnVatNumber: String? = null,
         onDone: (Result<String>) -> Unit, 
         onMethodUsed: ((String) -> Unit)? = null
     ) {
@@ -917,8 +1066,12 @@ class ReviewViewModel @Inject constructor(
             val result = try {
                 Timber.d("Starting Azure Document Intelligence processing for invoice")
                 
+                // Add a small delay before calling Azure to prevent rate limiting when processing multiple invoices
+                // This helps avoid 429 errors when processing batches
+                kotlinx.coroutines.delay(1500) // 1.5 second delay between Azure requests
+                
                 // Try Azure Document Intelligence first
-                val parsed = documentAiService.processInvoice(uri)
+                val parsed = documentAiService.processInvoice(uri, excludeOwnCompanyNumber, excludeOwnVatNumber)
                 
                 if (parsed != null) {
                     Timber.d("Azure Document Intelligence processing successful")
@@ -989,7 +1142,7 @@ class ReviewViewModel @Inject constructor(
                     Timber.w("Azure Document Intelligence processing returned null, falling back to local OCR")
                     onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                     // Fallback to local OCR
-                    runOcr(uri, excludeCompanyId) { localResult ->
+                    runOcr(uri, excludeCompanyId, excludeOwnCompanyNumber, excludeOwnVatNumber) { localResult ->
                         localResult.onSuccess { parsed ->
                             Timber.d("Local OCR fallback successful, extracted fields")
                         }.onFailure { error ->
@@ -1003,7 +1156,7 @@ class ReviewViewModel @Inject constructor(
                 Timber.e(e, "Azure Document Intelligence processing failed with exception, falling back to local OCR")
                 onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                 // Fallback to local OCR on error
-                runOcr(uri, excludeCompanyId) { localResult ->
+                runOcr(uri, excludeCompanyId, excludeOwnCompanyNumber, excludeOwnVatNumber) { localResult ->
                     localResult.onSuccess { parsed ->
                         Timber.d("Local OCR fallback successful after exception, extracted fields")
                     }.onFailure { error ->
@@ -1157,7 +1310,7 @@ private fun OptionalFieldEditor(
         onValueChange = onChange,
         label = { 
             Text(
-                text = if (isOptional) "$label (optional)" else label,
+                text = label,
                 style = androidx.compose.material3.MaterialTheme.typography.bodySmall
             )
         },

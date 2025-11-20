@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -35,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -73,6 +76,7 @@ object Routes {
     const val AddOwnCompany = "addOwnCompany"
     const val Exports = "exports"
     const val EditInvoice = "editInvoice"
+    const val EditCompany = "editCompany"
 }
 
 @Composable
@@ -126,13 +130,32 @@ fun AppNavHost(navController: NavHostController) {
                 PlaceholderScreen("Invalid invoice ID")
             }
         }
+        composable("${Routes.EditCompany}/{companyId}") { backStackEntry ->
+            val companyId = backStackEntry.arguments?.getString("companyId") ?: ""
+            if (companyId.isNotBlank()) {
+                com.vitol.inv3.ui.companies.EditCompanyScreen(companyId = companyId, navController = navController)
+            } else {
+                PlaceholderScreen("Invalid company ID")
+            }
+        }
     }
 }
 
 @Composable
 fun HomeScreen(
     navController: NavHostController,
-    fileImportViewModel: FileImportViewModel = hiltViewModel(),
+    fileImportViewModel: FileImportViewModel = run {
+        // Use Activity-scoped ViewModel to share state across navigation routes
+        val activity = LocalContext.current as? ComponentActivity
+        if (activity != null) {
+            viewModel<FileImportViewModel>(
+                viewModelStoreOwner = activity,
+                factory = activity.defaultViewModelProviderFactory
+            )
+        } else {
+            hiltViewModel()
+        }
+    },
     ownCompanyViewModel: OwnCompanyViewModel = hiltViewModel(),
     repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo
 ) {
@@ -160,18 +183,36 @@ fun HomeScreen(
         }
     }
 
+    // File processing state
+    var isProcessingFile by remember { mutableStateOf(false) }
+    var processingMessage by remember { mutableStateOf<String?>(null) }
+    var showProcessingDialog by remember { mutableStateOf(false) }
+    
     // File picker launcher for Import button
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
+            isProcessingFile = true
+            showProcessingDialog = true
+            processingMessage = "Processing file..."
+            
             scope.launch {
                 processSelectedFile(uri, fileImportService, snackbarHostState) { uris ->
+                    isProcessingFile = false
                     if (uris.isNotEmpty()) {
                         fileImportViewModel.addToQueue(uris)
-                        // Navigate to first item
-                        val firstUri = uris[0]
-                        navController.navigate("review/${Uri.encode(firstUri.toString())}")
+                        processingMessage = "Found ${uris.size} invoice(s). Opening first invoice..."
+                        // Small delay to show the message, then navigate
+                        scope.launch {
+                            kotlinx.coroutines.delay(300)
+                            showProcessingDialog = false
+                            // Navigate to first item
+                            val firstUri = uris[0]
+                            navController.navigate("review/${Uri.encode(firstUri.toString())}")
+                        }
+                    } else {
+                        processingMessage = "No invoices found in file"
                     }
                 }
             }
@@ -281,6 +322,34 @@ fun HomeScreen(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+        
+        // Processing dialog
+        if (showProcessingDialog) {
+            AlertDialog(
+                onDismissRequest = { /* Don't allow dismissing during processing */ },
+                title = { Text("Processing File") },
+                text = {
+                    if (isProcessingFile) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            CircularProgressIndicator()
+                            Text(processingMessage ?: "Processing file...")
+                        }
+                    } else {
+                        Text(processingMessage ?: "")
+                    }
+                },
+                confirmButton = {
+                    if (!isProcessingFile) {
+                        Button(onClick = { showProcessingDialog = false }) {
+                            Text("OK")
+                        }
+                    }
+                }
+            )
+        }
     }
 }
 

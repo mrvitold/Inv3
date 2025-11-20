@@ -102,14 +102,20 @@ object FieldExtractors {
     /**
      * Extract VAT number - MUST have "LT" prefix to be identified as VAT number.
      * If there's no "LT" prefix, it's not a VAT number.
+     * @param excludeOwnVatNumber VAT number of own company to exclude
      */
-    fun tryExtractVatNumber(line: String): String? {
+    fun tryExtractVatNumber(line: String, excludeOwnVatNumber: String? = null): String? {
         val match = vatNumberRegex.find(line)
         if (match != null) {
             val vatValue = match.groupValues.getOrNull(1)
             if (vatValue != null) {
+                val normalizedVat = vatValue.uppercase()
+                // Exclude own company VAT number
+                if (excludeOwnVatNumber != null && normalizedVat.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                    return null // This is own company VAT number, skip it
+                }
                 // Return as-is (already has LT prefix) - uppercase for consistency
-                return vatValue.uppercase()
+                return normalizedVat
             }
         }
         return null
@@ -117,9 +123,11 @@ object FieldExtractors {
     
     /**
      * Extract company number (9 digits starting with 1, 2, 3, or 4).
-     * Ensures it's different from VAT number.
+     * Ensures it's different from VAT number and own company number.
+     * @param excludeVatNumber VAT number to exclude (to avoid duplicates)
+     * @param excludeOwnCompanyNumber Own company number to exclude
      */
-    fun tryExtractCompanyNumber(line: String, excludeVatNumber: String? = null): String? {
+    fun tryExtractCompanyNumber(line: String, excludeVatNumber: String? = null, excludeOwnCompanyNumber: String? = null): String? {
         val match = companyNumberRegex.find(line)
         if (match != null) {
             val candidate = match.groupValues.getOrNull(1)
@@ -131,6 +139,10 @@ object FieldExtractors {
                     if (candidate == vatDigits) {
                         return null // Same as VAT number, skip it
                     }
+                }
+                // Exclude own company number
+                if (excludeOwnCompanyNumber != null && candidate == excludeOwnCompanyNumber) {
+                    return null // This is own company number, skip it
                 }
                 return candidate
             }

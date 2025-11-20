@@ -51,8 +51,20 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
         }
     }
     
+    fun moveToPrevious() {
+        val current = _currentIndex.value
+        if (current > 0) {
+            _currentIndex.value = current - 1
+            Timber.d("Moved to previous item: ${_currentIndex.value + 1}/${_processingQueue.value.size}")
+        }
+    }
+    
     fun hasNext(): Boolean {
         return _currentIndex.value < _processingQueue.value.size - 1
+    }
+    
+    fun hasPrevious(): Boolean {
+        return _currentIndex.value > 0
     }
     
     fun getProgressText(): String {

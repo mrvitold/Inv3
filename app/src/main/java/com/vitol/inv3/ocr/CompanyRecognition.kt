@@ -8,11 +8,17 @@ object CompanyRecognition {
         val confidence: Float
     )
 
-    fun recognize(lines: List<String>): Candidate {
+    /**
+     * Recognize company from invoice text.
+     * @param lines Invoice text lines
+     * @param excludeOwnCompanyNumber Own company number to exclude (partner's company only)
+     * @param excludeOwnVatNumber Own company VAT number to exclude (partner's company only)
+     */
+    fun recognize(lines: List<String>, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null): Candidate {
         val joined = lines.joinToString("\n").lowercase()
-        val vat = FieldExtractors.tryExtractVatNumber(joined)
-        // Extract company number, excluding VAT number to avoid duplicates
-        val compNo = FieldExtractors.tryExtractCompanyNumber(joined, vat)
+        val vat = FieldExtractors.tryExtractVatNumber(joined, excludeOwnVatNumber)
+        // Extract company number, excluding VAT number and own company number to avoid duplicates
+        val compNo = FieldExtractors.tryExtractCompanyNumber(joined, vat, excludeOwnCompanyNumber)
 
         val possibleName = lines.firstOrNull { line ->
             val l = line.lowercase()

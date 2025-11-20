@@ -42,6 +42,8 @@ import androidx.navigation.NavHostController
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.activity.ComponentActivity
 import com.vitol.inv3.utils.FileImportService
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -57,7 +59,18 @@ import java.util.Locale
 fun ScanScreen(
     modifier: Modifier = Modifier,
     navController: NavHostController,
-    fileImportViewModel: FileImportViewModel = hiltViewModel()
+    fileImportViewModel: FileImportViewModel = run {
+        // Use Activity-scoped ViewModel to share state across navigation routes
+        val activity = LocalContext.current as? ComponentActivity
+        if (activity != null) {
+            viewModel<FileImportViewModel>(
+                viewModelStoreOwner = activity,
+                factory = activity.defaultViewModelProviderFactory
+            )
+        } else {
+            hiltViewModel()
+        }
+    }
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }

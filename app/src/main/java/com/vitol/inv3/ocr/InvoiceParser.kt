@@ -18,10 +18,65 @@ data class ParsedInvoice(
 )
 
 object InvoiceParser {
+    // Lithuanian VAT rates: 21%, 9%, 5%, and 0%
+    private val LITHUANIAN_VAT_RATES = listOf(0.21, 0.09, 0.05, 0.0)
+    
+    /**
+     * Calculate expected VAT amount based on amount without VAT and Lithuanian VAT rates.
+     * Returns the VAT amount that matches one of the standard rates.
+     */
+    fun calculateVatFromAmount(amountWithoutVat: String?): String? {
+        if (amountWithoutVat.isNullOrBlank()) return null
+        val amount = amountWithoutVat.replace(",", ".").toDoubleOrNull() ?: return null
+        
+        // Try each VAT rate and see if we can find a matching VAT amount
+        // This helps identify which amount is which
+        for (rate in LITHUANIAN_VAT_RATES) {
+            val calculatedVat = amount * rate
+            val formatted = String.format("%.2f", calculatedVat)
+            Timber.d("Calculated VAT for amount $amountWithoutVat at rate ${(rate * 100).toInt()}%: $formatted")
+        }
+        return null
+    }
+    
+    /**
+     * Validate and identify amounts using Lithuanian VAT rates.
+     * Returns a pair of (amountWithoutVat, vatAmount) if they match a standard VAT rate.
+     */
+    fun identifyAmountsWithVatRates(amount1: String?, amount2: String?): Pair<String?, String?>? {
+        if (amount1.isNullOrBlank() || amount2.isNullOrBlank()) return null
+        
+        val a1 = amount1.replace(",", ".").toDoubleOrNull() ?: return null
+        val a2 = amount2.replace(",", ".").toDoubleOrNull() ?: return null
+        
+        // Try both combinations: a1 as base, a2 as VAT and vice versa
+        for (rate in LITHUANIAN_VAT_RATES) {
+            if (rate == 0.0) continue // Skip 0% rate
+            
+            // Try a1 as base, a2 as VAT
+            val expectedVat1 = a1 * rate
+            if (kotlin.math.abs(a2 - expectedVat1) < 0.01) { // Allow small rounding differences
+                Timber.d("Identified amounts: base=$amount1, VAT=$amount2 (rate=${(rate * 100).toInt()}%)")
+                return Pair(amount1, amount2)
+            }
+            
+            // Try a2 as base, a1 as VAT
+            val expectedVat2 = a2 * rate
+            if (kotlin.math.abs(a1 - expectedVat2) < 0.01) {
+                Timber.d("Identified amounts: base=$amount2, VAT=$amount1 (rate=${(rate * 100).toInt()}%)")
+                return Pair(amount2, amount1)
+            }
+        }
+        
+        return null
+    }
+    
     /**
      * Parse invoice using keyword matching (original method).
+     * @param excludeOwnCompanyNumber Own company number to exclude (partner's company only)
+     * @param excludeOwnVatNumber Own company VAT number to exclude (partner's company only)
      */
-    fun parse(lines: List<String>): ParsedInvoice {
+    fun parse(lines: List<String>, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null): ParsedInvoice {
         if (lines.isEmpty()) {
             Timber.w("InvoiceParser.parse called with empty lines list")
             return ParsedInvoice(lines = lines)
@@ -96,20 +151,31 @@ object InvoiceParser {
                     }
                 }
                 "VAT_number" -> if (vatNumber == null) {
-                    val extracted = FieldExtractors.tryExtractVatNumber(line)
+                    val extracted = FieldExtractors.tryExtractVatNumber(line, excludeOwnVatNumber)
                     if (extracted != null && !isIban(extracted)) {
-                        vatNumber = extracted
+                        // Double-check: exclude own company VAT number even if extracted
+                        if (excludeOwnVatNumber == null || !extracted.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                            vatNumber = extracted
+                        } else {
+                            Timber.d("Skipped own company VAT number in first pass: $extracted")
+                        }
                     } else {
                         // Try key-value extraction - but only if it has "LT" prefix
                         val keyValue = takeKeyValue(line)
                         if (keyValue != null && keyValue.uppercase().startsWith("LT")) {
-                            vatNumber = keyValue.uppercase()
+                            val normalizedVat = keyValue.uppercase()
+                            // Exclude own company VAT number
+                            if (excludeOwnVatNumber == null || !normalizedVat.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                                vatNumber = normalizedVat
+                            } else {
+                                Timber.d("Skipped own company VAT number from key-value: $normalizedVat")
+                            }
                         }
                     }
                 }
                 "Company_number" -> if (companyNumber == null) {
-                    // Pass VAT number to exclude it from company number extraction
-                    companyNumber = FieldExtractors.tryExtractCompanyNumber(line, vatNumber)
+                    // Pass VAT number and own company number to exclude them from company number extraction
+                    companyNumber = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
                 }
             }
         }
@@ -161,11 +227,16 @@ object InvoiceParser {
                                        (i > 0 && lines[i-1].lowercase().contains("pardavejas"))
                 val hasVatContext = l.contains("pvm kodas") || l.contains("pvmkodas") || 
                                    l.contains("pvm numeris") || l.contains("pvmnumeris")
-                val extracted = FieldExtractors.tryExtractVatNumber(line)
+                val extracted = FieldExtractors.tryExtractVatNumber(line, excludeOwnVatNumber)
                 if (extracted != null && !isIban(extracted)) {
-                    if (hasVatContext && isInSellerSection) {
-                        sellerVatNumber = extracted
-                        Timber.d("Found seller VAT number with context: $extracted")
+                    // Double-check: exclude own company VAT number even if extracted
+                    if (excludeOwnVatNumber == null || !extracted.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                        if (hasVatContext && isInSellerSection) {
+                            sellerVatNumber = extracted
+                            Timber.d("Found seller VAT number with context: $extracted")
+                        }
+                    } else {
+                        Timber.d("Skipped own company VAT number in second pass: $extracted")
                     }
                 }
             }
@@ -174,16 +245,16 @@ object InvoiceParser {
             }
         }
         
-        // Second pass: Company number - ensure it's different from VAT number
+        // Second pass: Company number - ensure it's different from VAT number and own company number
         if (companyNumber == null || companyNumber == vatNumber?.removePrefix("LT")?.removePrefix("lt")) {
-            // Look for company number that's different from VAT number
+            // Look for company number that's different from VAT number and own company number
             for (i in lines.indices) {
                 val line = lines[i]
                 val l = line.lowercase()
                 val hasCompanyContext = l.contains("imones kodas") || l.contains("imoneskodas") || 
                                        l.contains("registracijos kodas") || l.contains("registracijos numeris")
                 if (hasCompanyContext) {
-                    val extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber)
+                    val extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
                     if (extracted != null) {
                         companyNumber = extracted
                         Timber.d("Found company number with context: $extracted")
@@ -377,6 +448,33 @@ object InvoiceParser {
                     }
                 }
             }
+        }
+        
+        // Use Lithuanian VAT rates to help identify and validate amounts
+        if (amountNoVat != null && vatAmount != null) {
+            // Validate that amounts match a Lithuanian VAT rate
+            val identified = identifyAmountsWithVatRates(amountNoVat, vatAmount)
+            if (identified != null) {
+                // Amounts match a standard VAT rate, use the identified values
+                amountNoVat = identified.first
+                vatAmount = identified.second
+                Timber.d("Validated amounts using Lithuanian VAT rates: base=$amountNoVat, VAT=$vatAmount")
+            }
+        } else if (amountNoVat == null && vatAmount != null) {
+            // Try to calculate amount without VAT from VAT amount using Lithuanian rates
+            val vatValue: String = vatAmount ?: return ParsedInvoice(lines = lines)
+            val vat = vatValue.replace(",", ".").toDoubleOrNull()
+            if (vat != null) {
+                for (rate in LITHUANIAN_VAT_RATES) {
+                    if (rate == 0.0) continue
+                    val calculatedBase = vat / rate
+                    val formatted = String.format("%.2f", calculatedBase)
+                    Timber.d("Calculated base amount from VAT $vatValue at rate ${(rate * 100).toInt()}%: $formatted")
+                }
+            }
+        } else if (amountNoVat != null && vatAmount == null) {
+            // Try to calculate VAT from amount without VAT using Lithuanian rates
+            calculateVatFromAmount(amountNoVat)
         }
         
         // Final validation: reject invalid company names

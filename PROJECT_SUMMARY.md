@@ -1,9 +1,97 @@
 # Inv3 Invoice Processing App - Project Summary
 
-**Last Updated:** November 18, 2024  
+**Last Updated:** January 2025  
 **Status:** ✅ Active Development
 
-## Recent Session Accomplishments (November 18, 2024)
+## Recent Session Accomplishments (January 2025)
+
+### 1. Your Own Company Feature ✅ COMPLETED
+- **Purpose:** Distinguish between partner's company info and user's own company info
+- **Implementation:**
+  - Separate "Your Own Company" selector in home screen dropdown menu
+  - Stores own company selection in DataStore preferences
+  - Auto-selects newly added/updated own company
+  - Edit and delete functionality for own companies
+  - Informational message when no own company is selected
+- **Data Management:**
+  - Prevents duplicate companies (same company number/VAT)
+  - Automatically updates existing company when marking as "own"
+  - Deletes non-own duplicates when company is marked as own
+- **Exclusion Logic:**
+  - Own company VAT number and company number are excluded from extraction
+  - Only partner's company details are extracted and displayed
+  - Multi-layer exclusion at extraction, parsing, and UI levels
+- **Status:** Fully implemented and working
+
+### 2. Skip, Stop, and Previous Buttons for Import Mode ✅ COMPLETED
+- **Skip Button:**
+  - Skips current invoice without saving
+  - Moves to next invoice in queue
+  - Only visible when processing queue is active
+- **Stop Button:**
+  - Stops processing queue
+  - Clears queue and returns to home screen
+  - Always enabled when queue is active
+- **Previous Button:**
+  - Navigates back to previous invoice in queue
+  - Allows reviewing and editing skipped invoices
+  - Enabled when currentIndex > 0
+- **UI:**
+  - Buttons displayed in a row with proper spacing
+  - Text doesn't wrap (maxLines = 1, ellipsis)
+  - Icons with proper alignment
+  - Progress indicator shows "X of Y" format
+- **Status:** Fully implemented and working
+
+### 3. Own Company VAT Number Exclusion Fix ✅ COMPLETED
+- **Issue:** Own company's VAT number was being filled in VAT_number field
+- **Solution:**
+  - Added exclusion checks at multiple levels:
+    - `FieldExtractors.tryExtractVatNumber` - extraction level
+    - `InvoiceParser.parse` - parsing level (first and second pass)
+    - `ReviewScreen.kt` - UI level (first pass, Azure results, local OCR fallback)
+    - `AzureDocumentIntelligenceService` - Azure API level
+  - Only partner's VAT number is now extracted and displayed
+- **Status:** Fixed and verified
+
+### 4. Lithuanian VAT Rates Integration ✅ COMPLETED
+- **VAT Rates:** 21%, 9%, 5%, 0%
+- **Features:**
+  - Validates extracted amounts using Lithuanian VAT proportions
+  - Helps identify and correct amount_without_VAT and VAT_amount
+  - Calculates expected VAT from base amount
+  - Identifies amounts that match standard VAT rates
+- **Status:** Fully integrated
+
+### 5. Companies Screen Improvements ✅ COMPLETED
+- **Scrollable:** Made companies list scrollable for long lists
+- **Edit Functionality:**
+  - Edit button next to each company
+  - Opens dedicated EditCompanyScreen
+  - Save and Cancel buttons
+  - Returns to companies list after save/cancel
+- **UI:** Clean layout with proper spacing
+
+### 6. Review Screen UI Improvements ✅ COMPLETED
+- **Consolidated Status Indicator:**
+  - Single status indicator with nice spacing
+  - Shows progress "X of Y" when queue is active
+  - OCR method indicator (Azure/Local) in top right
+- **Removed "Optional" Labels:**
+  - All fields are now mandatory
+  - Removed "(optional)" text from field labels
+- **Spacing Fixes:**
+  - Improved spacing throughout the screen
+  - Better button alignment and text handling
+
+### 7. Loading Process Improvements ✅ COMPLETED
+- **Loading Dialog:**
+  - Shows during file import processing
+  - Prevents home screen from flashing
+  - Displays processing message
+  - Cannot be dismissed during processing
+
+## Previous Session Accomplishments (November 18, 2024)
 
 ### 1. Azure AI Document Intelligence Integration ✅
 - **Replaced:** Google Cloud Document AI (cost: €0.08 per invoice)
@@ -76,32 +164,47 @@
 - `app/src/main/java/com/vitol/inv3/ui/exports/EditInvoiceScreen.kt` - Invoice editing screen
 - `app/src/main/java/com/vitol/inv3/ui/scan/FileImportViewModel.kt` - ViewModel for file import queue management
 - `app/src/main/java/com/vitol/inv3/utils/FileImportService.kt` - Service for file processing (PDF, HEIC, etc.)
+- `app/src/main/java/com/vitol/inv3/ui/companies/EditCompanyScreen.kt` - Company editing screen
 
 ### Modified Files
-- `app/src/main/java/com/vitol/inv3/ui/review/ReviewScreen.kt` - Progress indicator, first pass values for database lookup
-- `app/src/main/java/com/vitol/inv3/ocr/AzureDocumentIntelligenceService.kt` - Company name extraction improvements
-- `app/src/main/java/com/vitol/inv3/ocr/InvoiceParser.kt` - Invoice serial number extraction (longer numbers)
-- `app/src/main/java/com/vitol/inv3/data/remote/SupabaseRepository.kt` - Added updateInvoice and deleteInvoice methods
-- `app/src/main/java/com/vitol/inv3/MainActivity.kt` - Added Import button, removed Settings
-- `app/src/main/java/com/vitol/inv3/ui/exports/ExportsScreen.kt` - Monthly summaries, company breakdown, invoice editing
+- `app/src/main/java/com/vitol/inv3/ui/review/ReviewScreen.kt` - Skip/Stop/Previous buttons, own company VAT exclusion, consolidated status indicator, progress indicator
+- `app/src/main/java/com/vitol/inv3/ocr/AzureDocumentIntelligenceService.kt` - Own company VAT exclusion, retry logic for rate limiting
+- `app/src/main/java/com/vitol/inv3/ocr/InvoiceParser.kt` - Lithuanian VAT rates, own company VAT exclusion, longer invoice numbers
+- `app/src/main/java/com/vitol/inv3/ocr/KeywordMapping.kt` - Own company VAT and company number exclusion in extractors
+- `app/src/main/java/com/vitol/inv3/ocr/CompanyRecognition.kt` - Own company VAT and company number exclusion
+- `app/src/main/java/com/vitol/inv3/data/remote/SupabaseRepository.kt` - Upsert logic for own companies, duplicate prevention, deleteInvoice
+- `app/src/main/java/com/vitol/inv3/MainActivity.kt` - Loading dialog for file import, EditCompany route, removed Review Queue button
+- `app/src/main/java/com/vitol/inv3/ui/exports/ExportsScreen.kt` - Monthly summaries, company breakdown, invoice editing, delete functionality
+- `app/src/main/java/com/vitol/inv3/ui/companies/CompaniesScreen.kt` - Scrollable list, edit button navigation
+- `app/src/main/java/com/vitol/inv3/ui/scan/FileImportViewModel.kt` - Activity-scoped ViewModel, clearQueue, moveToPrevious, hasPrevious
+- `app/src/main/java/com/vitol/inv3/ui/scan/ScanScreen.kt` - Activity-scoped ViewModel
+- `app/src/main/java/com/vitol/inv3/ui/home/OwnCompanySelector.kt` - Dropdown menu, edit/delete functionality, informational message
 - `app/src/main/java/com/vitol/inv3/export/ExcelExporter.kt` - Direct save to Downloads folder
 
 ## Current Features
 
 ### ✅ Working Features
-- Azure AI Document Intelligence processing
+- Azure AI Document Intelligence processing with retry logic
 - Local OCR fallback (Google ML Kit)
 - Company name extraction with database lookup
-- VAT number and company number extraction
-- Invoice ID extraction (with serial+number combination)
+- VAT number and company number extraction (excludes own company)
+- Invoice ID extraction (with serial+number combination, supports 11+ digits)
 - Date extraction (multiple formats)
-- Amount extraction (Lithuanian format)
-- Progress indicator for batch processing
+- Amount extraction (Lithuanian format with VAT rate validation)
+- Lithuanian VAT rates integration (21%, 9%, 5%, 0%)
+- Your Own Company management (add, edit, delete, auto-select)
+- Own company VAT number and company number exclusion
+- Progress indicator for batch processing ("X of Y" format)
+- Skip, Stop, and Previous buttons for import mode
 - File import (images, PDF, DOC)
 - Monthly export summaries
 - Company breakdown in exports
 - Invoice editing from export view
+- Invoice deletion with confirmation
+- Company editing (dedicated screen)
 - Direct Excel export to Downloads
+- Scrollable companies list
+- Consolidated status indicators
 
 ### ⚠️ Known Issues
 - None currently - all reported issues resolved
@@ -110,36 +213,24 @@
 
 ### Priority 1: Critical Features
 
-#### 1. Your Own Company Parameters ⭐ NEW
-**Purpose:** App needs to distinguish between partner's company info and user's own company info  
-**Requirements:**
-- Add settings/configuration for user's own company:
-  - Company name
-  - VAT number
-  - Company number
-- When extracting invoice data, identify which company is the partner (seller/supplier)
-- Do NOT use user's own company parameters when filling invoice fields
-- Logic: If extracted company matches user's own company, it's likely the buyer, not the seller
-- Use partner's company info for invoice fields (Company_name, VAT_number, Company_number)
+#### 1. Your Own Company Parameters ✅ COMPLETED
+**Status:** Fully implemented and working  
+**Features:**
+- Separate "Your Own Company" selector in dropdown menu
+- Auto-selection of newly added/updated companies
+- Edit and delete functionality
+- Exclusion of own company VAT number and company number from extraction
+- Multi-layer exclusion logic at all extraction points
+- Informational message when no own company is selected
 
-**Impact:** High - Prevents incorrect data extraction  
-**Effort:** Medium (4-5 hours)
-
-#### 2. Skip and Stop Buttons for Import Mode ⭐ NEW
-**Purpose:** Better control during batch invoice processing  
-**Requirements:**
-- Add "Skip" button in ReviewScreen when in import mode:
-  - Skips current invoice and moves to next in queue
-  - Does not save current invoice
-- Add "Stop" button in ReviewScreen when in import mode:
-  - Stops processing queue
-  - Returns to main menu
-  - Clears processing queue
-- Show both buttons only when processing queue is active
-- Position: Near Confirm button or in top bar
-
-**Impact:** High - Better user experience for batch processing  
-**Effort:** Low (2-3 hours)
+#### 2. Skip, Stop, and Previous Buttons for Import Mode ✅ COMPLETED
+**Status:** Fully implemented and working  
+**Features:**
+- Skip button: Skips current invoice and moves to next
+- Stop button: Stops processing and clears queue
+- Previous button: Navigates back to previous invoice
+- Progress indicator showing "X of Y" format
+- Proper UI with icons and text alignment
 
 #### 3. Error Handling & User Feedback
 **Current State:** Basic error handling exists  
@@ -276,10 +367,18 @@
 
 ## Recommended Implementation Order
 
+### Completed ✅
+1. ✅ Your Own Company Parameters
+2. ✅ Skip, Stop, and Previous buttons for import mode
+3. ✅ Own company VAT number exclusion
+4. ✅ Lithuanian VAT rates integration
+5. ✅ Companies screen improvements
+6. ✅ Review screen UI improvements
+7. ✅ Loading process improvements
+
 ### Immediate (Next Session)
-1. ✅ Test file import functionality
-2. ⭐ Your Own Company Parameters
-3. ⭐ Skip and Stop buttons for import mode
+1. Test all new features thoroughly
+2. Error Handling & User Feedback improvements
 
 ### Week 1-2: Critical Improvements
 1. Error Handling & User Feedback
@@ -327,6 +426,6 @@
 ---
 
 **Project Status:** Active Development  
-**Last Major Update:** November 18, 2024  
-**Next Review:** After testing file import functionality
+**Last Major Update:** January 2025  
+**Next Review:** After testing all new features (own company, skip/stop buttons, VAT exclusion)
 
