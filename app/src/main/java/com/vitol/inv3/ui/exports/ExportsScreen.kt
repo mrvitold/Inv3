@@ -43,8 +43,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.vitol.inv3.Routes
@@ -262,6 +266,7 @@ fun MonthlySummaryCard(
         minimumFractionDigits = 2
         maximumFractionDigits = 2
     }
+    val darkRed = Color(0xFF8B0000)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -316,7 +321,14 @@ fun MonthlySummaryCard(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = "invoice q-ty: ${summary.invoiceCount}",
+                    text = buildAnnotatedString {
+                        append("invoice q-ty: ${summary.invoiceCount}")
+                        if (summary.errorCount > 0) {
+                            withStyle(style = SpanStyle(color = darkRed)) {
+                                append(" [${summary.errorCount} to check]")
+                            }
+                        }
+                    },
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
@@ -375,7 +387,14 @@ fun MonthlySummaryCard(
                                         fontWeight = FontWeight.Medium
                                     )
                                     Text(
-                                        text = "invoices: ${company.invoiceCount}",
+                                        text = buildAnnotatedString {
+                                            append("invoices: ${company.invoiceCount}")
+                                            if (company.errorCount > 0) {
+                                                withStyle(style = SpanStyle(color = darkRed)) {
+                                                    append(" [${company.errorCount} to check]")
+                                                }
+                                            }
+                                        },
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
@@ -397,6 +416,10 @@ fun MonthlySummaryCard(
                             if (isCompanyExpanded && companyInvoices.isNotEmpty()) {
                                 Spacer(modifier = Modifier.padding(vertical = 8.dp))
                                 companyInvoices.forEach { invoice ->
+                                    val invoiceErrors = viewModel.getInvoiceErrors(invoice)
+                                    val hasErrors = invoiceErrors.isNotEmpty()
+                                    val textColor = if (hasErrors) darkRed else Color.Unspecified
+                                    
                                     Card(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -416,19 +439,23 @@ fun MonthlySummaryCard(
                                                 Text(
                                                     text = invoice.invoice_id ?: "No ID",
                                                     style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Medium
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = textColor
                                                 )
                                                 Text(
                                                     text = invoice.date ?: "",
-                                                    style = MaterialTheme.typography.bodySmall
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = textColor
                                                 )
                                                 Text(
                                                     text = "${numberFormat.format(invoice.amount_without_vat_eur ?: 0.0)} EUR (without VAT)",
-                                                    style = MaterialTheme.typography.bodySmall
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = textColor
                                                 )
                                                 Text(
                                                     text = "${numberFormat.format(invoice.vat_amount_eur ?: 0.0)} EUR (VAT)",
-                                                    style = MaterialTheme.typography.bodySmall
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = textColor
                                                 )
                                             }
                                             IconButton(

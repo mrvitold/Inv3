@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vitol.inv3.data.remote.InvoiceRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
+import com.vitol.inv3.ocr.InvoiceValidator
+import com.vitol.inv3.ui.exports.InvoiceError
+import com.vitol.inv3.ui.exports.InvoiceValidationResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +20,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ExportsViewModel @Inject constructor(
-    private val repo: SupabaseRepository
+    private val repo: SupabaseRepository,
+    private val invoiceValidator: InvoiceValidator
 ) : ViewModel() {
 
     private val _invoices = MutableStateFlow<List<InvoiceRecord>>(emptyList())
@@ -38,6 +42,11 @@ class ExportsViewModel @Inject constructor(
     private val _expandedCompanies = MutableStateFlow<Set<String>>(emptySet())
     val expandedCompanies: StateFlow<Set<String>> = _expandedCompanies.asStateFlow()
 
+    // Cache validation results to avoid recalculating
+    private val _validationResults = MutableStateFlow<Map<String, InvoiceValidationResult>>(emptyMap())
+    private val validationResults: Map<String, InvoiceValidationResult>
+        get() = _validationResults.value
+
     init {
         loadInvoices()
     }
@@ -48,6 +57,7 @@ class ExportsViewModel @Inject constructor(
             try {
                 val allInvoices = repo.getAllInvoices()
                 _invoices.value = allInvoices
+                validateAllInvoices(allInvoices)
                 calculateMonthlySummaries(allInvoices)
             } catch (e: Exception) {
                 Timber.e(e, "Failed to load invoices")
@@ -55,6 +65,24 @@ class ExportsViewModel @Inject constructor(
                 _isLoading.value = false
             }
         }
+    }
+
+    private fun validateAllInvoices(allInvoices: List<InvoiceRecord>) {
+        val results = mutableMapOf<String, InvoiceValidationResult>()
+        
+        allInvoices.forEach { invoice ->
+            val invoiceId = invoice.id ?: return@forEach
+            val errors = invoiceValidator.validateInvoice(invoice, allInvoices)
+            results[invoiceId] = InvoiceValidationResult(invoice, errors)
+        }
+        
+        _validationResults.value = results
+        Timber.d("Validated ${results.size} invoices, found ${results.values.sumOf { it.errors.size }} total errors")
+    }
+
+    fun getInvoiceErrors(invoice: InvoiceRecord): List<InvoiceError> {
+        val invoiceId = invoice.id ?: return emptyList()
+        return validationResults[invoiceId]?.errors ?: emptyList()
     }
 
     fun setSelectedYear(year: Int) {
@@ -104,11 +132,17 @@ class ExportsViewModel @Inject constructor(
         val summaries = monthMap.map { (month, monthInvoices) ->
             val totalAmount = monthInvoices.sumOf { it.amount_without_vat_eur ?: 0.0 }
             val totalVat = monthInvoices.sumOf { it.vat_amount_eur ?: 0.0 }
+            // Count invoices with errors
+            val errorCount = monthInvoices.count { invoice ->
+                val invoiceId = invoice.id ?: return@count false
+                validationResults[invoiceId]?.hasErrors == true
+            }
             MonthlySummary(
                 month = month,
                 invoiceCount = monthInvoices.size,
                 totalAmount = totalAmount,
-                totalVat = totalVat
+                totalVat = totalVat,
+                errorCount = errorCount
             )
         }.sortedByDescending { it.month } // Most recent first
 
@@ -154,11 +188,17 @@ class ExportsViewModel @Inject constructor(
         return companyMap.map { (companyName, companyInvoices) ->
             val totalAmount = companyInvoices.sumOf { it.amount_without_vat_eur ?: 0.0 }
             val totalVat = companyInvoices.sumOf { it.vat_amount_eur ?: 0.0 }
+            // Count invoices with errors
+            val errorCount = companyInvoices.count { invoice ->
+                val invoiceId = invoice.id ?: return@count false
+                validationResults[invoiceId]?.hasErrors == true
+            }
             CompanySummary(
                 companyName = companyName,
                 invoiceCount = companyInvoices.size,
                 totalAmount = totalAmount,
-                totalVat = totalVat
+                totalVat = totalVat,
+                errorCount = errorCount
             )
         }.sortedBy { it.companyName }
     }
