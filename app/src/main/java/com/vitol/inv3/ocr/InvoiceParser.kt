@@ -229,14 +229,17 @@ object InvoiceParser {
                                    l.contains("pvm numeris") || l.contains("pvmnumeris")
                 val extracted = FieldExtractors.tryExtractVatNumber(line, excludeOwnVatNumber)
                 if (extracted != null && !isIban(extracted)) {
+                    // Normalize for comparison
+                    val normalizedExtracted = extracted.replace(" ", "").uppercase()
+                    val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
                     // Double-check: exclude own company VAT number even if extracted
-                    if (excludeOwnVatNumber == null || !extracted.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                    if (normalizedExclude == null || !normalizedExtracted.equals(normalizedExclude, ignoreCase = true)) {
                         if (hasVatContext && isInSellerSection) {
-                            sellerVatNumber = extracted
-                            Timber.d("Found seller VAT number with context: $extracted")
+                            sellerVatNumber = normalizedExtracted
+                            Timber.d("Found seller VAT number with context: $normalizedExtracted")
                         }
                     } else {
-                        Timber.d("Skipped own company VAT number in second pass: $extracted")
+                        Timber.d("Skipped own company VAT number in second pass: $normalizedExtracted")
                     }
                 }
             }
@@ -246,7 +249,9 @@ object InvoiceParser {
         }
         
         // Second pass: Company number - ensure it's different from VAT number and own company number
-        if (companyNumber == null || companyNumber == vatNumber?.removePrefix("LT")?.removePrefix("lt")) {
+        // Normalize VAT number for comparison
+        val normalizedVatForComparison = vatNumber?.replace(" ", "")?.uppercase()?.removePrefix("LT")
+        if (companyNumber == null || companyNumber == normalizedVatForComparison) {
             // Look for company number that's different from VAT number and own company number
             for (i in lines.indices) {
                 val line = lines[i]
@@ -693,11 +698,6 @@ object InvoiceParser {
                                 val serialEndIndex = serialMatch.range.last + 1
                                 val afterSerial = afterSerija.substring(serialEndIndex).take(30)
                                 
-                                // Try to find number keyword first
-                                val hasNumberKeyword = numberKeywords.any { keyword ->
-                                    afterSerial.lowercase().contains(Regex("\\b$keyword\\b", RegexOption.IGNORE_CASE))
-                                }
-                                
                                 // Extract number that comes after serial (within 1-2 words)
                                 val numberMatch = numberPattern.find(afterSerial)
                                 if (numberMatch != null) {
@@ -750,11 +750,6 @@ object InvoiceParser {
                                     if (nextLineIndex < lines.size) {
                                         val nextLine = lines[nextLineIndex].trim()
                                         val nextLineLower = nextLine.lowercase()
-                                        
-                                        // Check if next line has number keyword
-                                        val hasNumberKeyword = numberKeywords.any { keyword ->
-                                            nextLineLower.contains(Regex("\\b$keyword\\b", RegexOption.IGNORE_CASE))
-                                        }
                                         
                                         val numberMatch3 = numberPattern.find(nextLine)
                                         if (numberMatch3 != null) {

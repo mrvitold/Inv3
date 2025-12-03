@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -72,6 +73,7 @@ fun ExportsScreen(
     
     var exportDialogState by remember { mutableStateOf<ExportDialogState?>(null) }
     var invoiceToDelete by remember { mutableStateOf<com.vitol.inv3.data.remote.InvoiceRecord?>(null) }
+    var monthToDelete by remember { mutableStateOf<String?>(null) }
     
     // Auto-refresh when screen is resumed (after returning from EditInvoice)
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -90,7 +92,7 @@ fun ExportsScreen(
         )
     }
     
-    // Show delete confirmation dialog
+    // Show delete confirmation dialog for single invoice
     invoiceToDelete?.let { invoice ->
         AlertDialog(
             onDismissRequest = { invoiceToDelete = null },
@@ -119,10 +121,43 @@ fun ExportsScreen(
             }
         )
     }
+    
+    // Show delete confirmation dialog for month
+    monthToDelete?.let { month ->
+        val monthInvoices = viewModel.getInvoicesForMonth(month)
+        AlertDialog(
+            onDismissRequest = { monthToDelete = null },
+            title = { Text("Delete Month") },
+            text = {
+                Text("Are you sure you want to delete all ${monthInvoices.size} invoice(s) for $month? This action cannot be undone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        monthInvoices.forEach { invoice ->
+                            viewModel.deleteInvoice(invoice) {}
+                        }
+                        monthToDelete = null
+                        viewModel.loadInvoices()
+                    }
+                ) {
+                    Text("Delete All")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { monthToDelete = null }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .statusBarsPadding()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -199,7 +234,8 @@ fun ExportsScreen(
                         navController = navController,
                         month = summary.month,
                         expandedCompanies = expandedCompanies,
-                        onDeleteInvoice = { invoice -> invoiceToDelete = invoice }
+                        onDeleteInvoice = { invoice -> invoiceToDelete = invoice },
+                        onDeleteMonth = { month -> monthToDelete = month }
                     )
                 }
             }
@@ -260,7 +296,8 @@ fun MonthlySummaryCard(
     navController: androidx.navigation.NavController?,
     month: String,
     expandedCompanies: Set<String>,
-    onDeleteInvoice: (com.vitol.inv3.data.remote.InvoiceRecord) -> Unit
+    onDeleteInvoice: (com.vitol.inv3.data.remote.InvoiceRecord) -> Unit,
+    onDeleteMonth: (String) -> Unit
 ) {
     val numberFormat = NumberFormat.getNumberInstance(Locale.US).apply {
         minimumFractionDigits = 2
@@ -311,6 +348,15 @@ fun MonthlySummaryCard(
                     Icon(
                         imageVector = Icons.Default.FileDownload,
                         contentDescription = "Export"
+                    )
+                }
+                IconButton(
+                    onClick = { onDeleteMonth(month) }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete month",
+                        tint = MaterialTheme.colorScheme.error
                     )
                 }
             }

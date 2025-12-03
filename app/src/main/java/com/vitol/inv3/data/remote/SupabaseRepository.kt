@@ -29,17 +29,26 @@ data class InvoiceRecord(
 )
 
 class SupabaseRepository(private val client: SupabaseClient?) {
+    /**
+     * Normalize VAT number: remove spaces, uppercase
+     */
+    private fun normalizeVatNumber(vatNumber: String?): String? {
+        return vatNumber?.replace(" ", "")?.uppercase()?.takeIf { it.isNotBlank() }
+    }
+    
     suspend fun upsertCompany(company: CompanyRecord): CompanyRecord? = withContext(Dispatchers.IO) {
         if (client == null) {
             Timber.w("Supabase client is null, cannot upsert company")
             return@withContext null
         }
+        // Normalize VAT number before saving (remove spaces, uppercase)
+        val normalizedCompany = company.copy(vat_number = normalizeVatNumber(company.vat_number))
         try {
             // If company has an ID, update it directly
-            if (!company.id.isNullOrBlank()) {
-                val updated = client.from("companies").update(company) {
+            if (!normalizedCompany.id.isNullOrBlank()) {
+                val updated = client.from("companies").update(normalizedCompany) {
                     filter {
-                        eq("id", company.id)
+                        eq("id", normalizedCompany.id)
                     }
                     select()
                 }.decodeSingle<CompanyRecord>()
@@ -49,17 +58,18 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             
             // Check if company already exists before inserting
             // This handles the case where user wants to mark an existing company as "own"
-            val existingCompany = findExistingCompany(company)
+            val existingCompany = findExistingCompany(normalizedCompany)
             if (existingCompany != null && !existingCompany.id.isNullOrBlank()) {
+                val existingId = existingCompany.id
                 // If marking as own company, find and delete duplicate records (same company_number/VAT but not marked as own)
-                if (company.is_own_company == true) {
-                    deleteDuplicateCompanies(company, existingCompany.id!!)
+                if (normalizedCompany.is_own_company == true) {
+                    deleteDuplicateCompanies(normalizedCompany, existingId)
                 }
                 
                 // Company exists, update it with new data (including is_own_company flag)
-                val updated = client.from("companies").update(company.copy(id = existingCompany.id)) {
+                val updated = client.from("companies").update(normalizedCompany.copy(id = existingId)) {
                     filter {
-                        eq("id", existingCompany.id!!)
+                        eq("id", existingId)
                     }
                     select()
                 }.decodeSingle<CompanyRecord>()
@@ -69,9 +79,9 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             
             // Company doesn't exist, insert it
             // But first, if marking as own company, check for and delete any duplicates
-            if (company.is_own_company == true) {
+            if (normalizedCompany.is_own_company == true) {
                 // Find duplicates before inserting
-                val duplicates = findDuplicateCompanies(company)
+                val duplicates = findDuplicateCompanies(normalizedCompany)
                 // Delete duplicates that are NOT marked as own
                 duplicates.filter { it.is_own_company != true && !it.id.isNullOrBlank() }
                     .forEach { duplicate ->
@@ -86,7 +96,7 @@ class SupabaseRepository(private val client: SupabaseClient?) {
                     }
             }
             
-            val inserted = client.from("companies").insert(company) {
+            val inserted = client.from("companies").insert(normalizedCompany) {
                 select()
             }.decodeSingle<CompanyRecord>()
             Timber.d("Company inserted successfully: ${inserted.company_name}")
@@ -98,16 +108,17 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             
             if (isDuplicateError) {
                 try {
-                    val existingCompany = findExistingCompany(company)
+                    val existingCompany = findExistingCompany(normalizedCompany)
                     if (existingCompany != null && !existingCompany.id.isNullOrBlank()) {
+                        val existingId = existingCompany.id
                         // If marking as own company, delete duplicates first
-                        if (company.is_own_company == true) {
-                            deleteDuplicateCompanies(company, existingCompany.id!!)
+                        if (normalizedCompany.is_own_company == true) {
+                            deleteDuplicateCompanies(normalizedCompany, existingId)
                         }
                         
-                        val updated = client.from("companies").update(company.copy(id = existingCompany.id)) {
+                        val updated = client.from("companies").update(normalizedCompany.copy(id = existingId)) {
                             filter {
-                                eq("id", existingCompany.id!!)
+                                eq("id", existingId)
                             }
                             select()
                         }.decodeSingle<CompanyRecord>()
@@ -116,17 +127,17 @@ class SupabaseRepository(private val client: SupabaseClient?) {
                     }
                     
                     // Fallback: try to update by company_number or company_name
-                    val updated = if (!company.company_number.isNullOrBlank()) {
-                        client.from("companies").update(company) {
+                    val updated = if (!normalizedCompany.company_number.isNullOrBlank()) {
+                        client.from("companies").update(normalizedCompany) {
                             filter {
-                                eq("company_number", company.company_number)
+                                eq("company_number", normalizedCompany.company_number)
                             }
                             select()
                         }.decodeSingle<CompanyRecord>()
-                    } else if (!company.company_name.isNullOrBlank()) {
-                        client.from("companies").update(company) {
+                    } else if (!normalizedCompany.company_name.isNullOrBlank()) {
+                        client.from("companies").update(normalizedCompany) {
                             filter {
-                                eq("company_name", company.company_name)
+                                eq("company_name", normalizedCompany.company_name)
                             }
                             select()
                         }.decodeSingle<CompanyRecord>()
@@ -171,12 +182,13 @@ class SupabaseRepository(private val client: SupabaseClient?) {
                 }
             }
             
-            // Try to find by VAT number
-            if (!company.vat_number.isNullOrBlank()) {
+            // Try to find by VAT number (normalize for query)
+            val normalizedVat = normalizeVatNumber(company.vat_number)
+            if (!normalizedVat.isNullOrBlank()) {
                 val result = client.from("companies")
                     .select {
                         filter {
-                            eq("vat_number", company.vat_number)
+                            eq("vat_number", normalizedVat)
                         }
                     }
                     .decodeSingleOrNull<CompanyRecord>()
@@ -288,11 +300,12 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             
             // Delete all duplicates that are NOT marked as own company
             duplicates.forEach { duplicate ->
-                if (duplicate.is_own_company != true && !duplicate.id.isNullOrBlank()) {
+                val duplicateId = duplicate.id
+                if (duplicate.is_own_company != true && duplicateId != null) {
                     try {
                         client.from("companies").delete {
                             filter {
-                                eq("id", duplicate.id!!)
+                                eq("id", duplicateId)
                             }
                         }
                         Timber.d("Deleted duplicate company: ${duplicate.company_name} (id: ${duplicate.id})")
@@ -425,6 +438,16 @@ class SupabaseRepository(private val client: SupabaseClient?) {
         }
     }
 
+    /**
+     * Find company by VAT number or company number.
+     * VAT number is considered more reliable (standardized format).
+     * If both are provided, validates they belong to the same company.
+     * 
+     * @param companyNumber Company number (9 digits)
+     * @param vatNumber VAT number (LT + 9 digits, normalized - no spaces)
+     * @param excludeCompanyId Company ID to exclude from search
+     * @return CompanyRecord if found, null otherwise
+     */
     suspend fun findCompanyByNumberOrVat(
         companyNumber: String?, 
         vatNumber: String?,
@@ -435,13 +458,18 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             return@withContext null
         }
         try {
-            // Try to find by company_number first
-            if (!companyNumber.isNullOrBlank()) {
-                val result = if (excludeCompanyId != null) {
+            // Normalize VAT number (remove spaces)
+            val normalizedVat = vatNumber?.replace(" ", "")?.uppercase()
+            
+            // VAT number is more reliable - try it first
+            // Try normalized version first (no spaces), then try original if provided (in case database has spaces)
+            if (!normalizedVat.isNullOrBlank()) {
+                // Try normalized version first
+                var result = if (excludeCompanyId != null) {
                     client.from("companies")
                         .select {
                             filter {
-                                eq("company_number", companyNumber)
+                                eq("vat_number", normalizedVat)
                                 neq("id", excludeCompanyId)
                             }
                         }
@@ -450,24 +478,57 @@ class SupabaseRepository(private val client: SupabaseClient?) {
                     client.from("companies")
                         .select {
                             filter {
-                                eq("company_number", companyNumber)
+                                eq("vat_number", normalizedVat)
                             }
                         }
                         .decodeSingleOrNull<CompanyRecord>()
                 }
+                
+                // If normalized version not found and original VAT number is different, try original
+                if (result == null && normalizedVat != null && vatNumber != null && vatNumber != normalizedVat) {
+                    result = if (excludeCompanyId != null) {
+                        client.from("companies")
+                            .select {
+                                filter {
+                                    eq("vat_number", vatNumber)
+                                    neq("id", excludeCompanyId)
+                                }
+                            }
+                            .decodeSingleOrNull<CompanyRecord>()
+                    } else {
+                        client.from("companies")
+                            .select {
+                                filter {
+                                    eq("vat_number", vatNumber)
+                                }
+                            }
+                            .decodeSingleOrNull<CompanyRecord>()
+                    }
+                }
+                
                 if (result != null) {
-                    Timber.d("Found company by company_number: ${result.company_name}")
+                    // If company number was also provided, validate they match
+                    if (!companyNumber.isNullOrBlank()) {
+                        val normalizedCompanyNumber = companyNumber.trim()
+                        val resultCompanyNumber = result.company_number?.trim()
+                        if (resultCompanyNumber != null && normalizedCompanyNumber != resultCompanyNumber) {
+                            Timber.w("VAT number $normalizedVat belongs to company with number $resultCompanyNumber, but extracted number is $normalizedCompanyNumber - using VAT number as authoritative")
+                            // VAT number is more reliable, use the company number from database
+                        }
+                    }
+                    Timber.d("Found company by vat_number: ${result.company_name}")
                     return@withContext result
                 }
             }
             
-            // Try to find by vat_number
-            if (!vatNumber.isNullOrBlank()) {
+            // Fallback: Try to find by company_number if VAT number not found
+            if (!companyNumber.isNullOrBlank()) {
+                val normalizedCompanyNumber = companyNumber.trim()
                 val result = if (excludeCompanyId != null) {
                     client.from("companies")
                         .select {
                             filter {
-                                eq("vat_number", vatNumber)
+                                eq("company_number", normalizedCompanyNumber)
                                 neq("id", excludeCompanyId)
                             }
                         }
@@ -476,13 +537,21 @@ class SupabaseRepository(private val client: SupabaseClient?) {
                     client.from("companies")
                         .select {
                             filter {
-                                eq("vat_number", vatNumber)
+                                eq("company_number", normalizedCompanyNumber)
                             }
                         }
                         .decodeSingleOrNull<CompanyRecord>()
                 }
                 if (result != null) {
-                    Timber.d("Found company by vat_number: ${result.company_name}")
+                    // If VAT number was also provided, validate they match
+                    if (!normalizedVat.isNullOrBlank()) {
+                        val resultVatNumber = result.vat_number?.replace(" ", "")?.uppercase()
+                        if (resultVatNumber != null && normalizedVat != resultVatNumber) {
+                            Timber.w("Company number $normalizedCompanyNumber belongs to company with VAT $resultVatNumber, but extracted VAT is $normalizedVat - using company number as authoritative")
+                            // Company number found, use the VAT number from database
+                        }
+                    }
+                    Timber.d("Found company by company_number: ${result.company_name}")
                     return@withContext result
                 }
             }

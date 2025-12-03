@@ -109,12 +109,15 @@ object FieldExtractors {
         if (match != null) {
             val vatValue = match.groupValues.getOrNull(1)
             if (vatValue != null) {
-                val normalizedVat = vatValue.uppercase()
+                // Normalize: remove spaces, uppercase
+                val normalizedVat = vatValue.replace(" ", "").uppercase()
+                // Normalize exclude value for comparison (remove spaces)
+                val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
                 // Exclude own company VAT number
-                if (excludeOwnVatNumber != null && normalizedVat.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                if (normalizedExclude != null && normalizedVat.equals(normalizedExclude, ignoreCase = true)) {
                     return null // This is own company VAT number, skip it
                 }
-                // Return as-is (already has LT prefix) - uppercase for consistency
+                // Return normalized (no spaces, uppercase)
                 return normalizedVat
             }
         }
@@ -134,14 +137,16 @@ object FieldExtractors {
             if (candidate != null) {
                 // Ensure it's different from VAT number (if provided)
                 if (excludeVatNumber != null) {
-                    // Remove "LT" prefix from VAT number for comparison
-                    val vatDigits = excludeVatNumber.removePrefix("LT").removePrefix("lt")
+                    // Normalize VAT number: remove spaces, remove "LT" prefix
+                    val normalizedVat = excludeVatNumber.replace(" ", "").uppercase()
+                    val vatDigits = normalizedVat.removePrefix("LT")
                     if (candidate == vatDigits) {
                         return null // Same as VAT number, skip it
                     }
                 }
-                // Exclude own company number
-                if (excludeOwnCompanyNumber != null && candidate == excludeOwnCompanyNumber) {
+                // Exclude own company number (normalize for comparison)
+                val normalizedOwn = excludeOwnCompanyNumber?.trim()
+                if (normalizedOwn != null && candidate == normalizedOwn) {
                     return null // This is own company number, skip it
                 }
                 return candidate

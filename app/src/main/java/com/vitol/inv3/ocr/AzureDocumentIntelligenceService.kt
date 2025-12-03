@@ -307,10 +307,13 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 // If there's no "LT", it's not a VAT number
                 // Exclude own company VAT number
                 fields.get("VendorTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
-                    val vatValue = it.trim().uppercase()
+                    // Normalize: remove spaces, uppercase
+                    val vatValue = it.replace(" ", "").trim().uppercase()
                     // Only accept if it starts with "LT" - otherwise it's not a VAT number
+                    // Normalize exclude value for comparison
+                    val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
                     // Exclude own company VAT number
-                    if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
+                    if (vatValue.startsWith("LT") && (normalizedExclude == null || !vatValue.equals(normalizedExclude, ignoreCase = true))) {
                         vatNumber = vatValue
                     }
                 }
@@ -394,8 +397,9 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
             // Also extract VAT number from text if not found and exclude own company VAT
             if (vatNumber == null && parsedFromText.vatNumber != null) {
-                val extractedVat = parsedFromText.vatNumber
-                if (excludeOwnVatNumber == null || !extractedVat.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                val extractedVat = parsedFromText.vatNumber.replace(" ", "").uppercase()
+                val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
+                if (normalizedExclude == null || !extractedVat.equals(normalizedExclude, ignoreCase = true)) {
                     vatNumber = extractedVat
                     Timber.d("Azure: Extracted VAT number from text: $vatNumber")
                 } else {

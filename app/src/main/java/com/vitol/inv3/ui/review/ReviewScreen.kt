@@ -12,14 +12,18 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
+import androidx.compose.material3.AlertDialog
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ElevatedButton
@@ -31,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.MergeType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -40,11 +45,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.MaterialTheme
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.activity.ComponentActivity
@@ -71,6 +79,7 @@ import java.io.InputStream
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import timber.log.Timber
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -132,6 +141,9 @@ fun ReviewScreen(
     val processingQueue by fileImportViewModel.processingQueue.collectAsState()
     val currentIndex by fileImportViewModel.currentIndex.collectAsState()
     
+    // Get background processing progress
+    val backgroundProgress by fileImportViewModel.backgroundProcessingProgress.collectAsState()
+    
     // Calculate if buttons should be shown (queue has multiple items = batch processing)
     // Show buttons when queue has more than 1 item (batch processing mode)
     // This means user is processing multiple invoices (e.g., PDF with multiple pages)
@@ -168,6 +180,15 @@ fun ReviewScreen(
     var isReanalyzing by remember { mutableStateOf(false) } // Track if re-analysis is in progress
     var ocrMethod by remember { mutableStateOf<String?>(null) } // Track which OCR method was used: "Azure" or "Local"
     
+    // Merge state
+    var showMergeDialog by remember { mutableStateOf(false) }
+    var isMerging by remember { mutableStateOf(false) }
+    var nextInvoiceFields by remember { mutableStateOf<Map<String, String>?>(null) }
+    var isMergedInvoice by remember { mutableStateOf(false) } // Track if current invoice is merged
+    
+    // Coroutine scope for merge operations
+    val mergeScope = rememberCoroutineScope()
+    
     // Calculate initial date (previous month from today)
     val initialDateMillis = remember {
         val calendar = Calendar.getInstance()
@@ -181,59 +202,93 @@ fun ReviewScreen(
     // Load companies when screen loads
     LaunchedEffect(Unit) {
         viewModel.loadCompanies()
+        // Cleanup old cache entries (older than 24 hours) when screen loads
+        fileImportViewModel.cleanupOldCache(olderThanHours = 24)
     }
 
-    // First pass: Identify company NUMBER only (uses local OCR)
-    // Does NOT extract company name - only company number for template lookup
-    LaunchedEffect(imageUri, ownCompanyNumber, ownCompanyVatNumber) {
-        ocrMethod = "Local" // First pass always uses local OCR
-        viewModel.runOcrFirstPass(imageUri, ownCompanyNumber, ownCompanyVatNumber) { result ->
-            result.onSuccess { companyInfo ->
-                // Only populate company number and VAT number (not company name)
-                if (companyInfo.companyNumber != null) {
-                    fields = fields + ("Company_number" to companyInfo.companyNumber)
-                    Timber.d("First pass complete - Company number: ${companyInfo.companyNumber}")
+    // Track if OCR has been triggered (keyed by imageUri to handle multiple images)
+    var ocrTriggeredForUri by remember(imageUri) { mutableStateOf(false) }
+    
+    // Start Azure Document Intelligence immediately (skip unreliable first local OCR pass)
+    // Only depend on imageUri - ownCompanyNumber/VatNumber can be null initially, we'll use current values when calling
+    LaunchedEffect(imageUri) {
+        // Trigger OCR once when image is available
+        // Note: ownCompanyNumber and ownCompanyVatNumber may be null initially, but that's OK - we'll pass current values to exclude
+        Timber.d("ReviewScreen LaunchedEffect triggered - imageUri: $imageUri, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, ocrTriggeredForUri: $ocrTriggeredForUri, isReanalyzing: $isReanalyzing")
+        
+        // Check if we have a cached result
+        val cached = fileImportViewModel.getCachedOcrResult(imageUri)
+        if (cached != null && !ocrTriggeredForUri) {
+            Timber.d("Using cached OCR result for invoice")
+            ocrTriggeredForUri = true
+            isReanalyzing = true
+            isLoading = false
+            ocrMethod = "Cached"
+            
+            // Use cached result
+            cached.onSuccess { parsed ->
+                val lines = parsed.split("\n")
+                val newFields = fields.toMutableMap()
+                lines.forEach { line ->
+                    val parts = line.split(":", limit = 2)
+                    if (parts.size == 2) {
+                        val key = parts[0].trim()
+                        val value = parts[1].trim()
+                        when (key) {
+                            "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
+                            "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
+                            "Company_name" -> {
+                                if (value.isNotBlank()) {
+                                    newFields["Company_name"] = value
+                                    Timber.d("Cached - Setting company name: '$value'")
+                                }
+                            }
+                            "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
+                            "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
+                            "VAT_number" -> {
+                                val normalizedValue = value.replace(" ", "").uppercase()
+                                val normalizedOwnVat = ownCompanyVatNumber?.replace(" ", "")?.uppercase()
+                                if (normalizedOwnVat == null || !normalizedValue.equals(normalizedOwnVat, ignoreCase = true)) {
+                                    newFields["VAT_number"] = normalizedValue
+                                    Timber.d("Cached - Setting VAT_number: '$normalizedValue'")
+                                }
+                            }
+                            "Company_number" -> {
+                                val ownCompanyNum = ownCompanyNumber
+                                val trimmedValue = value.trim()
+                                if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
+                                    newFields["Company_number"] = trimmedValue
+                                    Timber.d("Cached - Setting Company_number: '$trimmedValue'")
+                                }
+                            }
+                        }
+                    }
                 }
-                // Only set VAT number if it's not the own company's VAT number
-                if (companyInfo.vatNumber != null && 
-                    (ownCompanyVatNumber == null || !companyInfo.vatNumber.equals(ownCompanyVatNumber, ignoreCase = true))) {
-                    fields = fields + ("VAT_number" to companyInfo.vatNumber)
-                    Timber.d("First pass complete - VAT number: ${companyInfo.vatNumber}")
-                } else if (companyInfo.vatNumber != null && ownCompanyVatNumber != null && 
-                           companyInfo.vatNumber.equals(ownCompanyVatNumber, ignoreCase = true)) {
-                    Timber.d("First pass - Skipped own company VAT number: ${companyInfo.vatNumber}")
-                }
-                isLoading = false
-            }.onFailure {
-                text = it.message ?: "Error"
-                isLoading = false
+                fields = newFields.toMap()
+                isReanalyzing = false
+                Timber.d("Cached OCR result applied - All fields extracted")
+            }.onFailure { error ->
+                Timber.e(error, "Cached OCR result failed, will process normally")
+                // Remove failed cache entry and retry processing
+                fileImportViewModel.removeCachedResult(imageUri)
+                // Fall through to normal processing
+                ocrTriggeredForUri = false
             }
         }
-    }
-    
-    // Track if second pass has been triggered
-    var secondPassTriggered by remember { mutableStateOf(false) }
-    
-    // Second pass: Re-analyze with template after company number is found
-            // Try Azure Document Intelligence first (more accurate), fallback to local OCR
-    // Trigger when company number OR VAT number is found (for template lookup)
-    LaunchedEffect(fields["Company_number"], fields["VAT_number"]) {
-        val companyNumber = fields["Company_number"] ?: ""
-        val vatNumber = fields["VAT_number"] ?: ""
-        val lookupKey = companyNumber.ifBlank { vatNumber }
-        // Trigger re-analysis once when company number or VAT number is found
-        if (lookupKey.isNotBlank() && !isReanalyzing && !isLoading && !secondPassTriggered) {
-            secondPassTriggered = true
+        
+        if (imageUri != null && !ocrTriggeredForUri && !isReanalyzing && cached == null) {
+            Timber.d("Starting Azure Document Intelligence OCR for current invoice...")
+            ocrTriggeredForUri = true
             isReanalyzing = true
-            // Store first pass values for database lookup
-            val firstPassCompanyNumber = fields["Company_number"]
-            val firstPassVatNumber = fields["VAT_number"]
+            isLoading = false // Set to false since we're starting immediately
+            ocrMethod = "Azure" // Use Azure directly
             
-            // Try Azure Document Intelligence first
+            // Start processing current invoice immediately (non-blocking)
+            // No first pass - go directly to Azure Document Intelligence
             viewModel.runOcrWithDocumentAi(
                 imageUri,
-                firstPassCompanyNumber,
-                firstPassVatNumber,
+                firstPassCompanyNumber = null, // No first pass
+                firstPassVatNumber = null, // No first pass
                 excludeCompanyId = activeCompanyId,
                 excludeOwnCompanyNumber = ownCompanyNumber,
                 excludeOwnVatNumber = ownCompanyVatNumber,
@@ -261,27 +316,69 @@ fun ReviewScreen(
                                     "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
                                     "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
                                     "VAT_number" -> {
+                                        // Normalize VAT number (remove spaces)
+                                        val normalizedValue = value.replace(" ", "").uppercase()
+                                        val normalizedOwnVat = ownCompanyVatNumber?.replace(" ", "")?.uppercase()
+                                        // Azure results have database lookup applied - ALWAYS use them (they ensure VAT/company number match)
                                         // Exclude own company VAT number
-                                        if (newFields["VAT_number"].isNullOrBlank() && 
-                                            (ownCompanyVatNumber == null || !value.equals(ownCompanyVatNumber, ignoreCase = true))) {
-                                            newFields["VAT_number"] = value
-                                        } else if (ownCompanyVatNumber != null && value.equals(ownCompanyVatNumber, ignoreCase = true)) {
-                                            Timber.d("Skipped own company VAT number from Azure result: $value")
+                                        if (normalizedOwnVat == null || !normalizedValue.equals(normalizedOwnVat, ignoreCase = true)) {
+                                            newFields["VAT_number"] = normalizedValue
+                                            Timber.d("Azure - Setting VAT_number from database: '$normalizedValue'")
+                                        } else {
+                                            Timber.d("Skipped own company VAT number from Azure result: $normalizedValue")
                                         }
                                     }
-                                    "Company_number" -> if (newFields["Company_number"].isNullOrBlank()) newFields["Company_number"] = value
+                                    "Company_number" -> {
+                                        // Azure results have database lookup applied - ALWAYS use them (they ensure VAT/company number match)
+                                        val ownCompanyNum = ownCompanyNumber // Store in local variable for smart cast
+                                        val trimmedValue = value.trim()
+                                        if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
+                                            newFields["Company_number"] = trimmedValue
+                                            Timber.d("Azure - Setting Company_number from database: '$trimmedValue'")
+                                        } else {
+                                            Timber.d("Skipped own company number from Azure result: $trimmedValue")
+                                        }
+                                    }
                                 }
                             }
                         }
                         fields = newFields.toMap()
                         isReanalyzing = false
-                        Timber.d("Azure second pass complete - All fields extracted, Company_name: '${newFields["Company_name"]}'")
+                        Timber.d("Current invoice processing complete - All fields extracted, Company_name: '${newFields["Company_name"]}'")
+                        // Cache the result for potential reuse
+                        fileImportViewModel.cacheOcrResult(imageUri, Result.success(parsed))
+                        
+                        // Now that current invoice is done, trigger background processing for remaining invoices
+                        if (processingQueue.size > 1 && currentIndex < processingQueue.size - 1) {
+                            Timber.d("Current invoice complete. Triggering background processing for ${processingQueue.size - currentIndex - 1} remaining invoices")
+                            launch {
+                                fileImportViewModel.triggerBackgroundProcessing(imageUri) { uri, onDone ->
+                                    // Process callback for background processing
+                                    viewModel.runOcrWithDocumentAi(
+                                        uri,
+                                        firstPassCompanyNumber = null,
+                                        firstPassVatNumber = null,
+                                        excludeCompanyId = activeCompanyId,
+                                        excludeOwnCompanyNumber = ownCompanyNumber,
+                                        excludeOwnVatNumber = ownCompanyVatNumber,
+                                        onDone = onDone,
+                                        onMethodUsed = { }
+                                    )
+                                }
+                            }
+                        }
                     }.onFailure {
                         // Fallback to local OCR if Azure Document Intelligence fails
                         Timber.w("Azure Document Intelligence failed, falling back to local OCR")
                         ocrMethod = "Local" // Mark as using local OCR
-                        viewModel.runOcrSecondPass(imageUri, lookupKey, ownCompanyNumber, ownCompanyVatNumber) { localResult ->
-                            localResult.onSuccess { parsed ->
+                        // Use runOcr instead of runOcrSecondPass since we don't have a lookup key (no first pass)
+                        viewModel.runOcr(
+                            imageUri,
+                            excludeCompanyId = activeCompanyId,
+                            excludeOwnCompanyNumber = ownCompanyNumber,
+                            excludeOwnVatNumber = ownCompanyVatNumber,
+                            onDone = { localResult ->
+                                localResult.onSuccess { parsed ->
                                 // Parse the text to populate all fields
                                 // The parsed string already has the correct company name from database lookup
                                 val lines = parsed.split("\n")
@@ -328,21 +425,30 @@ fun ReviewScreen(
                                                 }
                                             }
                                             "VAT_number" -> {
+                                                // Normalize VAT number (remove spaces)
+                                                val normalizedValue = value.replace(" ", "").uppercase()
+                                                val normalizedOwnVat = ownCompanyVatNumber?.replace(" ", "")?.uppercase()
                                                 // Local OCR fallback can replace if Azure didn't find it
                                                 // Exclude own company VAT number
-                                                if (value.isNotBlank() && newFields["VAT_number"].isNullOrBlank() &&
-                                                    (ownCompanyVatNumber == null || !value.equals(ownCompanyVatNumber, ignoreCase = true))) {
-                                                    newFields["VAT_number"] = value
-                                                    Timber.d("Local OCR fallback - Setting VAT_number: '$value'")
-                                                } else if (ownCompanyVatNumber != null && value.equals(ownCompanyVatNumber, ignoreCase = true)) {
-                                                    Timber.d("Skipped own company VAT number from local OCR result: $value")
+                                                if (normalizedValue.isNotBlank() && newFields["VAT_number"].isNullOrBlank() &&
+                                                    (normalizedOwnVat == null || !normalizedValue.equals(normalizedOwnVat, ignoreCase = true))) {
+                                                    newFields["VAT_number"] = normalizedValue
+                                                    Timber.d("Local OCR fallback - Setting VAT_number: '$normalizedValue'")
+                                                } else if (normalizedOwnVat != null && normalizedValue.equals(normalizedOwnVat, ignoreCase = true)) {
+                                                    Timber.d("Skipped own company VAT number from local OCR result: $normalizedValue")
                                                 }
                                             }
                                             "Company_number" -> {
                                                 // Local OCR fallback can replace if Azure didn't find it
-                                                if (value.isNotBlank() && newFields["Company_number"].isNullOrBlank()) {
-                                                    newFields["Company_number"] = value
-                                                    Timber.d("Local OCR fallback - Setting Company_number: '$value'")
+                                                // Exclude own company number
+                                                val ownCompanyNum = ownCompanyNumber // Store in local variable for smart cast
+                                                val trimmedValue = value.trim()
+                                                if (trimmedValue.isNotBlank() && newFields["Company_number"].isNullOrBlank() &&
+                                                    (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim())) {
+                                                    newFields["Company_number"] = trimmedValue
+                                                    Timber.d("Local OCR fallback - Setting Company_number: '$trimmedValue'")
+                                                } else if (ownCompanyNum != null && trimmedValue == ownCompanyNum.trim()) {
+                                                    Timber.d("Skipped own company number from local OCR result: $trimmedValue")
                                                 }
                                             }
                                         }
@@ -350,13 +456,56 @@ fun ReviewScreen(
                                 }
                                 fields = newFields.toMap()
                                 isReanalyzing = false
-                                Timber.d("Local OCR second pass complete - All fields extracted, Company_name: '${newFields["Company_name"]}'")
-                            }.onFailure {
-                                Timber.e(it, "Second pass failed")
+                                Timber.d("Current invoice processing complete (local OCR) - All fields extracted, Company_name: '${newFields["Company_name"]}'")
+                                // Cache the result for potential reuse
+                                fileImportViewModel.cacheOcrResult(imageUri, localResult)
+                                
+                                // Now that current invoice is done, trigger background processing for remaining invoices
+                                if (processingQueue.size > 1 && currentIndex < processingQueue.size - 1) {
+                                    Timber.d("Current invoice complete. Triggering background processing for ${processingQueue.size - currentIndex - 1} remaining invoices")
+                                    launch {
+                                        fileImportViewModel.triggerBackgroundProcessing(imageUri) { uri, onDone ->
+                                            viewModel.runOcrWithDocumentAi(
+                                                uri,
+                                                firstPassCompanyNumber = null,
+                                                firstPassVatNumber = null,
+                                                excludeCompanyId = activeCompanyId,
+                                                excludeOwnCompanyNumber = ownCompanyNumber,
+                                                excludeOwnVatNumber = ownCompanyVatNumber,
+                                                onDone = onDone,
+                                                onMethodUsed = { }
+                                            )
+                                        }
+                                    }
+                                }
+                            }.onFailure { error ->
+                                Timber.e(error, "Local OCR fallback failed")
                                 isReanalyzing = false
+                                // Cache the failure result too
+                                fileImportViewModel.cacheOcrResult(imageUri, Result.failure(error))
+                                
+                                // Even on failure, trigger background processing for remaining invoices
+                                if (processingQueue.size > 1 && currentIndex < processingQueue.size - 1) {
+                                    Timber.d("Current invoice failed. Triggering background processing for ${processingQueue.size - currentIndex - 1} remaining invoices")
+                                    launch {
+                                        fileImportViewModel.triggerBackgroundProcessing(imageUri) { uri, onDone ->
+                                            viewModel.runOcrWithDocumentAi(
+                                                uri,
+                                                firstPassCompanyNumber = null,
+                                                firstPassVatNumber = null,
+                                                excludeCompanyId = activeCompanyId,
+                                                excludeOwnCompanyNumber = ownCompanyNumber,
+                                                excludeOwnVatNumber = ownCompanyVatNumber,
+                                                onDone = onDone,
+                                                onMethodUsed = { }
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
-                    }
+                    ) // Close runOcr call
+                    } // Close .onFailure block of Azure
                 },
                 onMethodUsed = { method ->
                     ocrMethod = method // Update OCR method indicator
@@ -377,6 +526,53 @@ fun ReviewScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        // Background processing progress indicator (only show if there are invoices processing in background)
+        // Don't show if we're still processing the current invoice - only show background progress
+        if (backgroundProgress.total > 0 && !backgroundProgress.isComplete && !isReanalyzing) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Processing ${backgroundProgress.inProgress} invoice(s) in background",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "${backgroundProgress.completed + backgroundProgress.failed}/${backgroundProgress.total}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                            )
+                        }
+                        LinearProgressIndicator(
+                            progress = { backgroundProgress.progressPercentage / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (backgroundProgress.failed > 0) {
+                            Text(
+                                text = "⚠ ${backgroundProgress.failed} failed",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            }
+        }
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -627,6 +823,15 @@ fun ReviewScreen(
                     ) { success ->
                         isSaving = false
                         if (success) {
+                            // If this was a merged invoice, skip the next one (it was already merged)
+                            if (isMergedInvoice) {
+                                if (fileImportViewModel.hasNext()) {
+                                    // Skip the next invoice (it was merged into this one)
+                                    fileImportViewModel.moveToNext()
+                                }
+                                isMergedInvoice = false // Reset flag
+                            }
+                            
                             // Check if there are more items in processing queue
                             if (fileImportViewModel.hasNext()) {
                                 // Move to next item in queue
@@ -650,6 +855,105 @@ fun ReviewScreen(
                     CircularProgressIndicator(modifier = Modifier.padding(8.dp))
                 } else {
                     Text("Confirm")
+                }
+            }
+        }
+        
+        // Merge with next invoice button (only show if there's a next invoice) - moved to bottom
+        item {
+            if (fileImportViewModel.hasNext() && !isSaving && !isMerging) {
+                OutlinedButton(
+                    onClick = {
+                        // Load next invoice data for merging
+                        val nextIndex = currentIndex + 1
+                        if (nextIndex < processingQueue.size) {
+                            val nextUri = processingQueue[nextIndex]
+                            isMerging = true
+                            
+                            // Check if we have cached result for next invoice
+                            val cached = fileImportViewModel.getCachedOcrResult(nextUri)
+                            if (cached != null) {
+                                cached.onSuccess { parsed ->
+                                    val nextFields = parseOcrResultToFields(parsed)
+                                    nextInvoiceFields = nextFields
+                                    showMergeDialog = true
+                                    isMerging = false
+                                }.onFailure {
+                                    // If cached result failed, process next invoice
+                                    mergeScope.launch {
+                                        viewModel.runOcrWithDocumentAi(
+                                            nextUri,
+                                            firstPassCompanyNumber = null,
+                                            firstPassVatNumber = null,
+                                            excludeCompanyId = activeCompanyId,
+                                            excludeOwnCompanyNumber = ownCompanyNumber,
+                                            excludeOwnVatNumber = ownCompanyVatNumber,
+                                            onDone = { result ->
+                                                result.onSuccess { parsed ->
+                                                    val nextFields = parseOcrResultToFields(parsed)
+                                                    nextInvoiceFields = nextFields
+                                                    showMergeDialog = true
+                                                    isMerging = false
+                                                }.onFailure { error ->
+                                                    Timber.e(error, "Failed to process next invoice for merge")
+                                                    errorMessage = "Failed to load next invoice: ${error.message}"
+                                                    isMerging = false
+                                                }
+                                            },
+                                            onMethodUsed = { }
+                                        )
+                                    }
+                                }
+                            } else {
+                                // Process next invoice
+                                mergeScope.launch {
+                                    viewModel.runOcrWithDocumentAi(
+                                        nextUri,
+                                        firstPassCompanyNumber = null,
+                                        firstPassVatNumber = null,
+                                        excludeCompanyId = activeCompanyId,
+                                        excludeOwnCompanyNumber = ownCompanyNumber,
+                                        excludeOwnVatNumber = ownCompanyVatNumber,
+                                        onDone = { result ->
+                                            result.onSuccess { parsed ->
+                                                val nextFields = parseOcrResultToFields(parsed)
+                                                nextInvoiceFields = nextFields
+                                                showMergeDialog = true
+                                                isMerging = false
+                                            }.onFailure { error ->
+                                                Timber.e(error, "Failed to process next invoice for merge")
+                                                errorMessage = "Failed to load next invoice: ${error.message}"
+                                                isMerging = false
+                                            }
+                                        },
+                                        onMethodUsed = { }
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isSaving && !isMerging && fileImportViewModel.hasNext(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        if (isMerging) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.padding(end = 8.dp, top = 4.dp, bottom = 4.dp).widthIn(16.dp).heightIn(16.dp)
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.MergeType,
+                                contentDescription = null,
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                        }
+                        Text(if (isMerging) "Loading next invoice..." else "Merge with next invoice")
+                    }
                 }
             }
         }
@@ -702,7 +1006,8 @@ fun ReviewScreen(
                             Text(
                                 text = "Previous",
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall
                             )
                         }
                     }
@@ -738,7 +1043,8 @@ fun ReviewScreen(
                             Text(
                                 text = "Skip",
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall
                             )
                         }
                     }
@@ -806,6 +1112,112 @@ fun ReviewScreen(
             DatePicker(state = datePickerState)
         }
     }
+    
+    // Merge confirmation dialog
+    if (showMergeDialog && nextInvoiceFields != null) {
+        AlertDialog(
+            onDismissRequest = {
+                showMergeDialog = false
+                nextInvoiceFields = null
+            },
+            title = { Text("Merge Invoices") },
+            text = {
+                Column {
+                    Text("This will combine the current invoice with the next invoice. Fields will be merged intelligently (preferring non-empty values).")
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Current Invoice:", fontWeight = FontWeight.Bold)
+                    Text("  Invoice ID: ${fields["Invoice_ID"] ?: "(empty)"}")
+                    Text("  Company: ${fields["Company_name"] ?: "(empty)"}")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Next Invoice:", fontWeight = FontWeight.Bold)
+                    Text("  Invoice ID: ${nextInvoiceFields?.get("Invoice_ID") ?: "(empty)"}")
+                    Text("  Company: ${nextInvoiceFields?.get("Company_name") ?: "(empty)"}")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        // Merge fields intelligently
+                        val mergedFields = mergeFieldsIntelligently(fields, nextInvoiceFields!!)
+                        fields = mergedFields
+                        showMergeDialog = false
+                        nextInvoiceFields = null
+                        isMerging = false
+                        isMergedInvoice = true // Mark as merged so we skip next invoice on save
+                    }
+                ) {
+                    Text("Merge")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showMergeDialog = false
+                        nextInvoiceFields = null
+                        isMerging = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+// Helper function to parse OCR result string to fields map
+private fun parseOcrResultToFields(parsed: String): Map<String, String> {
+    val fieldsMap = mutableMapOf<String, String>()
+    val lines = parsed.split("\n")
+    lines.forEach { line ->
+        val parts = line.split(":", limit = 2)
+        if (parts.size == 2) {
+            val key = parts[0].trim()
+            val value = parts[1].trim()
+            fieldsMap[key] = value
+        }
+    }
+    return fieldsMap
+}
+
+// Helper function to intelligently merge fields from two invoices
+private fun mergeFieldsIntelligently(
+    currentFields: Map<String, String>,
+    nextFields: Map<String, String>
+): Map<String, String> {
+    val merged = currentFields.toMutableMap()
+    
+    // Merge strategy: prefer non-empty values, prefer current if both are non-empty
+    // For specific fields, use smarter logic
+    
+    // Invoice_ID: prefer current (first page usually has the main ID)
+    merged["Invoice_ID"] = currentFields["Invoice_ID"]?.takeIf { it.isNotBlank() }
+        ?: nextFields["Invoice_ID"] ?: ""
+    
+    // Date: prefer current (first page usually has the date)
+    merged["Date"] = currentFields["Date"]?.takeIf { it.isNotBlank() }
+        ?: nextFields["Date"] ?: ""
+    
+    // Company_name: prefer non-empty, prefer current
+    merged["Company_name"] = currentFields["Company_name"]?.takeIf { it.isNotBlank() }
+        ?: nextFields["Company_name"] ?: ""
+    
+    // VAT_number: prefer non-empty, prefer current
+    merged["VAT_number"] = currentFields["VAT_number"]?.takeIf { it.isNotBlank() }
+        ?: nextFields["VAT_number"] ?: ""
+    
+    // Company_number: prefer non-empty, prefer current
+    merged["Company_number"] = currentFields["Company_number"]?.takeIf { it.isNotBlank() }
+        ?: nextFields["Company_number"] ?: ""
+    
+    // Amount_without_VAT_EUR: prefer non-empty, prefer next (totals often on second page)
+    merged["Amount_without_VAT_EUR"] = nextFields["Amount_without_VAT_EUR"]?.takeIf { it.isNotBlank() }
+        ?: currentFields["Amount_without_VAT_EUR"] ?: ""
+    
+    // VAT_amount_EUR: prefer non-empty, prefer next (totals often on second page)
+    merged["VAT_amount_EUR"] = nextFields["VAT_amount_EUR"]?.takeIf { it.isNotBlank() }
+        ?: currentFields["VAT_amount_EUR"] ?: ""
+    
+    return merged
 }
 
 @HiltViewModel
@@ -1000,32 +1412,50 @@ class ReviewViewModel @Inject constructor(
                         parsedResult
                     }
                     
+                    // Normalize VAT numbers (remove spaces) for consistent comparison
+                    val normalizedParsedVat = parsed.vatNumber?.replace(" ", "")?.uppercase()
+                    
                     // ALWAYS look up company from database when VAT or company number is found
-                    // This ensures we get the correct company name from the database
-                    val finalParsed = if (parsed.companyNumber != null || parsed.vatNumber != null) {
+                    // This ensures we get the correct company name and validates VAT/company number match
+                    // VAT number is more reliable - if we have VAT, ONLY use VAT for lookup (don't pass company number)
+                    val lookupVatNumber = normalizedParsedVat?.takeIf { it.isNotBlank() }
+                    val lookupCompanyNumber = if (lookupVatNumber == null) {
+                        parsed.companyNumber?.takeIf { it.isNotBlank() }
+                    } else {
+                        null // Don't pass company number if we have VAT - VAT is more reliable
+                    }
+                    
+                    val finalParsed = if (lookupCompanyNumber != null || lookupVatNumber != null) {
                         try {
-                            Timber.d("Local OCR - Looking up company in database - CompanyName: '${parsed.companyName}', CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}', ExcludingOwnCompany: '$excludeCompanyId'")
-                            val companyFromDb = repo.findCompanyByNumberOrVat(parsed.companyNumber, parsed.vatNumber, excludeCompanyId = excludeCompanyId)
+                            Timber.d("Local OCR - Looking up company in database - CompanyName: '${parsed.companyName}', CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}', NormalizedVatNumber: '$normalizedParsedVat', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber', ExcludingOwnCompany: '$excludeCompanyId'")
+                            val companyFromDb = repo.findCompanyByNumberOrVat(lookupCompanyNumber, lookupVatNumber, excludeCompanyId = excludeCompanyId)
                             if (companyFromDb != null) {
-                                Timber.d("Local OCR - Found company in database: '${companyFromDb.company_name}', replacing extracted name '${parsed.companyName}'")
+                                Timber.d("Local OCR - Found company in database: '${companyFromDb.company_name}', CompanyNumber: '${companyFromDb.company_number}', VatNumber: '${companyFromDb.vat_number}'")
+                                // CRITICAL: Always use BOTH VAT and company number from database to ensure they match
+                                // Never mix extracted values with database values - they must be a pair
+                                val dbVatNumber = companyFromDb.vat_number?.replace(" ", "")?.uppercase()
+                                val dbCompanyNumber = companyFromDb.company_number
                                 parsed.copy(
                                     companyName = companyFromDb.company_name ?: parsed.companyName,
-                                    companyNumber = companyFromDb.company_number ?: parsed.companyNumber,
-                                    vatNumber = companyFromDb.vat_number ?: parsed.vatNumber
+                                    companyNumber = dbCompanyNumber, // Always use DB value
+                                    vatNumber = dbVatNumber // Always use DB value
                                 )
                             } else {
-                                Timber.d("Local OCR - No company found in database for CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
+                                Timber.d("Local OCR - No company found in database for CompanyNumber: '$lookupCompanyNumber', VatNumber: '$lookupVatNumber'")
                                 // If company name is invalid and not found in DB, set to null so it can be filled manually
                                 if (isInvalidCompanyName(parsed.companyName)) {
                                     Timber.d("Local OCR - Company name '${parsed.companyName}' is invalid, setting to null")
-                                    parsed.copy(companyName = null)
+                                    parsed.copy(
+                                        companyName = null,
+                                        vatNumber = normalizedParsedVat
+                                    )
                                 } else {
-                                    parsed
+                                    parsed.copy(vatNumber = normalizedParsedVat)
                                 }
                             }
                         } catch (e: Exception) {
                             Timber.e(e, "Failed to look up company from database")
-                            parsed
+                            parsed.copy(vatNumber = normalizedParsedVat)
                         }
                     } else {
                         Timber.d("Local OCR - No VAT or company number found, skipping database lookup")
@@ -1086,39 +1516,62 @@ class ReviewViewModel @Inject constructor(
                     }
                     currentImageUri = uri
                     
-                    // Use first pass values for database lookup (more reliable than Azure extraction)
-                    // If first pass values are not available, fall back to Azure extracted values
-                    val lookupCompanyNumber = firstPassCompanyNumber?.takeIf { it.isNotBlank() } ?: parsed.companyNumber
-                    val lookupVatNumber = firstPassVatNumber?.takeIf { it.isNotBlank() } ?: parsed.vatNumber
+                    // Normalize VAT numbers (remove spaces) for consistent comparison
+                    val normalizedFirstPassVat = firstPassVatNumber?.replace(" ", "")?.uppercase()
+                    val normalizedParsedVat = parsed.vatNumber?.replace(" ", "")?.uppercase()
+                    
+                    // VAT number is more reliable - prioritize it for lookup
+                    // Use first pass values if available (more reliable), otherwise use Azure extracted values
+                    // CRITICAL: If we have VAT number, ONLY use VAT for lookup (don't pass company number)
+                    // This ensures we get the correct matching pair from database
+                    val lookupVatNumber = normalizedFirstPassVat?.takeIf { it.isNotBlank() } 
+                        ?: normalizedParsedVat?.takeIf { it.isNotBlank() }
+                    // Only use company number for lookup if we DON'T have VAT number
+                    val lookupCompanyNumber = if (lookupVatNumber == null) {
+                        firstPassCompanyNumber?.takeIf { it.isNotBlank() } 
+                            ?: parsed.companyNumber?.takeIf { it.isNotBlank() }
+                    } else {
+                        null // Don't pass company number if we have VAT - VAT is more reliable
+                    }
                     
                     // ALWAYS look up company from database when VAT or company number is found
-                    // This ensures we get the correct company name from the database
+                    // This ensures we get the correct company name and validates VAT/company number match
                     val finalParsed = if (lookupCompanyNumber != null || lookupVatNumber != null) {
                         try {
-                            Timber.d("Azure - Looking up company in database using first pass values - CompanyName: '${parsed.companyName}', FirstPassCompanyNumber: '$firstPassCompanyNumber', FirstPassVatNumber: '$firstPassVatNumber', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber', ExcludingOwnCompany: '$excludeCompanyId'")
+                            Timber.d("Azure - Looking up company in database - FirstPassCompanyNumber: '$firstPassCompanyNumber', FirstPassVatNumber: '$firstPassVatNumber', ParsedCompanyNumber: '${parsed.companyNumber}', ParsedVatNumber: '${parsed.vatNumber}', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber', ExcludingOwnCompany: '$excludeCompanyId'")
                             val companyFromDb = repo.findCompanyByNumberOrVat(
                                 lookupCompanyNumber, 
                                 lookupVatNumber,
                                 excludeCompanyId = excludeCompanyId
                             )
                             if (companyFromDb != null) {
-                                Timber.d("Azure - Found company in database: '${companyFromDb.company_name}', replacing extracted name '${parsed.companyName}'")
+                                Timber.d("Azure - Found company in database: '${companyFromDb.company_name}', CompanyNumber: '${companyFromDb.company_number}', VatNumber: '${companyFromDb.vat_number}'")
+                                // CRITICAL: Always use BOTH VAT and company number from database to ensure they match
+                                // Never mix extracted values with database values - they must be a pair
+                                val dbVatNumber = companyFromDb.vat_number?.replace(" ", "")?.uppercase()
+                                val dbCompanyNumber = companyFromDb.company_number
                                 parsed.copy(
                                     companyName = companyFromDb.company_name ?: parsed.companyName,
-                                    companyNumber = companyFromDb.company_number ?: parsed.companyNumber,
-                                    vatNumber = companyFromDb.vat_number ?: parsed.vatNumber
+                                    companyNumber = dbCompanyNumber, // Always use DB value
+                                    vatNumber = dbVatNumber // Always use DB value
                                 )
                             } else {
-                                Timber.d("Azure - No company found in database for CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}'")
+                                Timber.d("Azure - No company found in database for CompanyNumber: '$lookupCompanyNumber', VatNumber: '$lookupVatNumber'")
+                                // If both VAT and company number are found but don't match any company, 
+                                // this might indicate an error - but we'll keep the extracted values
                                 // Keep the extracted company name if it's valid (contains UAB, MB, IĮ, AB, etc.)
                                 // Only set to null if it's invalid (like "SASKAITA", "PARDAVEJAS", etc.)
+                                val normalizedVat = lookupVatNumber ?: normalizedParsedVat
                                 if (isInvalidCompanyName(parsed.companyName)) {
                                     Timber.d("Azure - Company name '${parsed.companyName}' is invalid, setting to null")
-                                    parsed.copy(companyName = null)
+                                    parsed.copy(
+                                        companyName = null,
+                                        vatNumber = normalizedVat
+                                    )
                                 } else {
                                     // Keep the extracted company name even if not in database
                                     Timber.d("Azure - Keeping extracted company name '${parsed.companyName}' (not in database but valid)")
-                                    parsed
+                                    parsed.copy(vatNumber = normalizedVat)
                                 }
                             }
                         } catch (e: Exception) {
@@ -1143,7 +1596,7 @@ class ReviewViewModel @Inject constructor(
                     onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                     // Fallback to local OCR
                     runOcr(uri, excludeCompanyId, excludeOwnCompanyNumber, excludeOwnVatNumber) { localResult ->
-                        localResult.onSuccess { parsed ->
+                        localResult.onSuccess { _ ->
                             Timber.d("Local OCR fallback successful, extracted fields")
                         }.onFailure { error ->
                             Timber.e(error, "Local OCR fallback also failed")
@@ -1157,7 +1610,7 @@ class ReviewViewModel @Inject constructor(
                 onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                 // Fallback to local OCR on error
                 runOcr(uri, excludeCompanyId, excludeOwnCompanyNumber, excludeOwnVatNumber) { localResult ->
-                    localResult.onSuccess { parsed ->
+                    localResult.onSuccess { _ ->
                         Timber.d("Local OCR fallback successful after exception, extracted fields")
                     }.onFailure { error ->
                         Timber.e(error, "Local OCR fallback also failed after exception")
@@ -1302,7 +1755,7 @@ private fun OptionalFieldEditor(
     label: String,
     value: String,
     onChange: (String) -> Unit,
-    isOptional: Boolean,
+    @Suppress("UNUSED_PARAMETER") isOptional: Boolean, // Reserved for future styling
     modifier: Modifier = Modifier
 ) {
     OutlinedTextField(
