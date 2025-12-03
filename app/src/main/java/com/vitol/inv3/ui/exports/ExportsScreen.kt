@@ -40,7 +40,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,8 +55,14 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.vitol.inv3.Routes
+import com.vitol.inv3.MainActivityViewModel
 import com.vitol.inv3.export.ExcelExporter
 import com.vitol.inv3.export.ExportInvoice
+import com.vitol.inv3.export.ISafXmlExporter
+import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
+import com.vitol.inv3.data.remote.CompanyRecord
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -81,14 +89,20 @@ fun ExportsScreen(
         viewModel.loadInvoices()
     }
     
+    // Get repo for getting own company
+    val mainActivityViewModel: com.vitol.inv3.MainActivityViewModel = hiltViewModel()
+    val repo = mainActivityViewModel.repo
+    
     // Show export dialog if state is set
     exportDialogState?.let { state ->
         ExportDialog(
             context = context,
             invoices = state.invoices,
+            invoiceRecords = state.invoiceRecords,
             month = state.month,
             onDismiss = { exportDialogState = null },
-            onRefresh = { viewModel.loadInvoices() }
+            onRefresh = { viewModel.loadInvoices() },
+            repo = repo
         )
     }
     
@@ -186,8 +200,10 @@ fun ExportsScreen(
                             companyNumber = invoice.company_number
                         )
                     }
+                    val allInvoiceRecords = viewModel.getAllInvoicesForYear(selectedYear)
                     exportDialogState = ExportDialogState(
                         invoices = exportInvoices,
+                        invoiceRecords = allInvoiceRecords,
                         month = "$selectedYear-All"
                     )
                 }
@@ -222,6 +238,7 @@ fun ExportsScreen(
                             }
                             exportDialogState = ExportDialogState(
                                 invoices = exportInvoices,
+                                invoiceRecords = invoices,
                                 month = summary.month
                             )
                         },
@@ -541,6 +558,7 @@ fun MonthlySummaryCard(
 
 data class ExportDialogState(
     val invoices: List<ExportInvoice>,
+    val invoiceRecords: List<com.vitol.inv3.data.remote.InvoiceRecord>,
     val month: String
 )
 
@@ -548,11 +566,28 @@ data class ExportDialogState(
 fun ExportDialog(
     context: android.content.Context,
     invoices: List<ExportInvoice>,
+    invoiceRecords: List<com.vitol.inv3.data.remote.InvoiceRecord>,
     month: String,
     onDismiss: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    repo: com.vitol.inv3.data.remote.SupabaseRepository
 ) {
     var isSaving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
+    val activeCompanyId by activeCompanyIdFlow.collectAsState(initial = null)
+    var ownCompany by remember { mutableStateOf<CompanyRecord?>(null) }
+    
+    // Load own company
+    LaunchedEffect(activeCompanyId) {
+        if (activeCompanyId != null) {
+            ownCompany = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                repo.getCompanyById(activeCompanyId!!)
+            }
+        } else {
+            ownCompany = null
+        }
+    }
     
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -567,22 +602,59 @@ fun ExportDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    isSaving = true
-                    val exporter = ExcelExporter(context)
-                    val result = exporter.saveToDownloads(invoices, month)
-                    isSaving = false
-                    onDismiss()
-                    if (result != null) {
-                        Toast.makeText(context, result, Toast.LENGTH_LONG).show()
-                    } else {
-                        Toast.makeText(context, "Failed to save file", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                enabled = !isSaving
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Save to Downloads")
+                // Excel export
+                Button(
+                    onClick = {
+                        isSaving = true
+                        val exporter = ExcelExporter(context)
+                        val result = exporter.saveToDownloads(invoices, month)
+                        isSaving = false
+                        onDismiss()
+                        if (result != null) {
+                            Toast.makeText(context, result, Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(context, "Failed to save file", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = !isSaving,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Export Excel")
+                }
+                
+                // XML export (i.SAF)
+                Button(
+                    onClick = {
+                        if (ownCompany == null) {
+                            Toast.makeText(context, "Please select an own company first", Toast.LENGTH_LONG).show()
+                            return@Button
+                        }
+                        isSaving = true
+                        scope.launch {
+                            try {
+                                val exporter = ISafXmlExporter(context)
+                                val result = exporter.saveToDownloads(invoiceRecords, ownCompany, month)
+                                isSaving = false
+                                onDismiss()
+                                if (result != null) {
+                                    Toast.makeText(context, result, Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(context, "Failed to save XML file", Toast.LENGTH_SHORT).show()
+                                }
+                            } catch (e: Exception) {
+                                isSaving = false
+                                Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    enabled = !isSaving && ownCompany != null,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Export XML (i.SAF)")
+                }
             }
         },
         dismissButton = {
@@ -600,7 +672,7 @@ fun ExportDialog(
                 },
                 enabled = !isSaving
             ) {
-                Text("Share")
+                Text("Share Excel")
             }
         }
     )

@@ -47,6 +47,13 @@ import androidx.activity.ComponentActivity
 import com.vitol.inv3.utils.FileImportService
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -85,6 +92,7 @@ fun ScanScreen(
     
     val processingQueue by fileImportViewModel.processingQueue.collectAsState()
     val currentIndex by fileImportViewModel.currentIndex.collectAsState()
+    val invoiceType by fileImportViewModel.invoiceType.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -97,6 +105,14 @@ fun ScanScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
+            // Check if invoice type is selected
+            if (invoiceType == null) {
+                scope.launch {
+                    snackbarHostState.showSnackbar("Please select invoice type first")
+                }
+                return@rememberLauncherForActivityResult
+            }
+            
             isProcessingFile = true
             showProcessingDialog = true
             processingMessage = "Processing file..."
@@ -156,9 +172,70 @@ fun ScanScreen(
             }
         }
 
+        // Invoice type selector at top
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(16.dp)
+        ) {
+            var expanded by remember { mutableStateOf(false) }
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = !expanded }
+            ) {
+                OutlinedTextField(
+                    value = when (invoiceType) {
+                        "P" -> "Purchase (Received)"
+                        "S" -> "Sales (Issued)"
+                        else -> ""
+                    },
+                    onValueChange = { },
+                    readOnly = true,
+                    label = { Text("Invoice Type *") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    modifier = Modifier
+                        .width(250.dp)
+                        .menuAnchor(),
+                    colors = if (invoiceType == null) {
+                        androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.error
+                        )
+                    } else {
+                        androidx.compose.material3.OutlinedTextFieldDefaults.colors()
+                    }
+                )
+                ExposedDropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Purchase (Received)") },
+                        onClick = {
+                            fileImportViewModel.setInvoiceType("P")
+                            expanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Sales (Issued)") },
+                        onClick = {
+                            fileImportViewModel.setInvoiceType("S")
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+
         // Top bar with Import button
         IconButton(
             onClick = {
+                // Check if invoice type is selected
+                if (invoiceType == null) {
+                    scope.launch {
+                        snackbarHostState.showSnackbar("Please select invoice type first")
+                    }
+                    return@IconButton
+                }
                 filePickerLauncher.launch("*/*") // Will filter by MIME type in the picker
             },
             modifier = Modifier
@@ -174,6 +251,13 @@ fun ScanScreen(
 
         FloatingActionButton(
             onClick = {
+                // Check if invoice type is selected
+                if (invoiceType == null) {
+                    scope.launch {
+                        snackbarHostState.showSnackbar("Please select invoice type first")
+                    }
+                    return@FloatingActionButton
+                }
                 val capturer = imageCapture ?: return@FloatingActionButton
                 capturePhoto(context, capturer) { result ->
                     result.onSuccess { uri ->

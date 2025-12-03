@@ -9,6 +9,9 @@ create table if not exists public.invoices (
   vat_amount_eur numeric(12,2),
   vat_number text,
   company_number text,
+  invoice_type text default 'P' check (invoice_type in ('P', 'S')),
+  vat_rate numeric(5,2),
+  tax_code text default 'PVM1',
   created_at timestamptz default now()
 );
 

@@ -45,6 +45,15 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
     private val _retryCounts = MutableStateFlow<Map<Uri, Int>>(emptyMap())
     private val maxRetries = 2 // Maximum retry attempts for failed processing
     
+    // Invoice type for current batch (P = Purchase, S = Sales)
+    private val _invoiceType = MutableStateFlow<String?>(null)
+    val invoiceType: StateFlow<String?> = _invoiceType.asStateFlow()
+    
+    fun setInvoiceType(type: String?) {
+        _invoiceType.value = type
+        Timber.d("Invoice type set to: $type")
+    }
+    
     fun addToQueue(uris: List<Uri>) {
         _processingQueue.value = uris
         _currentIndex.value = 0

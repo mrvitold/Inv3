@@ -30,6 +30,9 @@ import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.SkipNext
@@ -74,6 +77,7 @@ import com.vitol.inv3.ocr.OcrBlock
 import com.vitol.inv3.ocr.TemplateLearner
 import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
 import com.vitol.inv3.utils.DateFormatter
+import com.vitol.inv3.export.TaxCodeDeterminer
 import android.graphics.BitmapFactory
 import java.io.InputStream
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -170,9 +174,23 @@ fun ReviewScreen(
                 "Amount_without_VAT_EUR" to "",
                 "VAT_amount_EUR" to "",
                 "VAT_number" to "",
-                "Company_number" to ""
+                "Company_number" to "",
+                "Invoice_type" to "", // P = Purchase, S = Sales
+                "VAT_rate" to "", // VAT rate as percentage (e.g., "21", "9", "5", "0")
+                "Tax_code" to "" // Tax code (e.g., "PVM1", "PVM25")
             )
         )
+    }
+    // Get invoice type from FileImportViewModel (set before scanning)
+    val invoiceTypeFromViewModel by fileImportViewModel.invoiceType.collectAsState()
+    var invoiceType by remember { mutableStateOf<String?>(invoiceTypeFromViewModel) } // Track selected invoice type
+    
+    // Update invoice type when ViewModel changes
+    LaunchedEffect(invoiceTypeFromViewModel) {
+        invoiceType = invoiceTypeFromViewModel
+        if (invoiceTypeFromViewModel != null) {
+            fields = fields + ("Invoice_type" to invoiceTypeFromViewModel)
+        }
     }
     var showCompanySuggestions by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
@@ -243,8 +261,42 @@ fun ReviewScreen(
                                     Timber.d("Cached - Setting company name: '$value'")
                                 }
                             }
-                            "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
-                            "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
+                            "Amount_without_VAT_EUR" -> {
+                                if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) {
+                                    newFields["Amount_without_VAT_EUR"] = value
+                                    // Auto-calculate VAT rate if VAT amount is already set
+                                    val vatAmountStr = newFields["VAT_amount_EUR"]?.replace(",", ".")
+                                    val amountStr = value.replace(",", ".")
+                                    val amountWithoutVat = amountStr.toDoubleOrNull()
+                                    val vatAmount = vatAmountStr?.toDoubleOrNull()
+                                    if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                                        val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                                        if (calculatedRate != null) {
+                                            newFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                            val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                                            newFields["Tax_code"] = taxCode
+                                        }
+                                    }
+                                }
+                            }
+                            "VAT_amount_EUR" -> {
+                                if (newFields["VAT_amount_EUR"].isNullOrBlank()) {
+                                    newFields["VAT_amount_EUR"] = value
+                                    // Auto-calculate VAT rate if amount without VAT is already set
+                                    val amountStr = newFields["Amount_without_VAT_EUR"]?.replace(",", ".")
+                                    val vatAmountStr = value.replace(",", ".")
+                                    val amountWithoutVat = amountStr?.toDoubleOrNull()
+                                    val vatAmount = vatAmountStr.toDoubleOrNull()
+                                    if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                                        val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                                        if (calculatedRate != null) {
+                                            newFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                            val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                                            newFields["Tax_code"] = taxCode
+                                        }
+                                    }
+                                }
+                            }
                             "VAT_number" -> {
                                 val normalizedValue = value.replace(" ", "").uppercase()
                                 val normalizedOwnVat = ownCompanyVatNumber?.replace(" ", "")?.uppercase()
@@ -313,8 +365,42 @@ fun ReviewScreen(
                                             Timber.d("Azure - Setting company name from result: '$value'")
                                         }
                                     }
-                                    "Amount_without_VAT_EUR" -> if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) newFields["Amount_without_VAT_EUR"] = value
-                                    "VAT_amount_EUR" -> if (newFields["VAT_amount_EUR"].isNullOrBlank()) newFields["VAT_amount_EUR"] = value
+                                    "Amount_without_VAT_EUR" -> {
+                                        if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) {
+                                            newFields["Amount_without_VAT_EUR"] = value
+                                            // Auto-calculate VAT rate if VAT amount is already set
+                                            val vatAmountStr = newFields["VAT_amount_EUR"]?.replace(",", ".")
+                                            val amountStr = value.replace(",", ".")
+                                            val amountWithoutVat = amountStr.toDoubleOrNull()
+                                            val vatAmount = vatAmountStr?.toDoubleOrNull()
+                                            if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                                                val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                                                if (calculatedRate != null) {
+                                                    newFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                                    val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                                                    newFields["Tax_code"] = taxCode
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "VAT_amount_EUR" -> {
+                                        if (newFields["VAT_amount_EUR"].isNullOrBlank()) {
+                                            newFields["VAT_amount_EUR"] = value
+                                            // Auto-calculate VAT rate if amount without VAT is already set
+                                            val amountStr = newFields["Amount_without_VAT_EUR"]?.replace(",", ".")
+                                            val vatAmountStr = value.replace(",", ".")
+                                            val amountWithoutVat = amountStr?.toDoubleOrNull()
+                                            val vatAmount = vatAmountStr.toDoubleOrNull()
+                                            if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                                                val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                                                if (calculatedRate != null) {
+                                                    newFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                                    val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                                                    newFields["Tax_code"] = taxCode
+                                                }
+                                            }
+                                        }
+                                    }
                                     "VAT_number" -> {
                                         // Normalize VAT number (remove spaces)
                                         val normalizedValue = value.replace(" ", "").uppercase()
@@ -415,6 +501,19 @@ fun ReviewScreen(
                                                 if (value.isNotBlank() && newFields["Amount_without_VAT_EUR"].isNullOrBlank()) {
                                                     newFields["Amount_without_VAT_EUR"] = value
                                                     Timber.d("Local OCR fallback - Setting Amount_without_VAT_EUR: '$value'")
+                                                    // Auto-calculate VAT rate if VAT amount is already set
+                                                    val vatAmountStr = newFields["VAT_amount_EUR"]?.replace(",", ".")
+                                                    val amountStr = value.replace(",", ".")
+                                                    val amountWithoutVat = amountStr.toDoubleOrNull()
+                                                    val vatAmount = vatAmountStr?.toDoubleOrNull()
+                                                    if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                                                        val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                                                        if (calculatedRate != null) {
+                                                            newFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                                            val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                                                            newFields["Tax_code"] = taxCode
+                                                        }
+                                                    }
                                                 }
                                             }
                                             "VAT_amount_EUR" -> {
@@ -422,6 +521,19 @@ fun ReviewScreen(
                                                 if (value.isNotBlank() && newFields["VAT_amount_EUR"].isNullOrBlank()) {
                                                     newFields["VAT_amount_EUR"] = value
                                                     Timber.d("Local OCR fallback - Setting VAT_amount_EUR: '$value'")
+                                                    // Auto-calculate VAT rate if amount without VAT is already set
+                                                    val amountStr = newFields["Amount_without_VAT_EUR"]?.replace(",", ".")
+                                                    val vatAmountStr = value.replace(",", ".")
+                                                    val amountWithoutVat = amountStr?.toDoubleOrNull()
+                                                    val vatAmount = vatAmountStr.toDoubleOrNull()
+                                                    if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                                                        val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                                                        if (calculatedRate != null) {
+                                                            newFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                                            val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                                                            newFields["Tax_code"] = taxCode
+                                                        }
+                                                    }
                                                 }
                                             }
                                             "VAT_number" -> {
@@ -625,27 +737,49 @@ fun ReviewScreen(
                     }
                 }
                 
-                // OCR method indicator in top right
-                ocrMethod?.let { method ->
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = when (method) {
-                            "Azure" -> androidx.compose.material3.MaterialTheme.colorScheme.primaryContainer
-                            "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.secondaryContainer
-                            else -> androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant
-                        },
-                        modifier = Modifier.padding(start = 8.dp)
-                    ) {
-                        Text(
-                            text = method,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                // Invoice type and OCR method indicator in top right
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Invoice type label
+                    invoiceType?.let { type ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.padding(start = 8.dp)
+                        ) {
+                            Text(
+                                text = if (type == "P") "Purchase" else "Sales",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    
+                    // OCR method indicator
+                    ocrMethod?.let { method ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
                             color = when (method) {
-                                "Azure" -> androidx.compose.material3.MaterialTheme.colorScheme.onPrimaryContainer
-                                "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.onSecondaryContainer
-                                else -> androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
+                                "Azure", "Cached" -> androidx.compose.material3.MaterialTheme.colorScheme.primaryContainer
+                                "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.secondaryContainer
+                                else -> androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            modifier = Modifier.padding(start = 8.dp)
+                        ) {
+                            Text(
+                                text = if (method == "Azure" || method == "Cached") "online" else method,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                color = when (method) {
+                                    "Azure", "Cached" -> androidx.compose.material3.MaterialTheme.colorScheme.onPrimaryContainer
+                                    "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.onSecondaryContainer
+                                    else -> androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -768,7 +902,23 @@ fun ReviewScreen(
             FieldEditor(
                 label = "Amount_without_VAT_EUR",
                 value = fields["Amount_without_VAT_EUR"] ?: "",
-                onChange = { fields = fields + ("Amount_without_VAT_EUR" to it) }
+                onChange = { newValue ->
+                    fields = fields + ("Amount_without_VAT_EUR" to newValue)
+                    // Auto-calculate VAT rate when amount without VAT changes
+                    // Handle comma as decimal separator
+                    val amountWithoutVat = newValue.replace(",", ".").toDoubleOrNull()
+                    val vatAmountStr = fields["VAT_amount_EUR"]?.replace(",", ".")
+                    val vatAmount = vatAmountStr?.toDoubleOrNull()
+                    if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                        val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                        if (calculatedRate != null) {
+                            fields = fields + ("VAT_rate" to calculatedRate.toInt().toString())
+                            // Auto-determine tax code
+                            val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                            fields = fields + ("Tax_code" to taxCode)
+                        }
+                    }
+                }
             )
         }
         
@@ -777,8 +927,58 @@ fun ReviewScreen(
             FieldEditor(
                 label = "VAT_amount_EUR",
                 value = fields["VAT_amount_EUR"] ?: "",
-                onChange = { fields = fields + ("VAT_amount_EUR" to it) }
+                onChange = { newValue ->
+                    fields = fields + ("VAT_amount_EUR" to newValue)
+                    // Auto-calculate VAT rate when VAT amount changes
+                    // Handle comma as decimal separator
+                    val amountWithoutVatStr = fields["Amount_without_VAT_EUR"]?.replace(",", ".")
+                    val amountWithoutVat = amountWithoutVatStr?.toDoubleOrNull()
+                    val vatAmount = newValue.replace(",", ".").toDoubleOrNull()
+                    if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                        val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                        if (calculatedRate != null) {
+                            fields = fields + ("VAT_rate" to calculatedRate.toInt().toString())
+                            // Auto-determine tax code
+                            val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                            fields = fields + ("Tax_code" to taxCode)
+                        }
+                    }
+                }
             )
+        }
+        
+        // VAT rate and Tax code (side by side, small fields)
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // VAT rate (small field)
+                OutlinedTextField(
+                    value = fields["VAT_rate"] ?: "",
+                    onValueChange = { newValue ->
+                        fields = fields + ("VAT_rate" to newValue)
+                        // Auto-determine tax code when VAT rate changes
+                        val vatRate = newValue.toDoubleOrNull()
+                        if (vatRate != null) {
+                            val taxCode = TaxCodeDeterminer.determineTaxCode(vatRate, text)
+                            fields = fields + ("Tax_code" to taxCode)
+                        }
+                    },
+                    label = { Text("VAT, %", style = MaterialTheme.typography.bodySmall) },
+                    modifier = Modifier.weight(1f),
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                
+                // Tax code (small field)
+                OutlinedTextField(
+                    value = fields["Tax_code"] ?: "",
+                    onValueChange = { fields = fields + ("Tax_code" to it) },
+                    label = { Text("Tax Code", style = MaterialTheme.typography.bodySmall) },
+                    modifier = Modifier.weight(1f),
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+            }
         }
         
         // Error message
@@ -803,6 +1003,13 @@ fun ReviewScreen(
                         return@ElevatedButton
                     }
                     
+                    // Invoice type should already be set from ViewModel, but validate just in case
+                    val finalInvoiceType = invoiceType ?: invoiceTypeFromViewModel
+                    if (finalInvoiceType == null) {
+                        errorMessage = "Invoice type is required. Please go back and select invoice type."
+                        return@ElevatedButton
+                    }
+                    
                     isSaving = true
                     errorMessage = null
                     viewModel.confirm(
@@ -813,7 +1020,10 @@ fun ReviewScreen(
                             amount_without_vat_eur = fields["Amount_without_VAT_EUR"]?.toDoubleOrNull(),
                             vat_amount_eur = fields["VAT_amount_EUR"]?.toDoubleOrNull(),
                             vat_number = fields["VAT_number"],
-                            company_number = fields["Company_number"]
+                            company_number = fields["Company_number"],
+                            invoice_type = finalInvoiceType,
+                            vat_rate = fields["VAT_rate"]?.toDoubleOrNull(),
+                            tax_code = fields["Tax_code"]?.takeIf { it.isNotBlank() } ?: "PVM1"
                         ),
                         CompanyRecord(
                             company_number = fields["Company_number"],

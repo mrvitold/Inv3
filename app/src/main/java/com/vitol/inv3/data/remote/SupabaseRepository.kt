@@ -25,7 +25,10 @@ data class InvoiceRecord(
     val amount_without_vat_eur: Double?,
     val vat_amount_eur: Double?,
     val vat_number: String?,
-    val company_number: String?
+    val company_number: String?,
+    val invoice_type: String? = "P", // P = Purchase/Received, S = Sales/Issued
+    val vat_rate: Double? = null,
+    val tax_code: String? = "PVM1"
 )
 
 class SupabaseRepository(private val client: SupabaseClient?) {

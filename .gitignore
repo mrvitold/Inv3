@@ -67,3 +67,7 @@ gradle.properties
 app/src/main/assets/documentai-credentials.json
 app/src/main/assets/*credentials*.json
 app/src/main/assets/*azure*.json
+
+# Support files (PDFs, documentation)
+support/
+*.pdf
