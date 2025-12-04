@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.AlertDialog
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -203,6 +204,9 @@ fun ReviewScreen(
     var isMerging by remember { mutableStateOf(false) }
     var nextInvoiceFields by remember { mutableStateOf<Map<String, String>?>(null) }
     var isMergedInvoice by remember { mutableStateOf(false) } // Track if current invoice is merged
+    
+    // Cancel/back confirmation dialog
+    var showCancelDialog by remember { mutableStateOf(false) }
     
     // Coroutine scope for merge operations
     val mergeScope = rememberCoroutineScope()
@@ -1308,6 +1312,40 @@ fun ReviewScreen(
                 }
             }
         }
+    }
+    
+    // Handle back button press
+    BackHandler(enabled = !isSaving && !isMerging) {
+        showCancelDialog = true
+    }
+    
+    // Cancel confirmation dialog
+    if (showCancelDialog) {
+        AlertDialog(
+            onDismissRequest = { showCancelDialog = false },
+            title = { Text("Cancel Verification?") },
+            text = { Text("Are you sure you want to cancel? Any unsaved changes will be lost.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showCancelDialog = false
+                        // Clear queue and navigate back to home screen
+                        fileImportViewModel.clearQueue()
+                        navController?.navigate(Routes.Home) {
+                            // Clear back stack to prevent going back to review screen
+                            popUpTo(Routes.Home) { inclusive = false }
+                        }
+                    }
+                ) {
+                    Text("Yes, Cancel")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelDialog = false }) {
+                    Text("No, Continue")
+                }
+            }
+        )
     }
     
     // Date picker dialog
