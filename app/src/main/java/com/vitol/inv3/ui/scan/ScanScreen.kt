@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -29,10 +30,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -48,10 +51,9 @@ import com.vitol.inv3.utils.FileImportService
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +64,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScanScreen(
     modifier: Modifier = Modifier,
@@ -89,6 +92,10 @@ fun ScanScreen(
     var isProcessingFile by remember { mutableStateOf(false) }
     var processingMessage by remember { mutableStateOf<String?>(null) }
     var showProcessingDialog by remember { mutableStateOf(false) }
+    var cameraEnabled by remember { mutableStateOf(false) } // Only enable camera after type is selected
+    
+    // Get current invoice type from ViewModel
+    val currentInvoiceType by fileImportViewModel.invoiceType.collectAsState()
     
     val processingQueue by fileImportViewModel.processingQueue.collectAsState()
     val currentIndex by fileImportViewModel.currentIndex.collectAsState()
@@ -105,14 +112,6 @@ fun ScanScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            // Check if invoice type is selected
-            if (invoiceType == null) {
-                scope.launch {
-                    snackbarHostState.showSnackbar("Please select invoice type first")
-                }
-                return@rememberLauncherForActivityResult
-            }
-            
             isProcessingFile = true
             showProcessingDialog = true
             processingMessage = "Processing file..."
@@ -123,7 +122,7 @@ fun ScanScreen(
                     if (uris.isNotEmpty()) {
                         fileImportViewModel.addToQueue(uris)
                         processingMessage = "Found ${uris.size} invoice(s). Processing first invoice..."
-                        // Navigate to first item
+                        // Navigate to first item (invoice type is already set in ViewModel)
                         val firstUri = uris[0]
                         showProcessingDialog = false
                         navController.navigate("review/${Uri.encode(firstUri.toString())}")
@@ -137,6 +136,13 @@ fun ScanScreen(
 
     LaunchedEffect(Unit) {
         permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+    
+    // Enable camera automatically when invoice type is selected and permission is granted
+    LaunchedEffect(currentInvoiceType, hasPermission) {
+        if (currentInvoiceType != null && hasPermission && !cameraEnabled) {
+            cameraEnabled = true
+        }
     }
 
     // Check if there are more items in queue when screen is resumed
@@ -159,7 +165,8 @@ fun ScanScreen(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (hasPermission) {
+        // Only show camera if permission granted AND type is selected
+        if (hasPermission && cameraEnabled) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -170,139 +177,98 @@ fun ScanScreen(
                     onReady = { imageCapture = it }
                 )
             }
-        }
-
-        // Invoice type selector at top
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(16.dp)
-        ) {
-            var expanded by remember { mutableStateOf(false) }
-            ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { expanded = !expanded }
-            ) {
-                OutlinedTextField(
-                    value = when (invoiceType) {
-                        "P" -> "Purchase (Received)"
-                        "S" -> "Sales (Issued)"
-                        else -> ""
-                    },
-                    onValueChange = { },
-                    readOnly = true,
-                    label = { Text("Invoice Type *") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                    modifier = Modifier
-                        .width(250.dp)
-                        .menuAnchor(),
-                    colors = if (invoiceType == null) {
-                        androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.error
-                        )
-                    } else {
-                        androidx.compose.material3.OutlinedTextFieldDefaults.colors()
+            
+            // Manual capture button
+            FloatingActionButton(
+                onClick = {
+                    val capturer = imageCapture ?: return@FloatingActionButton
+                    capturePhoto(context, capturer) { result ->
+                        result.onSuccess { uri ->
+                            scope.launch { snackbarHostState.showSnackbar("Saved: ${uri.lastPathSegment}") }
+                            // Invoice type is already set in ViewModel
+                            navController.navigate("review/${Uri.encode(uri.toString())}")
+                        }.onFailure { e ->
+                            scope.launch { snackbarHostState.showSnackbar("Capture failed: ${e.message}") }
+                        }
                     }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Camera,
+                    contentDescription = "Capture photo"
                 )
-                ExposedDropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Purchase (Received)") },
-                        onClick = {
-                            fileImportViewModel.setInvoiceType("P")
-                            expanded = false
-                        }
+            }
+        } else if (!hasPermission) {
+            // Show message when camera permission is not granted
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Camera permission required",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Spacer(modifier = Modifier.padding(8.dp))
+                Text(
+                    text = "Please grant camera permission to scan invoices",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        } else {
+            // Show message when waiting for camera permission or invoice type
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (currentInvoiceType == null) {
+                    Text(
+                        text = "Please select invoice type first",
+                        style = MaterialTheme.typography.titleLarge
                     )
-                    DropdownMenuItem(
-                        text = { Text("Sales (Issued)") },
-                        onClick = {
-                            fileImportViewModel.setInvoiceType("S")
-                            expanded = false
-                        }
+                } else {
+                    Text(
+                        text = "Preparing camera...",
+                        style = MaterialTheme.typography.titleLarge
                     )
                 }
             }
         }
 
-        // Top bar with Import button
-        IconButton(
-            onClick = {
-                // Check if invoice type is selected
-                if (invoiceType == null) {
-                    scope.launch {
-                        snackbarHostState.showSnackbar("Please select invoice type first")
-                    }
-                    return@IconButton
-                }
-                filePickerLauncher.launch("*/*") // Will filter by MIME type in the picker
-            },
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(16.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Folder,
-                contentDescription = "Import from files",
-                tint = MaterialTheme.colorScheme.onSurface
-            )
-        }
-
-        FloatingActionButton(
-            onClick = {
-                // Check if invoice type is selected
-                if (invoiceType == null) {
-                    scope.launch {
-                        snackbarHostState.showSnackbar("Please select invoice type first")
-                    }
-                    return@FloatingActionButton
-                }
-                val capturer = imageCapture ?: return@FloatingActionButton
-                capturePhoto(context, capturer) { result ->
-                    result.onSuccess { uri ->
-                        scope.launch { snackbarHostState.showSnackbar("Saved: ${uri.lastPathSegment}") }
-                        navController.navigate("review/${Uri.encode(uri.toString())}")
-                    }.onFailure { e ->
-                        scope.launch { snackbarHostState.showSnackbar("Capture failed: ${e.message}") }
-                    }
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.primary,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 80.dp) // Increased padding to avoid navigation buttons
-        ) {
-            Icon(Icons.Default.Camera, contentDescription = "Capture photo")
-        }
-
         SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.TopCenter))
 
-        // Processing dialog
-        if (showProcessingDialog) {
-            AlertDialog(
-                onDismissRequest = { showProcessingDialog = false },
-                title = { Text("Processing File") },
-                text = {
-                    if (isProcessingFile) {
-                        Column {
-                            CircularProgressIndicator()
-                            Spacer(modifier = Modifier.padding(8.dp))
-                            Text(processingMessage ?: "Processing...")
-                        }
-                    } else {
-                        Text(processingMessage ?: "")
+    }
+    
+    // Processing dialog (outside Box to ensure proper rendering)
+    if (showProcessingDialog) {
+        AlertDialog(
+            onDismissRequest = { showProcessingDialog = false },
+            title = { Text("Processing File") },
+            text = {
+                if (isProcessingFile) {
+                    Column {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.padding(8.dp))
+                        Text(processingMessage ?: "Processing...")
                     }
-                },
-                confirmButton = {
-                    if (!isProcessingFile) {
-                        Button(onClick = { showProcessingDialog = false }) {
-                            Text("OK")
-                        }
+                } else {
+                    Text(processingMessage ?: "")
+                }
+            },
+            confirmButton = {
+                if (!isProcessingFile) {
+                    Button(onClick = { showProcessingDialog = false }) {
+                        Text("OK")
                     }
                 }
-            )
-        }
+            }
+        )
     }
 }
 

@@ -189,7 +189,7 @@ fun ReviewScreen(
     LaunchedEffect(invoiceTypeFromViewModel) {
         invoiceType = invoiceTypeFromViewModel
         if (invoiceTypeFromViewModel != null) {
-            fields = fields + ("Invoice_type" to invoiceTypeFromViewModel)
+            fields = fields + ("Invoice_type" to invoiceTypeFromViewModel!!)
         }
     }
     var showCompanySuggestions by remember { mutableStateOf(false) }
@@ -223,6 +223,51 @@ fun ReviewScreen(
         // Cleanup old cache entries (older than 24 hours) when screen loads
         fileImportViewModel.cleanupOldCache(olderThanHours = 24)
     }
+    
+    // Track if background processing has been triggered for this screen load
+    var backgroundProcessingTriggered by remember(imageUri) { mutableStateOf(false) }
+    // Track if current invoice processing has started (to ensure it gets priority)
+    var currentInvoiceProcessingStarted by remember(imageUri) { mutableStateOf(false) }
+    
+    // Trigger background processing AFTER current invoice processing has started
+    // This ensures current invoice gets priority and fills immediately when ready
+    // Background processing runs in parallel but with a delay to give current invoice priority
+    LaunchedEffect(processingQueue.size, currentIndex, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId, currentInvoiceProcessingStarted) {
+        // Only trigger if we have multiple invoices AND current invoice processing has started
+        // This ensures current invoice gets priority and starts processing first
+        if (processingQueue.size > 1 && currentIndex < processingQueue.size - 1 && !backgroundProcessingTriggered && currentInvoiceProcessingStarted) {
+            // Check if background processing hasn't started yet
+            val remainingUris = processingQueue.subList(currentIndex + 1, processingQueue.size)
+            val needsProcessing = remainingUris.any { uri ->
+                fileImportViewModel.getCachedOcrResult(uri) == null &&
+                !fileImportViewModel.isProcessingInBackground(uri)
+            }
+            
+            if (needsProcessing) {
+                backgroundProcessingTriggered = true
+                Timber.d("ReviewScreen: Starting background processing for ${remainingUris.size} remaining invoices (current invoice processing has started)")
+                launch {
+                    // Add a small delay (200ms) to ensure current invoice gets priority and starts first
+                    kotlinx.coroutines.delay(200)
+                    fileImportViewModel.triggerBackgroundProcessing(imageUri) { uri, index, onDone ->
+                        // Minimal stagger: 50ms per invoice to allow maximum parallel processing while preventing rate limits
+                        val staggeredDelay = index * 50L
+                        viewModel.runOcrWithDocumentAi(
+                            uri,
+                            firstPassCompanyNumber = null,
+                            firstPassVatNumber = null,
+                            excludeCompanyId = activeCompanyId,
+                            excludeOwnCompanyNumber = ownCompanyNumber, // Can be null, that's OK
+                            excludeOwnVatNumber = ownCompanyVatNumber, // Can be null, that's OK
+                            onDone = onDone,
+                            onMethodUsed = { },
+                            initialDelayMs = staggeredDelay // Staggered delay to prevent rate limiting
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     // Track if OCR has been triggered (keyed by imageUri to handle multiple images)
     var ocrTriggeredForUri by remember(imageUri) { mutableStateOf(false) }
@@ -237,11 +282,12 @@ fun ReviewScreen(
         // Check if we have a cached result
         val cached = fileImportViewModel.getCachedOcrResult(imageUri)
         if (cached != null && !ocrTriggeredForUri) {
-            Timber.d("Using cached OCR result for invoice")
+            Timber.d("Using cached OCR result for invoice (PRIORITY - immediate fill)")
             ocrTriggeredForUri = true
             isReanalyzing = true
             isLoading = false
             ocrMethod = "Cached"
+            // Don't set currentInvoiceProcessingStarted here - set it after fields are filled
             
             // Use cached result
             cached.onSuccess { parsed ->
@@ -319,6 +365,10 @@ fun ReviewScreen(
                 fields = newFields.toMap()
                 isReanalyzing = false
                 Timber.d("Cached OCR result applied - All fields extracted")
+                
+                // NOW mark that current invoice processing has completed and data is filled
+                // This will trigger background processing for remaining invoices
+                currentInvoiceProcessingStarted = true
             }.onFailure { error ->
                 Timber.e(error, "Cached OCR result failed, will process normally")
                 // Remove failed cache entry and retry processing
@@ -329,14 +379,16 @@ fun ReviewScreen(
         }
         
         if (imageUri != null && !ocrTriggeredForUri && !isReanalyzing && cached == null) {
-            Timber.d("Starting Azure Document Intelligence OCR for current invoice...")
+            Timber.d("Starting Azure Document Intelligence OCR for current invoice (PRIORITY - no delay)...")
             ocrTriggeredForUri = true
             isReanalyzing = true
             isLoading = false // Set to false since we're starting immediately
             ocrMethod = "Azure" // Use Azure directly
+            // Don't set currentInvoiceProcessingStarted here - set it only AFTER data is filled
             
-            // Start processing current invoice immediately (non-blocking)
+            // Start processing current invoice immediately (non-blocking, no delay)
             // No first pass - go directly to Azure Document Intelligence
+            // initialDelayMs = 0 ensures this starts immediately with highest priority
             viewModel.runOcrWithDocumentAi(
                 imageUri,
                 firstPassCompanyNumber = null, // No first pass
@@ -434,25 +486,12 @@ fun ReviewScreen(
                         // Cache the result for potential reuse
                         fileImportViewModel.cacheOcrResult(imageUri, Result.success(parsed))
                         
-                        // Now that current invoice is done, trigger background processing for remaining invoices
-                        if (processingQueue.size > 1 && currentIndex < processingQueue.size - 1) {
-                            Timber.d("Current invoice complete. Triggering background processing for ${processingQueue.size - currentIndex - 1} remaining invoices")
-                            launch {
-                                fileImportViewModel.triggerBackgroundProcessing(imageUri) { uri, onDone ->
-                                    // Process callback for background processing
-                                    viewModel.runOcrWithDocumentAi(
-                                        uri,
-                                        firstPassCompanyNumber = null,
-                                        firstPassVatNumber = null,
-                                        excludeCompanyId = activeCompanyId,
-                                        excludeOwnCompanyNumber = ownCompanyNumber,
-                                        excludeOwnVatNumber = ownCompanyVatNumber,
-                                        onDone = onDone,
-                                        onMethodUsed = { }
-                                    )
-                                }
-                            }
-                        }
+                        // NOW mark that current invoice processing has completed and data is filled
+                        // This will trigger background processing for remaining invoices
+                        currentInvoiceProcessingStarted = true
+                        
+                        // Background processing is already triggered by LaunchedEffect when screen loads
+                        // No need to trigger again here
                     }.onFailure {
                         // Fallback to local OCR if Azure Document Intelligence fails
                         Timber.w("Azure Document Intelligence failed, falling back to local OCR")
@@ -572,48 +611,20 @@ fun ReviewScreen(
                                 // Cache the result for potential reuse
                                 fileImportViewModel.cacheOcrResult(imageUri, localResult)
                                 
-                                // Now that current invoice is done, trigger background processing for remaining invoices
-                                if (processingQueue.size > 1 && currentIndex < processingQueue.size - 1) {
-                                    Timber.d("Current invoice complete. Triggering background processing for ${processingQueue.size - currentIndex - 1} remaining invoices")
-                                    launch {
-                                        fileImportViewModel.triggerBackgroundProcessing(imageUri) { uri, onDone ->
-                                            viewModel.runOcrWithDocumentAi(
-                                                uri,
-                                                firstPassCompanyNumber = null,
-                                                firstPassVatNumber = null,
-                                                excludeCompanyId = activeCompanyId,
-                                                excludeOwnCompanyNumber = ownCompanyNumber,
-                                                excludeOwnVatNumber = ownCompanyVatNumber,
-                                                onDone = onDone,
-                                                onMethodUsed = { }
-                                            )
-                                        }
-                                    }
-                                }
+                                // NOW mark that current invoice processing has completed and data is filled
+                                // This will trigger background processing for remaining invoices
+                                currentInvoiceProcessingStarted = true
+                                
+                                // Background processing is already triggered by LaunchedEffect when screen loads
+                                // No need to trigger again here
                             }.onFailure { error ->
                                 Timber.e(error, "Local OCR fallback failed")
                                 isReanalyzing = false
                                 // Cache the failure result too
                                 fileImportViewModel.cacheOcrResult(imageUri, Result.failure(error))
                                 
-                                // Even on failure, trigger background processing for remaining invoices
-                                if (processingQueue.size > 1 && currentIndex < processingQueue.size - 1) {
-                                    Timber.d("Current invoice failed. Triggering background processing for ${processingQueue.size - currentIndex - 1} remaining invoices")
-                                    launch {
-                                        fileImportViewModel.triggerBackgroundProcessing(imageUri) { uri, onDone ->
-                                            viewModel.runOcrWithDocumentAi(
-                                                uri,
-                                                firstPassCompanyNumber = null,
-                                                firstPassVatNumber = null,
-                                                excludeCompanyId = activeCompanyId,
-                                                excludeOwnCompanyNumber = ownCompanyNumber,
-                                                excludeOwnVatNumber = ownCompanyVatNumber,
-                                                onDone = onDone,
-                                                onMethodUsed = { }
-                                            )
-                                        }
-                                    }
-                                }
+                                // Background processing is already triggered by LaunchedEffect when screen loads
+                                // No need to trigger again here
                             }
                         }
                     ) // Close runOcr call
@@ -1012,17 +1023,21 @@ fun ReviewScreen(
                     
                     isSaving = true
                     errorMessage = null
+                    // Parse amounts, handling both comma and dot decimal separators
+                    val amountWithoutVatStr = fields["Amount_without_VAT_EUR"]?.replace(",", ".")?.replace(" ", "")
+                    val vatAmountStr = fields["VAT_amount_EUR"]?.replace(",", ".")?.replace(" ", "")
+                    
                     viewModel.confirm(
                         InvoiceRecord(
                             invoice_id = fields["Invoice_ID"],
                             date = formattedDate,
                             company_name = fields["Company_name"],
-                            amount_without_vat_eur = fields["Amount_without_VAT_EUR"]?.toDoubleOrNull(),
-                            vat_amount_eur = fields["VAT_amount_EUR"]?.toDoubleOrNull(),
+                            amount_without_vat_eur = amountWithoutVatStr?.toDoubleOrNull(),
+                            vat_amount_eur = vatAmountStr?.toDoubleOrNull(),
                             vat_number = fields["VAT_number"],
                             company_number = fields["Company_number"],
                             invoice_type = finalInvoiceType,
-                            vat_rate = fields["VAT_rate"]?.toDoubleOrNull(),
+                            vat_rate = fields["VAT_rate"]?.replace(",", ".")?.toDoubleOrNull(),
                             tax_code = fields["Tax_code"]?.takeIf { it.isNotBlank() } ?: "PVM1"
                         ),
                         CompanyRecord(
@@ -1700,15 +1715,17 @@ class ReviewViewModel @Inject constructor(
         excludeOwnCompanyNumber: String? = null,
         excludeOwnVatNumber: String? = null,
         onDone: (Result<String>) -> Unit, 
-        onMethodUsed: ((String) -> Unit)? = null
+        onMethodUsed: ((String) -> Unit)? = null,
+        initialDelayMs: Long = 0 // Delay before starting (0 for current invoice, staggered for background)
     ) {
         viewModelScope.launch {
             val result = try {
                 Timber.d("Starting Azure Document Intelligence processing for invoice")
                 
-                // Add a small delay before calling Azure to prevent rate limiting when processing multiple invoices
-                // This helps avoid 429 errors when processing batches
-                kotlinx.coroutines.delay(1500) // 1.5 second delay between Azure requests
+                // Only add delay if specified (for background processing to prevent rate limiting)
+                if (initialDelayMs > 0) {
+                    kotlinx.coroutines.delay(initialDelayMs)
+                }
                 
                 // Try Azure Document Intelligence first
                 val parsed = documentAiService.processInvoice(uri, excludeOwnCompanyNumber, excludeOwnVatNumber)

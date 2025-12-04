@@ -192,11 +192,11 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
     /**
      * Trigger background processing for remaining invoices in queue
      * @param currentUri The URI currently being displayed (skip this one)
-     * @param processCallback Function to process a single URI with a callback
+     * @param processCallback Function to process a single URI with index and callback (index is for staggered delays)
      */
     fun triggerBackgroundProcessing(
         currentUri: Uri,
-        processCallback: (Uri, (Result<String>) -> Unit) -> Unit
+        processCallback: (Uri, Int, (Result<String>) -> Unit) -> Unit
     ) {
         viewModelScope.launch {
             val queue = _processingQueue.value
@@ -240,7 +240,8 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                         val startTime = System.currentTimeMillis()
                         var completed = false
                         
-                        processCallback(uri) { result ->
+                        // Pass index for staggered delays (each invoice starts with a small offset to prevent rate limiting)
+                        processCallback(uri, index) { result ->
                             if (!completed) {
                                 completed = true
                                 val processingTime = System.currentTimeMillis() - startTime
@@ -276,15 +277,14 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                                                 triggerBackgroundProcessingForSingle(uri, processCallback, invoiceNumber, queue.size)
                                             }
                                         } else {
-                                            // Max retries reached - cache failure and mark as failed
-                                            cacheOcrResult(uri, result)
+                                            // Max retries reached - don't cache failure, let it process normally when user navigates to it
                                             val retryCounts = _retryCounts.value.toMutableMap()
                                             retryCounts.remove(uri)
                                             _retryCounts.value = retryCounts
                                             _backgroundProcessingProgress.value = _backgroundProcessingProgress.value.copy(
                                                 failed = _backgroundProcessingProgress.value.failed + 1
                                             )
-                                            Timber.e(error, "Background processing failed for invoice $invoiceNumber/${queue.size} after ${maxRetries + 1} attempts and ${processingTime}ms: $uri")
+                                            Timber.e(error, "Background processing failed for invoice $invoiceNumber/${queue.size} after ${maxRetries + 1} attempts and ${processingTime}ms: $uri (will process normally when user navigates to it)")
                                         }
                                     }
                                 )
@@ -294,8 +294,8 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                             }
                         }
                         
-                        // Timeout after 60 seconds
-                        kotlinx.coroutines.delay(60000)
+                        // Timeout after 90 seconds (Azure can take up to 30s for polling + submission + network delays)
+                        kotlinx.coroutines.delay(90000)
                         if (!completed) {
                             completed = true
                             val retryCount = _retryCounts.value[uri] ?: 0
@@ -315,8 +315,7 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                                     triggerBackgroundProcessingForSingle(uri, processCallback, invoiceNumber, queue.size)
                                 }
                             } else {
-                                val timeoutError = Exception("Background processing timeout after 60 seconds (${maxRetries + 1} attempts)")
-                                cacheOcrResult(uri, Result.failure(timeoutError))
+                                // Don't cache timeout failures - let it process normally when user navigates to it
                                 val retryCounts = _retryCounts.value.toMutableMap()
                                 retryCounts.remove(uri)
                                 _retryCounts.value = retryCounts
@@ -324,7 +323,7 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                                     failed = _backgroundProcessingProgress.value.failed + 1
                                 )
                                 markProcessingInBackground(uri, false)
-                                Timber.e(timeoutError, "Background processing timeout for invoice $invoiceNumber/${queue.size}: $uri")
+                                Timber.e("Background processing timeout for invoice $invoiceNumber/${queue.size} after 90 seconds (${maxRetries + 1} attempts): $uri (will process normally when user navigates to it)")
                             }
                         }
                     } catch (e: Exception) {
@@ -346,8 +345,8 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                                 triggerBackgroundProcessingForSingle(uri, processCallback, invoiceNumber, queue.size)
                             }
                         } else {
-                            Timber.e(e, "Background processing exception for invoice $invoiceNumber/${queue.size} after ${maxRetries + 1} attempts: $uri")
-                            cacheOcrResult(uri, Result.failure(e))
+                            // Don't cache exceptions - let it process normally when user navigates to it
+                            Timber.e(e, "Background processing exception for invoice $invoiceNumber/${queue.size} after ${maxRetries + 1} attempts: $uri (will process normally when user navigates to it)")
                             val retryCounts = _retryCounts.value.toMutableMap()
                             retryCounts.remove(uri)
                             _retryCounts.value = retryCounts
@@ -367,7 +366,7 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
      */
     private fun triggerBackgroundProcessingForSingle(
         uri: Uri,
-        processCallback: (Uri, (Result<String>) -> Unit) -> Unit,
+        processCallback: (Uri, Int, (Result<String>) -> Unit) -> Unit,
         invoiceNumber: Int,
         totalInvoices: Int
     ) {
@@ -385,7 +384,8 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                     val startTime = System.currentTimeMillis()
                     var completed = false
                     
-                    processCallback(uri) { result ->
+                    // For retries, use index 0 (no additional delay beyond what's in the callback)
+                    processCallback(uri, 0) { result ->
                         if (!completed) {
                             completed = true
                             val processingTime = System.currentTimeMillis() - startTime
@@ -402,26 +402,24 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                                     Timber.d("Background processing retry succeeded for invoice $invoiceNumber/$totalInvoices in ${processingTime}ms: $uri")
                                 },
                                 onFailure = { error ->
-                                    // Max retries already checked, just cache failure
-                                    cacheOcrResult(uri, result)
+                                    // Max retries already checked - don't cache failure, let it process normally when user navigates to it
                                     val retryCounts = _retryCounts.value.toMutableMap()
                                     retryCounts.remove(uri)
                                     _retryCounts.value = retryCounts
                                     _backgroundProcessingProgress.value = _backgroundProcessingProgress.value.copy(
                                         failed = _backgroundProcessingProgress.value.failed + 1
                                     )
-                                    Timber.e(error, "Background processing retry failed for invoice $invoiceNumber/$totalInvoices after ${processingTime}ms: $uri")
+                                    Timber.e(error, "Background processing retry failed for invoice $invoiceNumber/$totalInvoices after ${processingTime}ms: $uri (will process normally when user navigates to it)")
                                 }
                             )
                             markProcessingInBackground(uri, false)
                         }
                     }
                     
-                    kotlinx.coroutines.delay(60000)
+                    kotlinx.coroutines.delay(90000)
                     if (!completed) {
                         completed = true
-                        val timeoutError = Exception("Background processing timeout after 60 seconds")
-                        cacheOcrResult(uri, Result.failure(timeoutError))
+                        // Don't cache timeout failures - let it process normally when user navigates to it
                         val retryCounts = _retryCounts.value.toMutableMap()
                         retryCounts.remove(uri)
                         _retryCounts.value = retryCounts
@@ -429,11 +427,11 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
                             failed = _backgroundProcessingProgress.value.failed + 1
                         )
                         markProcessingInBackground(uri, false)
-                        Timber.e(timeoutError, "Background processing retry timeout for invoice $invoiceNumber/$totalInvoices: $uri")
+                        Timber.e("Background processing retry timeout for invoice $invoiceNumber/$totalInvoices after 90 seconds: $uri (will process normally when user navigates to it)")
                     }
                 } catch (e: Exception) {
-                    Timber.e(e, "Background processing retry exception for invoice $invoiceNumber/$totalInvoices: $uri")
-                    cacheOcrResult(uri, Result.failure(e))
+                    // Don't cache exceptions - let it process normally when user navigates to it
+                    Timber.e(e, "Background processing retry exception for invoice $invoiceNumber/$totalInvoices: $uri (will process normally when user navigates to it)")
                     val retryCounts = _retryCounts.value.toMutableMap()
                     retryCounts.remove(uri)
                     _retryCounts.value = retryCounts

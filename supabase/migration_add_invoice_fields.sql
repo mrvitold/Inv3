@@ -16,3 +16,5 @@ ADD COLUMN IF NOT EXISTS tax_code TEXT DEFAULT 'PVM1';
 CREATE INDEX IF NOT EXISTS idx_invoices_invoice_type 
 ON public.invoices(invoice_type);
 
+
+

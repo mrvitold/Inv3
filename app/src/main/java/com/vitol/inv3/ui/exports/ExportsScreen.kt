@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -593,68 +594,71 @@ fun ExportDialog(
         onDismissRequest = onDismiss,
         title = { Text("Export Options") },
         text = {
-            Column {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
                 Text("Choose how to export invoices for $month")
+                
                 if (isSaving) {
-                    Spacer(modifier = Modifier.padding(8.dp))
-                    CircularProgressIndicator()
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+                } else {
+                    // Excel export
+                    Button(
+                        onClick = {
+                            isSaving = true
+                            val exporter = ExcelExporter(context)
+                            val result = exporter.saveToDownloads(invoices, month)
+                            isSaving = false
+                            onDismiss()
+                            if (result != null) {
+                                Toast.makeText(context, result, Toast.LENGTH_LONG).show()
+                            } else {
+                                Toast.makeText(context, "Failed to save file", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Export Excel")
+                    }
+                    
+                    // XML export (i.SAF)
+                    Button(
+                        onClick = {
+                            if (ownCompany == null) {
+                                Toast.makeText(context, "Please select an own company first", Toast.LENGTH_LONG).show()
+                                return@Button
+                            }
+                            isSaving = true
+                            scope.launch {
+                                try {
+                                    val exporter = ISafXmlExporter(context)
+                                    val result = exporter.saveToDownloads(invoiceRecords, ownCompany, month)
+                                    isSaving = false
+                                    onDismiss()
+                                    if (result != null) {
+                                        Toast.makeText(context, result, Toast.LENGTH_LONG).show()
+                                    } else {
+                                        Toast.makeText(context, "Failed to save XML file", Toast.LENGTH_SHORT).show()
+                                    }
+                                } catch (e: Exception) {
+                                    isSaving = false
+                                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
+                        enabled = !isSaving && ownCompany != null,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Export XML (i.SAF)")
+                    }
                 }
             }
         },
         confirmButton = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Excel export
-                Button(
-                    onClick = {
-                        isSaving = true
-                        val exporter = ExcelExporter(context)
-                        val result = exporter.saveToDownloads(invoices, month)
-                        isSaving = false
-                        onDismiss()
-                        if (result != null) {
-                            Toast.makeText(context, result, Toast.LENGTH_LONG).show()
-                        } else {
-                            Toast.makeText(context, "Failed to save file", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    enabled = !isSaving,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Export Excel")
-                }
-                
-                // XML export (i.SAF)
-                Button(
-                    onClick = {
-                        if (ownCompany == null) {
-                            Toast.makeText(context, "Please select an own company first", Toast.LENGTH_LONG).show()
-                            return@Button
-                        }
-                        isSaving = true
-                        scope.launch {
-                            try {
-                                val exporter = ISafXmlExporter(context)
-                                val result = exporter.saveToDownloads(invoiceRecords, ownCompany, month)
-                                isSaving = false
-                                onDismiss()
-                                if (result != null) {
-                                    Toast.makeText(context, result, Toast.LENGTH_LONG).show()
-                                } else {
-                                    Toast.makeText(context, "Failed to save XML file", Toast.LENGTH_SHORT).show()
-                                }
-                            } catch (e: Exception) {
-                                isSaving = false
-                                Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    },
-                    enabled = !isSaving && ownCompany != null,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Export XML (i.SAF)")
-                }
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
             }
         },
         dismissButton = {

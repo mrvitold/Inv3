@@ -18,12 +18,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Camera
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -189,6 +195,8 @@ fun HomeScreen(
     var isProcessingFile by remember { mutableStateOf(false) }
     var processingMessage by remember { mutableStateOf<String?>(null) }
     var showProcessingDialog by remember { mutableStateOf(false) }
+    var showInvoiceTypeDialog by remember { mutableStateOf(false) }
+    var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     
     // File picker launcher for Import button
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -209,7 +217,7 @@ fun HomeScreen(
                         scope.launch {
                             kotlinx.coroutines.delay(300)
                             showProcessingDialog = false
-                            // Navigate to first item
+                            // Navigate to first item (invoice type is already set in ViewModel)
                             val firstUri = uris[0]
                             navController.navigate("review/${Uri.encode(firstUri.toString())}")
                         }
@@ -281,26 +289,43 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Scan Invoice and Import buttons in a Row, centered
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Button(
-                    onClick = { navController.navigate(Routes.Scan) },
-                    modifier = Modifier.weight(1f)
+                // Import File and Scan with Camera buttons
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text(text = "Scan Invoice")
+                    // Import File button
+                    Button(
+                        onClick = {
+                            pendingAction = { filePickerLauncher.launch("*/*") }
+                            showInvoiceTypeDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = "Import from files",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Import File")
+                    }
+                    
+                    // Scan with Camera button
+                    Button(
+                        onClick = {
+                            pendingAction = { navController.navigate(Routes.Scan) }
+                            showInvoiceTypeDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Camera,
+                            contentDescription = "Capture photo",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Scan with Camera")
+                    }
                 }
-                Spacer(modifier = Modifier.width(16.dp))
-                Button(
-                    onClick = { filePickerLauncher.launch("*/*") },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(text = "Import")
-                }
-            }
             
                 Spacer(modifier = Modifier.padding(16.dp))
                 
@@ -337,6 +362,87 @@ fun HomeScreen(
             ),
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )
+        
+        // Invoice Type Selection Dialog - Large and Visible
+        if (showInvoiceTypeDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showInvoiceTypeDialog = false
+                    pendingAction = null
+                },
+                title = {
+                    Text(
+                        text = "Select Invoice Type",
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text(
+                            text = "Please select whether this is a Purchase (Received) or Sales (Issued) invoice.",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Large Purchase button
+                        Button(
+                            onClick = {
+                                fileImportViewModel.setInvoiceType("P")
+                                showInvoiceTypeDialog = false
+                                pendingAction?.invoke()
+                                pendingAction = null
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(64.dp), // Make button taller
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary
+                            )
+                        ) {
+                            Text(
+                                text = "Purchase Invoice",
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                        }
+                        
+                        // Large Sales button
+                        Button(
+                            onClick = {
+                                fileImportViewModel.setInvoiceType("S")
+                                showInvoiceTypeDialog = false
+                                pendingAction?.invoke()
+                                pendingAction = null
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(64.dp), // Make button taller
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondary
+                            )
+                        ) {
+                            Text(
+                                text = "Sales Invoice",
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showInvoiceTypeDialog = false
+                            pendingAction = null
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
         
         // Processing dialog
         if (showProcessingDialog) {
