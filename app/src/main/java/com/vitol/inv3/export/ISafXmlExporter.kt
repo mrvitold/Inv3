@@ -214,6 +214,12 @@ class ISafXmlExporter(private val context: Context) {
         val header = createHeader(doc, registrationNumber, dataType, startDate, endDate)
         root.appendChild(header)
         
+        // MasterFiles (extract unique customers and suppliers from invoices)
+        val masterFiles = createMasterFiles(doc, invoices)
+        if (masterFiles != null) {
+            root.appendChild(masterFiles)
+        }
+        
         // SourceDocuments
         val sourceDocuments = createSourceDocuments(doc, invoices)
         if (sourceDocuments != null) {
@@ -297,6 +303,156 @@ class ISafXmlExporter(private val context: Context) {
         return header
     }
     
+    /**
+     * Create MasterFiles section with unique customers and suppliers from invoices.
+     * According to XSD: "Turėtų būti pildomi tik tų pirkėjų/pardavėjų duomenys, kurie nurodyti rinkmenos III (SourceDocuments) dalyje"
+     */
+    private fun createMasterFiles(doc: Document, invoices: List<InvoiceRecord>): Element? {
+        if (invoices.isEmpty()) return null
+        
+        val masterFiles = doc.createElementNS(NAMESPACE, "MasterFiles")
+        
+        // Extract unique customers from sales invoices
+        val uniqueCustomers = invoices
+            .filter { it.invoice_type == "S" }
+            .distinctBy { invoice ->
+                // Use VAT number as unique key, or company number if VAT is "ND"
+                normalizeVatNumber(invoice.vat_number) ?: invoice.company_number ?: ""
+            }
+            .filter { invoice ->
+                // Only include if we have at least VAT number or company number
+                !normalizeVatNumber(invoice.vat_number).isNullOrBlank() || 
+                !invoice.company_number.isNullOrBlank()
+            }
+        
+        // Extract unique suppliers from purchase invoices
+        val uniqueSuppliers = invoices
+            .filter { it.invoice_type == "P" }
+            .distinctBy { invoice ->
+                // Use VAT number as unique key, or company number if VAT is "ND"
+                normalizeVatNumber(invoice.vat_number) ?: invoice.company_number ?: ""
+            }
+            .filter { invoice ->
+                // Only include if we have at least VAT number or company number
+                !normalizeVatNumber(invoice.vat_number).isNullOrBlank() || 
+                !invoice.company_number.isNullOrBlank()
+            }
+        
+        // Create Customers section
+        if (uniqueCustomers.isNotEmpty()) {
+            val customers = doc.createElementNS(NAMESPACE, "Customers")
+            uniqueCustomers.forEachIndexed { index, invoice ->
+                val customer = createCustomer(doc, invoice, index + 1)
+                customers.appendChild(customer)
+            }
+            masterFiles.appendChild(customers)
+        }
+        
+        // Create Suppliers section
+        if (uniqueSuppliers.isNotEmpty()) {
+            val suppliers = doc.createElementNS(NAMESPACE, "Suppliers")
+            uniqueSuppliers.forEachIndexed { index, invoice ->
+                val supplier = createSupplier(doc, invoice, index + 1)
+                suppliers.appendChild(supplier)
+            }
+            masterFiles.appendChild(suppliers)
+        }
+        
+        return if (masterFiles.hasChildNodes()) masterFiles else null
+    }
+    
+    private fun createCustomer(doc: Document, invoice: InvoiceRecord, customerId: Int): Element {
+        val customer = doc.createElementNS(NAMESPACE, "Customer")
+        
+        // CustomerID (required, unique number in accounting system)
+        val customerID = doc.createElementNS(NAMESPACE, "CustomerID")
+        customerID.textContent = customerId.toString()
+        customer.appendChild(customerID)
+        
+        // VATRegistrationNumber (required)
+        val vatRegistrationNumber = doc.createElementNS(NAMESPACE, "VATRegistrationNumber")
+        val vatNumber = normalizeVatNumber(invoice.vat_number)
+        vatRegistrationNumber.textContent = vatNumber ?: "ND"
+        customer.appendChild(vatRegistrationNumber)
+        
+        // RegistrationNumber (optional, but must be present in sequence before Country)
+        // Can be empty if VAT is not "ND", but must be included in sequence
+        val registrationNumber = doc.createElementNS(NAMESPACE, "RegistrationNumber")
+        if (vatNumber == null || vatNumber == "ND") {
+            registrationNumber.textContent = invoice.company_number ?: "ND"
+        }
+        // Leave empty if VAT is not "ND" (XSD allows empty element)
+        customer.appendChild(registrationNumber)
+        
+        // Country (required in sequence, nillable - must come after RegistrationNumber)
+        val country = doc.createElementNS(NAMESPACE, "Country")
+        val countryCode = if (vatNumber != null && vatNumber != "ND" && vatNumber.length >= 2) {
+            val code = vatNumber.substring(0, 2)
+            if (code.all { it.isLetter() }) code else null
+        } else {
+            null
+        }
+        if (countryCode != null) {
+            country.textContent = countryCode
+        } else {
+            country.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        }
+        customer.appendChild(country)
+        
+        // Name (required)
+        val name = doc.createElementNS(NAMESPACE, "Name")
+        name.textContent = invoice.company_name ?: "ND"
+        customer.appendChild(name)
+        
+        return customer
+    }
+    
+    private fun createSupplier(doc: Document, invoice: InvoiceRecord, supplierId: Int): Element {
+        val supplier = doc.createElementNS(NAMESPACE, "Supplier")
+        
+        // SupplierID (required, unique number in accounting system)
+        val supplierID = doc.createElementNS(NAMESPACE, "SupplierID")
+        supplierID.textContent = supplierId.toString()
+        supplier.appendChild(supplierID)
+        
+        // VATRegistrationNumber (required)
+        val vatRegistrationNumber = doc.createElementNS(NAMESPACE, "VATRegistrationNumber")
+        val vatNumber = normalizeVatNumber(invoice.vat_number)
+        vatRegistrationNumber.textContent = vatNumber ?: "ND"
+        supplier.appendChild(vatRegistrationNumber)
+        
+        // RegistrationNumber (optional, but must be present in sequence before Country)
+        // Can be empty if VAT is not "ND", but must be included in sequence
+        val registrationNumber = doc.createElementNS(NAMESPACE, "RegistrationNumber")
+        if (vatNumber == null || vatNumber == "ND") {
+            registrationNumber.textContent = invoice.company_number ?: "ND"
+        }
+        // Leave empty if VAT is not "ND" (XSD allows empty element)
+        supplier.appendChild(registrationNumber)
+        
+        // Country (required in sequence, nillable - must come after RegistrationNumber)
+        val country = doc.createElementNS(NAMESPACE, "Country")
+        val countryCode = if (vatNumber != null && vatNumber != "ND" && vatNumber.length >= 2) {
+            val code = vatNumber.substring(0, 2)
+            if (code.all { it.isLetter() }) code else null
+        } else {
+            null
+        }
+        if (countryCode != null) {
+            country.textContent = countryCode
+        } else {
+            country.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        }
+        supplier.appendChild(country)
+        
+        // Name (required)
+        val name = doc.createElementNS(NAMESPACE, "Name")
+        name.textContent = invoice.company_name ?: "ND"
+        supplier.appendChild(name)
+        
+        return supplier
+    }
+    
     private fun createSourceDocuments(doc: Document, invoices: List<InvoiceRecord>): Element? {
         if (invoices.isEmpty()) return null
         
@@ -352,9 +508,9 @@ class ISafXmlExporter(private val context: Context) {
         }
         invoiceEl.appendChild(invoiceDate)
         
-        // InvoiceType (default: SF or empty)
+        // InvoiceType (default: SF - Standard VAT invoice)
         val invoiceType = doc.createElementNS(NAMESPACE, "InvoiceType")
-        invoiceType.textContent = "" // Default to SF
+        invoiceType.textContent = "SF" // Standard VAT invoice
         invoiceEl.appendChild(invoiceType)
         
         // SpecialTaxation (default: empty)
@@ -366,10 +522,16 @@ class ISafXmlExporter(private val context: Context) {
         val references = doc.createElementNS(NAMESPACE, "References")
         invoiceEl.appendChild(references)
         
-        // VATPointDate (required in sequence, nillable - must come before DocumentTotals)
+        // VATPointDate (required in sequence, nillable - fill with invoice date)
         val vatPointDate = doc.createElementNS(NAMESPACE, "VATPointDate")
-        // VATPointDate is optional but must be present in sequence, set as nil if not available
-        vatPointDate.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        // VATPointDate should be filled with invoice date (same as InvoiceDate)
+        val vatPointDateValue = formatDate(invoice.date)
+        if (vatPointDateValue != null) {
+            vatPointDate.textContent = vatPointDateValue
+        } else {
+            // If invoice date is missing, use current date (same as InvoiceDate fallback)
+            vatPointDate.textContent = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        }
         invoiceEl.appendChild(vatPointDate)
         
         // RegistrationAccountDate (required in sequence, nillable - must come before DocumentTotals)
@@ -408,9 +570,9 @@ class ISafXmlExporter(private val context: Context) {
         }
         invoiceEl.appendChild(invoiceDate)
         
-        // InvoiceType (default: SF or empty)
+        // InvoiceType (default: SF - Standard VAT invoice)
         val invoiceType = doc.createElementNS(NAMESPACE, "InvoiceType")
-        invoiceType.textContent = "" // Default to SF
+        invoiceType.textContent = "SF" // Standard VAT invoice
         invoiceEl.appendChild(invoiceType)
         
         // SpecialTaxation (default: empty)
@@ -422,10 +584,16 @@ class ISafXmlExporter(private val context: Context) {
         val references = doc.createElementNS(NAMESPACE, "References")
         invoiceEl.appendChild(references)
         
-        // VATPointDate (required in sequence, nillable - must come before DocumentTotals)
+        // VATPointDate (required in sequence, nillable - fill with invoice date)
         val vatPointDate = doc.createElementNS(NAMESPACE, "VATPointDate")
-        // VATPointDate is optional but must be present in sequence, set as nil if not available
-        vatPointDate.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        // VATPointDate should be filled with invoice date (same as InvoiceDate)
+        val vatPointDateValue = formatDate(invoice.date)
+        if (vatPointDateValue != null) {
+            vatPointDate.textContent = vatPointDateValue
+        } else {
+            // If invoice date is missing, use current date (same as InvoiceDate fallback)
+            vatPointDate.textContent = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        }
         invoiceEl.appendChild(vatPointDate)
         
         // DocumentTotals
