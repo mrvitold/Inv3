@@ -17,6 +17,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import javax.xml.parsers.DocumentBuilderFactory
 import javax.xml.transform.OutputKeys
 import javax.xml.transform.TransformerFactory
@@ -158,7 +159,7 @@ class ISafXmlExporter(private val context: Context) {
         }
     }
     
-    private fun determineDataType(invoices: List<InvoiceRecord>): String {
+    fun determineDataType(invoices: List<InvoiceRecord>): String {
         val types = invoices.mapNotNull { it.invoice_type }.distinct()
         return when {
             types.size == 1 -> types.first()
@@ -206,6 +207,7 @@ class ISafXmlExporter(private val context: Context) {
         // Root element
         val root = doc.createElementNS(NAMESPACE, "iSAFFile")
         root.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", NAMESPACE)
+        root.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance")
         doc.appendChild(root)
         
         // Header
@@ -236,9 +238,11 @@ class ISafXmlExporter(private val context: Context) {
         fileVersion.textContent = FILE_VERSION
         fileDescription.appendChild(fileVersion)
         
-        // FileDateCreated
+        // FileDateCreated (xs:dateTime format with UTC timezone)
         val fileDateCreated = doc.createElementNS(NAMESPACE, "FileDateCreated")
-        val now = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
+        val now = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }.format(Date())
         fileDateCreated.textContent = now
         fileDescription.appendChild(fileDateCreated)
         
@@ -337,9 +341,15 @@ class ISafXmlExporter(private val context: Context) {
         val supplierInfo = createSupplierInfo(doc, invoice)
         invoiceEl.appendChild(supplierInfo)
         
-        // InvoiceDate
+        // InvoiceDate (required, cannot be "ND")
         val invoiceDate = doc.createElementNS(NAMESPACE, "InvoiceDate")
-        invoiceDate.textContent = formatDate(invoice.date) ?: "ND"
+        val formattedDate = formatDate(invoice.date)
+        if (formattedDate == null) {
+            Timber.w("Invoice date is missing for purchase invoice ${invoice.invoice_id}, using current date")
+            invoiceDate.textContent = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        } else {
+            invoiceDate.textContent = formattedDate
+        }
         invoiceEl.appendChild(invoiceDate)
         
         // InvoiceType (default: SF or empty)
@@ -356,8 +366,17 @@ class ISafXmlExporter(private val context: Context) {
         val references = doc.createElementNS(NAMESPACE, "References")
         invoiceEl.appendChild(references)
         
-        // VATPointDate (nullable, not set)
-        // RegistrationAccountDate (nullable, not set)
+        // VATPointDate (required in sequence, nillable - must come before DocumentTotals)
+        val vatPointDate = doc.createElementNS(NAMESPACE, "VATPointDate")
+        // VATPointDate is optional but must be present in sequence, set as nil if not available
+        vatPointDate.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        invoiceEl.appendChild(vatPointDate)
+        
+        // RegistrationAccountDate (required in sequence, nillable - must come before DocumentTotals)
+        val registrationAccountDate = doc.createElementNS(NAMESPACE, "RegistrationAccountDate")
+        // RegistrationAccountDate is optional but must be present in sequence, set as nil if not available
+        registrationAccountDate.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        invoiceEl.appendChild(registrationAccountDate)
         
         // DocumentTotals
         val documentTotals = createDocumentTotals(doc, invoice, isPurchase = true)
@@ -378,9 +397,15 @@ class ISafXmlExporter(private val context: Context) {
         val customerInfo = createCustomerInfo(doc, invoice)
         invoiceEl.appendChild(customerInfo)
         
-        // InvoiceDate
+        // InvoiceDate (required for Sales, must be valid date per XSD ISAFDateType3)
         val invoiceDate = doc.createElementNS(NAMESPACE, "InvoiceDate")
-        invoiceDate.textContent = formatDate(invoice.date) ?: "ND"
+        val formattedDate = formatDate(invoice.date)
+        if (formattedDate == null) {
+            Timber.w("Invoice date is missing for sales invoice ${invoice.invoice_id}, using current date")
+            invoiceDate.textContent = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        } else {
+            invoiceDate.textContent = formattedDate
+        }
         invoiceEl.appendChild(invoiceDate)
         
         // InvoiceType (default: SF or empty)
@@ -397,7 +422,11 @@ class ISafXmlExporter(private val context: Context) {
         val references = doc.createElementNS(NAMESPACE, "References")
         invoiceEl.appendChild(references)
         
-        // VATPointDate (nullable, not set)
+        // VATPointDate (required in sequence, nillable - must come before DocumentTotals)
+        val vatPointDate = doc.createElementNS(NAMESPACE, "VATPointDate")
+        // VATPointDate is optional but must be present in sequence, set as nil if not available
+        vatPointDate.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        invoiceEl.appendChild(vatPointDate)
         
         // DocumentTotals
         val documentTotals = createDocumentTotals(doc, invoice, isPurchase = false)
@@ -422,10 +451,24 @@ class ISafXmlExporter(private val context: Context) {
             supplierInfo.appendChild(registrationNumber)
         }
         
-        // Country (optional, only if VAT is "ND" or non-EU)
-        // Not setting for now as we don't have country info
+        // Country (required in sequence, nillable - must come before Name)
+        // Extract country code from VAT number (first 2 letters, e.g., "LT" from "LT123456789")
+        val country = doc.createElementNS(NAMESPACE, "Country")
+        val countryCode = if (vatNumber != null && vatNumber != "ND" && vatNumber.length >= 2) {
+            val code = vatNumber.substring(0, 2)
+            if (code.all { it.isLetter() }) code else null
+        } else {
+            null
+        }
+        if (countryCode != null) {
+            country.textContent = countryCode
+        } else {
+            // Set as nil if not available (XSD allows nillable="true")
+            country.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        }
+        supplierInfo.appendChild(country)
         
-        // Name (required, use "ND" if unknown)
+        // Name (required, use "ND" if unknown) - must come after Country
         val name = doc.createElementNS(NAMESPACE, "Name")
         name.textContent = invoice.company_name ?: "ND"
         supplierInfo.appendChild(name)
@@ -449,7 +492,24 @@ class ISafXmlExporter(private val context: Context) {
             customerInfo.appendChild(registrationNumber)
         }
         
-        // Name (required, use "ND" if unknown)
+        // Country (required in sequence, nillable - must come before Name)
+        // Extract country code from VAT number (first 2 letters, e.g., "LT" from "LT123456789")
+        val country = doc.createElementNS(NAMESPACE, "Country")
+        val countryCode = if (vatNumber != null && vatNumber != "ND" && vatNumber.length >= 2) {
+            val code = vatNumber.substring(0, 2)
+            if (code.all { it.isLetter() }) code else null
+        } else {
+            null
+        }
+        if (countryCode != null) {
+            country.textContent = countryCode
+        } else {
+            // Set as nil if not available (XSD allows nillable="true")
+            country.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+        }
+        customerInfo.appendChild(country)
+        
+        // Name (required, use "ND" if unknown) - must come after Country
         val name = doc.createElementNS(NAMESPACE, "Name")
         name.textContent = invoice.company_name ?: "ND"
         customerInfo.appendChild(name)
@@ -466,9 +526,17 @@ class ISafXmlExporter(private val context: Context) {
         taxableValue.textContent = formatMonetary(invoice.amount_without_vat_eur ?: 0.0)
         documentTotal.appendChild(taxableValue)
         
-        // TaxCode (nullable)
+        // TaxCode (nullable, must match pattern PVM[0-9]* with length 4-6)
         val taxCode = doc.createElementNS(NAMESPACE, "TaxCode")
-        taxCode.textContent = invoice.tax_code ?: "PVM1"
+        val determinedTaxCode = if (!invoice.tax_code.isNullOrBlank() && 
+            invoice.tax_code.matches(Regex("^PVM[0-9]+$")) &&
+            invoice.tax_code.length in 4..6) {
+            invoice.tax_code
+        } else {
+            // Use TaxCodeDeterminer to determine proper tax code
+            TaxCodeDeterminer.determineTaxCode(invoice.vat_rate, null)
+        }
+        taxCode.textContent = determinedTaxCode
         documentTotal.appendChild(taxCode)
         
         // TaxPercentage (nullable, VAT rate as percentage)
@@ -492,6 +560,13 @@ class ISafXmlExporter(private val context: Context) {
         val amount = doc.createElementNS(NAMESPACE, "Amount")
         amount.textContent = formatMonetary(invoice.vat_amount_eur ?: 0.0)
         documentTotal.appendChild(amount)
+        
+        // VATPointDate2 (optional, only for Sales invoices)
+        if (!isPurchase) {
+            // VATPointDate2 can be added here if we have the data
+            // For now, we don't have this field in InvoiceRecord, so we skip it
+            // If needed in the future, add invoice.vat_point_date_2 field
+        }
         
         documentTotals.appendChild(documentTotal)
         return documentTotals
@@ -568,6 +643,7 @@ class ISafXmlExporter(private val context: Context) {
         return writer.toString()
     }
 }
+
 
 
 

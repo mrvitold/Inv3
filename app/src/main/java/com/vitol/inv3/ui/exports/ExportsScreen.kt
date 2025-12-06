@@ -21,6 +21,8 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.TextButton
@@ -592,18 +594,31 @@ fun ExportDialog(
     
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Export Options") },
+        title = { 
+            Text(
+                text = "Export Options",
+                style = MaterialTheme.typography.titleLarge
+            )
+        },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Choose how to export invoices for $month")
+                Text(
+                    text = "Choose how to export invoices for $month",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
                 
                 if (isSaving) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .padding(vertical = 16.dp)
+                    )
                 } else {
-                    // Excel export
+                    // Export Excel
                     Button(
                         onClick = {
                             isSaving = true
@@ -620,10 +635,39 @@ fun ExportDialog(
                         enabled = !isSaving,
                         modifier = Modifier.fillMaxWidth()
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.FileDownload,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
                         Text("Export Excel")
                     }
                     
-                    // XML export (i.SAF)
+                    // Share Excel
+                    OutlinedButton(
+                        onClick = {
+                            val exporter = ExcelExporter(context)
+                            val uri = exporter.export(invoices, month)
+                            val share = Intent(Intent.ACTION_SEND).apply {
+                                type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(share, "Share $month.xlsx"))
+                            onDismiss()
+                        },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Share Excel")
+                    }
+                    
+                    // Export XML (i.SAF)
                     Button(
                         onClick = {
                             if (ownCompany == null) {
@@ -651,7 +695,47 @@ fun ExportDialog(
                         enabled = !isSaving && ownCompany != null,
                         modifier = Modifier.fillMaxWidth()
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.Description,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
                         Text("Export XML (i.SAF)")
+                    }
+                    
+                    // Share XML (i.SAF)
+                    OutlinedButton(
+                        onClick = {
+                            if (ownCompany == null) {
+                                Toast.makeText(context, "Please select an own company first", Toast.LENGTH_LONG).show()
+                                return@OutlinedButton
+                            }
+                            try {
+                                val exporter = ISafXmlExporter(context)
+                                val uri = exporter.export(invoiceRecords, ownCompany, month)
+                                val dataType = exporter.determineDataType(invoiceRecords)
+                                val fileName = "isaf_${month}_${dataType}.xml"
+                                val share = Intent(Intent.ACTION_SEND).apply {
+                                    type = "application/xml"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    putExtra(Intent.EXTRA_SUBJECT, fileName)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(share, "Share $fileName"))
+                                onDismiss()
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        },
+                        enabled = !isSaving && ownCompany != null,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Share XML (i.SAF)")
                     }
                 }
             }
@@ -659,24 +743,6 @@ fun ExportDialog(
         confirmButton = {
             TextButton(onClick = onDismiss) {
                 Text("Cancel")
-            }
-        },
-        dismissButton = {
-            OutlinedButton(
-                onClick = {
-                    val exporter = ExcelExporter(context)
-                    val uri = exporter.export(invoices, month)
-                    val share = Intent(Intent.ACTION_SEND).apply {
-                        type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        putExtra(Intent.EXTRA_STREAM, uri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    context.startActivity(Intent.createChooser(share, "Share $month.xlsx"))
-                    onDismiss()
-                },
-                enabled = !isSaving
-            ) {
-                Text("Share Excel")
             }
         }
     )
