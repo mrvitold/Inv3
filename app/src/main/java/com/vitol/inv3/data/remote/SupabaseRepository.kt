@@ -1,5 +1,6 @@
 package com.vitol.inv3.data.remote
 
+import com.vitol.inv3.auth.AuthManager
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.Dispatchers
@@ -13,7 +14,8 @@ data class CompanyRecord(
     val company_number: String?,
     val company_name: String?,
     val vat_number: String?,
-    val is_own_company: Boolean = false
+    val is_own_company: Boolean = false,
+    val user_id: String? = null
 )
 
 @Serializable
@@ -28,10 +30,14 @@ data class InvoiceRecord(
     val company_number: String?,
     val invoice_type: String? = "P", // P = Purchase/Received, S = Sales/Issued
     val vat_rate: Double? = null,
-    val tax_code: String? = "PVM1"
+    val tax_code: String? = "PVM1",
+    val user_id: String? = null
 )
 
-class SupabaseRepository(private val client: SupabaseClient?) {
+class SupabaseRepository(
+    private val client: SupabaseClient?,
+    private val authManager: AuthManager
+) {
     /**
      * Normalize VAT number: remove spaces, uppercase
      */
@@ -44,8 +50,16 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             Timber.w("Supabase client is null, cannot upsert company")
             return@withContext null
         }
+        val userId = authManager.getCurrentUserId()
+        if (userId == null) {
+            Timber.w("No user ID available, cannot upsert company")
+            return@withContext null
+        }
         // Normalize VAT number before saving (remove spaces, uppercase)
-        val normalizedCompany = company.copy(vat_number = normalizeVatNumber(company.vat_number))
+        val normalizedCompany = company.copy(
+            vat_number = normalizeVatNumber(company.vat_number),
+            user_id = userId
+        )
         try {
             // If company has an ID, update it directly
             if (!normalizedCompany.id.isNullOrBlank()) {
@@ -331,8 +345,14 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             Timber.w("Supabase client is null, cannot insert invoice")
             return@withContext
         }
+        val userId = authManager.getCurrentUserId()
+        if (userId == null) {
+            Timber.w("No user ID available, cannot insert invoice")
+            return@withContext
+        }
         try {
-            client.from("invoices").insert(invoice)
+            val invoiceWithUserId = invoice.copy(user_id = userId)
+            client.from("invoices").insert(invoiceWithUserId)
             Timber.d("Invoice inserted successfully: ${invoice.invoice_id}")
         } catch (e: Exception) {
             Timber.e(e, "Failed to insert invoice: ${invoice.invoice_id}")
@@ -613,12 +633,18 @@ class SupabaseRepository(private val client: SupabaseClient?) {
             Timber.w("Supabase client is null, cannot update invoice")
             return@withContext
         }
+        val userId = authManager.getCurrentUserId()
+        if (userId == null) {
+            Timber.w("No user ID available, cannot update invoice")
+            return@withContext
+        }
         try {
             if (invoice.id.isNullOrBlank()) {
                 Timber.w("Cannot update invoice: id is null or blank")
                 throw IllegalStateException("Invoice id is required for update")
             }
-            client.from("invoices").update(invoice) {
+            val invoiceWithUserId = invoice.copy(user_id = userId)
+            client.from("invoices").update(invoiceWithUserId) {
                 filter {
                     eq("id", invoice.id)
                 }

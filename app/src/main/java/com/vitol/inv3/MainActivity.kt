@@ -30,6 +30,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -50,9 +53,12 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.vitol.inv3.auth.AuthManager
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
 import com.vitol.inv3.data.local.setActiveOwnCompanyId
 import com.vitol.inv3.data.remote.SupabaseRepository
+import com.vitol.inv3.ui.auth.AuthViewModel
+import com.vitol.inv3.ui.auth.LoginScreen
 import com.vitol.inv3.ui.home.OwnCompanySelector
 import com.vitol.inv3.ui.home.OwnCompanyViewModel
 import com.vitol.inv3.ui.scan.FileImportViewModel
@@ -60,17 +66,63 @@ import com.vitol.inv3.ui.scan.processSelectedFile
 import com.vitol.inv3.utils.FileImportService
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject
+    lateinit var authManager: AuthManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Handle deep links for email confirmation
+        handleDeepLink(intent)
+        
         setContent {
             MaterialTheme {
                 val navController = rememberNavController()
+                val isAuthenticated by authManager.isAuthenticated.collectAsState(initial = false)
+                
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    AppNavHost(navController)
+                    if (isAuthenticated) {
+                        AppNavHost(navController)
+                    } else {
+                        LoginScreen(
+                            onLoginSuccess = {
+                                // Navigation will happen automatically via state change
+                            }
+                        )
+                    }
                 }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDeepLink(intent)
+    }
+
+    private fun handleDeepLink(intent: android.content.Intent) {
+        val data = intent.data
+        if (data != null) {
+            // Handle Supabase email confirmation links
+            // Format: https://azbyzwdthelztfuybxmg.supabase.co/auth/v1/verify?token=...
+            if (data.host?.contains("supabase.co") == true) {
+                timber.log.Timber.d("Received Supabase deep link: $data")
+                // The Supabase client should handle the verification automatically
+                // If there's a token in the URL, we can extract it and verify
+                val token = data.getQueryParameter("token")
+                val type = data.getQueryParameter("type")
+                if (token != null && type == "signup") {
+                    // Email confirmation - Supabase will handle this via the auth flow
+                    timber.log.Timber.d("Email confirmation token received")
+                }
+            } else if (data.scheme == "com.vitol.inv3" && data.host == "auth") {
+                // Custom scheme deep link
+                timber.log.Timber.d("Received custom auth deep link: $data")
             }
         }
     }
@@ -165,8 +217,10 @@ fun HomeScreen(
         }
     },
     ownCompanyViewModel: OwnCompanyViewModel = hiltViewModel(),
-    repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo
+    repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo,
+    authViewModel: AuthViewModel = hiltViewModel()
 ) {
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -256,6 +310,23 @@ fun HomeScreen(
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Logout button at the top right
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                IconButton(
+                    onClick = { authViewModel.signOut() }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Logout,
+                        contentDescription = "Sign out"
+                    )
+                }
+            }
+            
             // Your Company section at the top
             OwnCompanySelector(
                 activeCompanyId = activeCompanyId,
@@ -343,6 +414,66 @@ fun HomeScreen(
                     Text(text = "Exports")
                 }
             }
+        }
+        
+        // Delete Account button at the bottom
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 80.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            TextButton(
+                onClick = { showDeleteAccountDialog = true },
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Delete account",
+                    modifier = Modifier
+                        .width(18.dp)
+                        .height(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Delete My Account",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        
+        // Delete Account Confirmation Dialog
+        if (showDeleteAccountDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteAccountDialog = false },
+                title = { Text("Delete Account") },
+                text = {
+                    Text("Are you sure you want to delete your account? This action cannot be undone and all your data will be permanently deleted.")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showDeleteAccountDialog = false
+                            scope.launch {
+                                authViewModel.deleteAccount()
+                                snackbarHostState.showSnackbar("Account deleted successfully")
+                            }
+                        },
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteAccountDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
         
         SnackbarHost(

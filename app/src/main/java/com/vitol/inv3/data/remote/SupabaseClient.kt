@@ -4,6 +4,7 @@ import android.app.Application
 import com.vitol.inv3.BuildConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.createSupabaseClient
+import io.github.jan.supabase.gotrue.Auth
 import io.github.jan.supabase.postgrest.Postgrest
 
 object SupabaseFactory {
@@ -16,6 +17,11 @@ object SupabaseFactory {
             supabaseKey = key
         ) {
             install(Postgrest)
+            install(Auth) {
+                // Configure deep link handling for email confirmation
+                scheme = "com.vitol.inv3"
+                host = "auth"
+            }
         }
     }
 }
