@@ -4,7 +4,9 @@ import android.app.Application
 import com.vitol.inv3.BuildConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.createSupabaseClient
+import io.github.jan.supabase.functions.Functions
 import io.github.jan.supabase.gotrue.Auth
+import io.github.jan.supabase.gotrue.ExternalAuthAction
 import io.github.jan.supabase.postgrest.Postgrest
 
 object SupabaseFactory {
@@ -18,10 +20,12 @@ object SupabaseFactory {
         ) {
             install(Postgrest)
             install(Auth) {
-                // Configure deep link handling for email confirmation
-                scheme = "com.vitol.inv3"
-                host = "auth"
+                // Configure auth for deep links
+                scheme = "com.vitol.inv3" // Your app's custom scheme
+                host = "auth" // Your app's custom host
+                defaultExternalAuthAction = ExternalAuthAction.CustomTabs()
             }
+            install(Functions)
         }
     }
 }

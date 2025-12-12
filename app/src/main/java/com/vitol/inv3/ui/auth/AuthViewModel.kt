@@ -36,7 +36,7 @@ class AuthViewModel @Inject constructor(
 
     fun signIn(email: String, password: String) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
             authManager.signInWithEmail(email, password)
                 .onSuccess {
                     _uiState.value = _uiState.value.copy(isLoading = false, isAuthenticated = true)
@@ -97,10 +97,10 @@ class AuthViewModel @Inject constructor(
 
     fun deleteAccount() {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
             authManager.deleteAccount()
                 .onSuccess {
-                    _uiState.value = AuthUiState()
+                    _uiState.value = AuthUiState(isAuthenticated = false, isLoading = false, successMessage = "Account deleted successfully (local session cleared).")
                 }
                 .onFailure { e ->
                     _uiState.value = _uiState.value.copy(
@@ -112,7 +112,7 @@ class AuthViewModel @Inject constructor(
     }
 
     fun clearMessages() {
-        _uiState.value = _uiState.value.copy(errorMessage = null, successMessage = null)
+        _uiState.value = _uiState.value.copy(errorMessage = null, successMessage = null, showEmailConfirmation = false)
     }
 
     fun setError(message: String) {
@@ -124,7 +124,7 @@ class AuthViewModel @Inject constructor(
 
     fun handleGoogleSignInResult(idToken: String) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
             authManager.signInWithGoogle(idToken)
                 .onSuccess {
                     _uiState.value = _uiState.value.copy(isLoading = false, isAuthenticated = true)
@@ -142,6 +142,25 @@ class AuthViewModel @Inject constructor(
         viewModelScope.launch {
             authManager.signOut()
             _uiState.value = AuthUiState()
+        }
+    }
+
+    fun changePassword(newPassword: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
+            authManager.changePassword(newPassword)
+                .onSuccess {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        successMessage = "Password changed successfully"
+                    )
+                }
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = e.message ?: "Failed to change password"
+                    )
+                }
         }
     }
 }

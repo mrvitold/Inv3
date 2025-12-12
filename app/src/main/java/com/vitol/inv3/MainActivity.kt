@@ -31,7 +31,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Logout
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,82 +52,41 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.vitol.inv3.auth.AuthManager
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
 import com.vitol.inv3.data.local.setActiveOwnCompanyId
 import com.vitol.inv3.data.remote.SupabaseRepository
-import com.vitol.inv3.ui.auth.AuthViewModel
-import com.vitol.inv3.ui.auth.LoginScreen
 import com.vitol.inv3.ui.home.OwnCompanySelector
 import com.vitol.inv3.ui.home.OwnCompanyViewModel
 import com.vitol.inv3.ui.scan.FileImportViewModel
 import com.vitol.inv3.ui.scan.processSelectedFile
 import com.vitol.inv3.utils.FileImportService
+import com.vitol.inv3.auth.AuthManager
+import com.vitol.inv3.auth.AuthState
+import com.vitol.inv3.ui.auth.AuthViewModel
+import com.vitol.inv3.ui.auth.LoginScreen
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    @Inject
-    lateinit var authManager: AuthManager
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // Handle deep links for email confirmation
-        handleDeepLink(intent)
         
         setContent {
             MaterialTheme {
                 val navController = rememberNavController()
-                val isAuthenticated by authManager.isAuthenticated.collectAsState(initial = false)
-                
+                val viewModel: MainActivityViewModel = hiltViewModel()
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    if (isAuthenticated) {
-                        AppNavHost(navController)
-                    } else {
-                        LoginScreen(
-                            onLoginSuccess = {
-                                // Navigation will happen automatically via state change
-                            }
-                        )
-                    }
+                    AppNavHost(navController, viewModel.authManager)
                 }
-            }
-        }
-    }
-
-    override fun onNewIntent(intent: android.content.Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleDeepLink(intent)
-    }
-
-    private fun handleDeepLink(intent: android.content.Intent) {
-        val data = intent.data
-        if (data != null) {
-            // Handle Supabase email confirmation links
-            // Format: https://azbyzwdthelztfuybxmg.supabase.co/auth/v1/verify?token=...
-            if (data.host?.contains("supabase.co") == true) {
-                timber.log.Timber.d("Received Supabase deep link: $data")
-                // The Supabase client should handle the verification automatically
-                // If there's a token in the URL, we can extract it and verify
-                val token = data.getQueryParameter("token")
-                val type = data.getQueryParameter("type")
-                if (token != null && type == "signup") {
-                    // Email confirmation - Supabase will handle this via the auth flow
-                    timber.log.Timber.d("Email confirmation token received")
-                }
-            } else if (data.scheme == "com.vitol.inv3" && data.host == "auth") {
-                // Custom scheme deep link
-                timber.log.Timber.d("Received custom auth deep link: $data")
             }
         }
     }
 }
 
 object Routes {
+    const val Login = "login"
     const val Home = "home"
     const val Scan = "scan"
     const val Review = "review"
@@ -137,11 +95,42 @@ object Routes {
     const val Exports = "exports"
     const val EditInvoice = "editInvoice"
     const val EditCompany = "editCompany"
+    const val Settings = "settings"
 }
 
 @Composable
-fun AppNavHost(navController: NavHostController) {
-    NavHost(navController = navController, startDestination = Routes.Home) {
+fun AppNavHost(
+    navController: NavHostController,
+    authManager: AuthManager
+) {
+    val authState by authManager.authState.collectAsState(initial = AuthState.Unauthenticated)
+    
+    // Determine start destination based on auth state
+    val startDestination = when (authState) {
+        is AuthState.Authenticated -> Routes.Home
+        else -> Routes.Login
+    }
+    
+    // Navigate to login when user signs out
+    LaunchedEffect(authState) {
+        if (authState !is AuthState.Authenticated) {
+            navController.navigate(Routes.Login) {
+                popUpTo(0) { inclusive = true }
+            }
+        }
+    }
+    
+    NavHost(navController = navController, startDestination = startDestination) {
+        composable(Routes.Login) {
+            LoginScreen(
+                authManager = authManager,
+                onNavigateToHome = {
+                    navController.navigate(Routes.Home) {
+                        popUpTo(Routes.Login) { inclusive = true }
+                    }
+                }
+            )
+        }
         composable(Routes.Home) { HomeScreen(navController) }
         composable(Routes.Scan) { com.vitol.inv3.ui.scan.ScanScreen(navController = navController) }
         composable("review/{uri}") { backStackEntry ->
@@ -182,6 +171,7 @@ fun AppNavHost(navController: NavHostController) {
             ) 
         }
         composable(Routes.Exports) { com.vitol.inv3.ui.exports.ExportsScreen(navController = navController) }
+        composable(Routes.Settings) { com.vitol.inv3.ui.settings.SettingsScreen(navController = navController) }
         composable("${Routes.EditInvoice}/{invoiceId}") { backStackEntry ->
             val invoiceId = backStackEntry.arguments?.getString("invoiceId") ?: ""
             if (invoiceId.isNotBlank()) {
@@ -220,7 +210,6 @@ fun HomeScreen(
     repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo,
     authViewModel: AuthViewModel = hiltViewModel()
 ) {
-    var showDeleteAccountDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -310,15 +299,48 @@ fun HomeScreen(
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Logout button at the top right
+            // Top row with Company selector and Logout button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.End
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                // Your Company section - wrapped in Box with weight to leave space for logout button
+                Box(modifier = Modifier.weight(1f)) {
+                    OwnCompanySelector(
+                        activeCompanyId = activeCompanyId,
+                        activeCompanyName = activeCompanyName,
+                        onCompanySelected = { newCompanyId ->
+                            scope.launch {
+                                if (newCompanyId != null) {
+                                    val company = repo.getCompanyById(newCompanyId)
+                                    activeCompanyName = company?.company_name
+                                } else {
+                                    activeCompanyName = null
+                                }
+                            }
+                        },
+                        onShowSnackbar = { message ->
+                            scope.launch {
+                                snackbarHostState.showSnackbar(message)
+                            }
+                        },
+                        navController = navController,
+                        viewModel = ownCompanyViewModel
+                    )
+                }
+                
+                // Logout button
                 IconButton(
-                    onClick = { authViewModel.signOut() }
+                    onClick = {
+                        scope.launch {
+                            authViewModel.signOut()
+                            snackbarHostState.showSnackbar("Signed out successfully")
+                        }
+                    },
+                    modifier = Modifier.padding(start = 8.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Logout,
@@ -326,29 +348,6 @@ fun HomeScreen(
                     )
                 }
             }
-            
-            // Your Company section at the top
-            OwnCompanySelector(
-                activeCompanyId = activeCompanyId,
-                activeCompanyName = activeCompanyName,
-                onCompanySelected = { newCompanyId ->
-                    scope.launch {
-                        if (newCompanyId != null) {
-                            val company = repo.getCompanyById(newCompanyId)
-                            activeCompanyName = company?.company_name
-                        } else {
-                            activeCompanyName = null
-                        }
-                    }
-                },
-                onShowSnackbar = { message ->
-                    scope.launch {
-                        snackbarHostState.showSnackbar(message)
-                    }
-                },
-                navController = navController,
-                viewModel = ownCompanyViewModel
-            )
             
             Spacer(modifier = Modifier.height(16.dp))
             
@@ -413,67 +412,13 @@ fun HomeScreen(
                 ) {
                     Text(text = "Exports")
                 }
-            }
-        }
-        
-        // Delete Account button at the bottom
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 80.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            TextButton(
-                onClick = { showDeleteAccountDialog = true },
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Delete account",
-                    modifier = Modifier
-                        .width(18.dp)
-                        .height(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Delete My Account",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-        
-        // Delete Account Confirmation Dialog
-        if (showDeleteAccountDialog) {
-            AlertDialog(
-                onDismissRequest = { showDeleteAccountDialog = false },
-                title = { Text("Delete Account") },
-                text = {
-                    Text("Are you sure you want to delete your account? This action cannot be undone and all your data will be permanently deleted.")
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            showDeleteAccountDialog = false
-                            scope.launch {
-                                authViewModel.deleteAccount()
-                                snackbarHostState.showSnackbar("Account deleted successfully")
-                            }
-                        },
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Text("Delete")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showDeleteAccountDialog = false }) {
-                        Text("Cancel")
-                    }
+                Button(
+                    onClick = { navController.navigate(Routes.Settings) },
+                    modifier = Modifier.fillMaxWidth(0.6f)
+                ) {
+                    Text(text = "Settings")
                 }
-            )
+            }
         }
         
         SnackbarHost(

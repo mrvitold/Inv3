@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import timber.log.Timber
+import java.util.UUID
 
 @Serializable
 data class CompanyRecord(
@@ -34,10 +35,29 @@ data class InvoiceRecord(
     val user_id: String? = null
 )
 
+@Serializable
+data class UserProfile(
+    val id: String,
+    val email: String? = null,
+    val display_name: String? = null,
+    val full_name: String? = null,
+    val avatar_url: String? = null,
+    val phone: String? = null,
+    val preferences: Map<String, String>? = null,
+    val created_at: String? = null,
+    val updated_at: String? = null
+)
+
 class SupabaseRepository(
     private val client: SupabaseClient?,
     private val authManager: AuthManager
 ) {
+    /**
+     * Get current user ID from auth manager
+     */
+    private suspend fun getCurrentUserId(): String? {
+        return authManager.getCurrentUserId()
+    }
     /**
      * Normalize VAT number: remove spaces, uppercase
      */
@@ -50,9 +70,9 @@ class SupabaseRepository(
             Timber.w("Supabase client is null, cannot upsert company")
             return@withContext null
         }
-        val userId = authManager.getCurrentUserId()
+        val userId = getCurrentUserId()
         if (userId == null) {
-            Timber.w("No user ID available, cannot upsert company")
+            Timber.w("User not authenticated, cannot upsert company")
             return@withContext null
         }
         // Normalize VAT number before saving (remove spaces, uppercase)
@@ -345,10 +365,10 @@ class SupabaseRepository(
             Timber.w("Supabase client is null, cannot insert invoice")
             return@withContext
         }
-        val userId = authManager.getCurrentUserId()
+        val userId = getCurrentUserId()
         if (userId == null) {
-            Timber.w("No user ID available, cannot insert invoice")
-            return@withContext
+            Timber.w("User not authenticated, cannot insert invoice")
+            throw IllegalStateException("User must be authenticated to insert invoice")
         }
         try {
             val invoiceWithUserId = invoice.copy(user_id = userId)
@@ -633,10 +653,10 @@ class SupabaseRepository(
             Timber.w("Supabase client is null, cannot update invoice")
             return@withContext
         }
-        val userId = authManager.getCurrentUserId()
+        val userId = getCurrentUserId()
         if (userId == null) {
-            Timber.w("No user ID available, cannot update invoice")
-            return@withContext
+            Timber.w("User not authenticated, cannot update invoice")
+            throw IllegalStateException("User must be authenticated to update invoice")
         }
         try {
             if (invoice.id.isNullOrBlank()) {
@@ -756,6 +776,231 @@ class SupabaseRepository(
             Timber.e(e, "Failed to unmark company as own: $companyId")
             throw e
         }
+    }
+
+    // ==================== User Profile Methods ====================
+
+    /**
+     * Get user profile by user ID
+     */
+    suspend fun getUserProfile(userId: String): UserProfile? = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot get user profile")
+            return@withContext null
+        }
+        try {
+            val profile = client.from("users")
+                .select {
+                    filter {
+                        eq("id", userId)
+                    }
+                }
+                .decodeSingleOrNull<UserProfile>()
+            Timber.d("Fetched user profile for userId: $userId")
+            profile
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to fetch user profile for userId: $userId")
+            null
+        }
+    }
+
+    /**
+     * Get current user's profile
+     */
+    suspend fun getCurrentUserProfile(): UserProfile? = withContext(Dispatchers.IO) {
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot get user profile")
+            return@withContext null
+        }
+        return@withContext getUserProfile(userId)
+    }
+
+    /**
+     * Update user profile
+     */
+    suspend fun updateUserProfile(profile: UserProfile): UserProfile? = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot update user profile")
+            return@withContext null
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot update user profile")
+            return@withContext null
+        }
+        if (profile.id != userId) {
+            Timber.w("Cannot update profile: user ID mismatch")
+            return@withContext null
+        }
+        try {
+            val updated = client.from("users")
+                .update(profile) {
+                    filter {
+                        eq("id", profile.id)
+                    }
+                    select()
+                }
+                .decodeSingle<UserProfile>()
+            Timber.d("User profile updated successfully for userId: ${profile.id}")
+            updated
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update user profile for userId: ${profile.id}")
+            null
+        }
+    }
+
+    /**
+     * Update display name
+     */
+    suspend fun updateDisplayName(displayName: String): Result<Unit> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            return@withContext Result.failure(Exception("Supabase client is null"))
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            return@withContext Result.failure(Exception("User not authenticated"))
+        }
+        return@withContext try {
+            client.from("users")
+                .update(mapOf("display_name" to displayName)) {
+                    filter {
+                        eq("id", userId)
+                    }
+                }
+            Timber.d("Display name updated successfully for userId: $userId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update display name for userId: $userId")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Update full name
+     */
+    suspend fun updateFullName(fullName: String): Result<Unit> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            return@withContext Result.failure(Exception("Supabase client is null"))
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            return@withContext Result.failure(Exception("User not authenticated"))
+        }
+        return@withContext try {
+            client.from("users")
+                .update(mapOf("full_name" to fullName)) {
+                    filter {
+                        eq("id", userId)
+                    }
+                }
+            Timber.d("Full name updated successfully for userId: $userId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update full name for userId: $userId")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Update phone number
+     */
+    suspend fun updatePhone(phone: String): Result<Unit> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            return@withContext Result.failure(Exception("Supabase client is null"))
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            return@withContext Result.failure(Exception("User not authenticated"))
+        }
+        return@withContext try {
+            client.from("users")
+                .update(mapOf("phone" to phone)) {
+                    filter {
+                        eq("id", userId)
+                    }
+                }
+            Timber.d("Phone updated successfully for userId: $userId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update phone for userId: $userId")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Update avatar URL
+     */
+    suspend fun updateAvatarUrl(avatarUrl: String): Result<Unit> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            return@withContext Result.failure(Exception("Supabase client is null"))
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            return@withContext Result.failure(Exception("User not authenticated"))
+        }
+        return@withContext try {
+            client.from("users")
+                .update(mapOf("avatar_url" to avatarUrl)) {
+                    filter {
+                        eq("id", userId)
+                    }
+                }
+            Timber.d("Avatar URL updated successfully for userId: $userId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update avatar URL for userId: $userId")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Update user preferences (merges with existing preferences)
+     */
+    suspend fun updatePreferences(newPreferences: Map<String, String>): Result<Unit> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            return@withContext Result.failure(Exception("Supabase client is null"))
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            return@withContext Result.failure(Exception("User not authenticated"))
+        }
+        return@withContext try {
+            // Get current preferences first
+            val currentProfile = getCurrentUserProfile()
+            val currentPreferences = currentProfile?.preferences ?: emptyMap()
+            // Merge with new preferences
+            val mergedPreferences = currentPreferences.toMutableMap().apply {
+                putAll(newPreferences)
+            }
+            // Update with merged preferences
+            client.from("users")
+                .update(mapOf("preferences" to mergedPreferences)) {
+                    filter {
+                        eq("id", userId)
+                    }
+                }
+            Timber.d("Preferences updated successfully for userId: $userId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update preferences for userId: $userId")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Set a single preference value
+     */
+    suspend fun setPreference(key: String, value: String): Result<Unit> {
+        return updatePreferences(mapOf(key to value))
+    }
+
+    /**
+     * Get a preference value
+     */
+    suspend fun getPreference(key: String): String? {
+        val profile = getCurrentUserProfile()
+        return profile?.preferences?.get(key)
     }
 }
 

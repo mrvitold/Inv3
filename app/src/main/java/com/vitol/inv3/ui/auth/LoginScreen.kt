@@ -1,21 +1,19 @@
 package com.vitol.inv3.ui.auth
 
+import android.app.Activity
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -24,11 +22,13 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.vitol.inv3.auth.AuthManager
 import timber.log.Timber
 
 @Composable
 fun LoginScreen(
-    onLoginSuccess: () -> Unit,
+    authManager: AuthManager,
+    onNavigateToHome: () -> Unit,
     viewModel: AuthViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -39,8 +39,8 @@ fun LoginScreen(
     var confirmPassword by remember { mutableStateOf("") }
     var isSignUp by remember { mutableStateOf(false) }
     var showForgotPassword by remember { mutableStateOf(false) }
-    var passwordVisible by remember { mutableStateOf(false) }
-    var confirmPasswordVisible by remember { mutableStateOf(false) }
+    var passwordVisibility by remember { mutableStateOf(false) }
+    var confirmPasswordVisibility by remember { mutableStateOf(false) }
 
     // Google Sign-In
     val googleSignInClient = remember {
@@ -57,42 +57,47 @@ fun LoginScreen(
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
+        Timber.d("Google Sign-In result: resultCode=${result.resultCode}, data=${result.data}")
+        if (result.resultCode == Activity.RESULT_OK) {
             val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
             try {
                 val account = task.getResult(ApiException::class.java)
+                Timber.d("Google Sign-In account: email=${account?.email}, idToken present=${account?.idToken != null}")
                 account?.idToken?.let { idToken ->
+                    Timber.d("ID token received, length=${idToken.length}")
                     viewModel.handleGoogleSignInResult(idToken)
                 } ?: run {
-                    // This shouldn't happen, but handle it gracefully
-                    Timber.w("Google sign in succeeded but no ID token received")
-                    viewModel.setError("Failed to get ID token from Google")
+                    Timber.e("Failed to get ID token from Google account")
+                    viewModel.setError("Failed to get ID token from Google. Please check your Google Console configuration.")
                 }
             } catch (e: ApiException) {
-                Timber.e(e, "Google sign in failed")
-                val errorMsg = when (e.statusCode) {
-                    10 -> "Developer error. Please contact support."
-                    12500 -> "Sign in was cancelled."
-                    else -> "Google sign in failed: ${e.message}"
+                val errorCode = e.statusCode
+                val errorMessage = when (errorCode) {
+                    4 -> "Sign-in required. Please try again."
+                    7 -> "Network error. Please check your connection."
+                    8 -> "Internal error. Please try again later."
+                    10 -> "Configuration error. Please check your Google Console OAuth client ID and SHA-1 fingerprint. This usually means your SHA-1 fingerprint is not registered in Google Cloud Console."
+                    12501 -> "Sign-in cancelled by user."
+                    else -> "Google sign in failed: ${e.message} (Error code: $errorCode)"
                 }
-                viewModel.setError(errorMsg)
+                Timber.e(e, "Google sign in failed with error code: $errorCode, message: ${e.message}")
+                viewModel.setError(errorMessage)
+            } catch (e: Exception) {
+                Timber.e(e, "Unexpected error during Google sign in")
+                viewModel.setError("Unexpected error: ${e.message}")
             }
+        } else if (result.resultCode == Activity.RESULT_CANCELED) {
+            Timber.d("Google Sign-In cancelled by user")
+            // Don't show error for user cancellation
         } else {
-            viewModel.setError("Sign in was cancelled")
+            Timber.e("Google Sign-In failed with result code: ${result.resultCode}")
+            viewModel.setError("Google Sign-In failed. Please check your Google Console configuration and SHA-1 fingerprint.")
         }
     }
 
     LaunchedEffect(uiState.isAuthenticated) {
         if (uiState.isAuthenticated) {
-            onLoginSuccess()
-        }
-    }
-
-    // Reset form when switching between sign in/up
-    LaunchedEffect(isSignUp) {
-        if (!isSignUp) {
-            confirmPassword = ""
-            showForgotPassword = false
+            onNavigateToHome()
         }
     }
 
@@ -104,15 +109,51 @@ fun LoginScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = if (isSignUp) "Create Account" else "Sign In",
+            text = when {
+                showForgotPassword -> "Reset Password"
+                isSignUp -> "Create Account"
+                else -> "Sign In"
+            },
             style = MaterialTheme.typography.headlineLarge,
             modifier = Modifier.padding(bottom = 32.dp)
         )
 
+        // Error Message Card
+        uiState.errorMessage?.let { message ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+            ) {
+                Text(
+                    text = message,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+
+        // Success Message Card
+        uiState.successMessage?.let { message ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+            ) {
+                Text(
+                    text = message,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+
         // Email field
         OutlinedTextField(
             value = email,
-            onValueChange = { 
+            onValueChange = {
                 email = it
                 viewModel.clearMessages()
             },
@@ -122,158 +163,63 @@ fun LoginScreen(
                 .padding(bottom = 16.dp),
             enabled = !uiState.isLoading,
             singleLine = true,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Email
-            )
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
         )
 
-        // Password field
-        OutlinedTextField(
-            value = password,
-            onValueChange = { 
-                password = it
-                viewModel.clearMessages()
-            },
-            label = { Text("Password") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = if (isSignUp) 16.dp else 8.dp),
-            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-            enabled = !uiState.isLoading,
-            singleLine = true,
-            trailingIcon = {
-                IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                    Icon(
-                        imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                        contentDescription = if (passwordVisible) "Hide password" else "Show password"
-                    )
-                }
-            }
-        )
-
-        // Confirm Password field (only for sign up)
-        if (isSignUp) {
+        if (!showForgotPassword) {
+            // Password field
             OutlinedTextField(
-                value = confirmPassword,
-                onValueChange = { 
-                    confirmPassword = it
+                value = password,
+                onValueChange = {
+                    password = it
                     viewModel.clearMessages()
                 },
-                label = { Text("Confirm Password") },
+                label = { Text("Password") },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    .padding(bottom = 16.dp),
+                visualTransformation = if (passwordVisibility) VisualTransformation.None else PasswordVisualTransformation(),
                 enabled = !uiState.isLoading,
                 singleLine = true,
-                isError = confirmPassword.isNotBlank() && password != confirmPassword,
-                supportingText = if (confirmPassword.isNotBlank() && password != confirmPassword) {
-                    { Text("Passwords do not match", color = MaterialTheme.colorScheme.error) }
-                } else null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 trailingIcon = {
-                    IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
-                        Icon(
-                            imageVector = if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                            contentDescription = if (confirmPasswordVisible) "Hide password" else "Show password"
-                        )
+                    val image = if (passwordVisibility) Icons.Filled.Visibility else Icons.Filled.VisibilityOff
+                    IconButton(onClick = { passwordVisibility = !passwordVisibility }) {
+                        Icon(imageVector = image, contentDescription = "Toggle password visibility")
                     }
                 }
             )
-        }
 
-        // Forgot password link (only for sign in)
-        if (!isSignUp && !showForgotPassword) {
-            TextButton(
-                onClick = { showForgotPassword = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                enabled = !uiState.isLoading
-            ) {
-                Text("Forgot Password?")
-            }
-        }
-
-        // Forgot password email field
-        if (showForgotPassword) {
-            OutlinedTextField(
-                value = email,
-                onValueChange = { 
-                    email = it
-                    viewModel.clearMessages()
-                },
-                label = { Text("Email") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                enabled = !uiState.isLoading,
-                singleLine = true
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = { viewModel.resetPassword(email) },
-                    modifier = Modifier.weight(1f),
-                    enabled = !uiState.isLoading && email.isNotBlank()
-                ) {
-                    if (uiState.isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                    } else {
-                        Text("Send Reset Link")
-                    }
-                }
-                TextButton(
-                    onClick = { 
-                        showForgotPassword = false
+            // Confirm Password field (only for sign up)
+            if (isSignUp) {
+                OutlinedTextField(
+                    value = confirmPassword,
+                    onValueChange = {
+                        confirmPassword = it
                         viewModel.clearMessages()
                     },
-                    enabled = !uiState.isLoading
-                ) {
-                    Text("Cancel")
+                    label = { Text("Confirm Password") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
+                    visualTransformation = if (confirmPasswordVisibility) VisualTransformation.None else PasswordVisualTransformation(),
+                    enabled = !uiState.isLoading,
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        val image = if (confirmPasswordVisibility) Icons.Filled.Visibility else Icons.Filled.VisibilityOff
+                        IconButton(onClick = { confirmPasswordVisibility = !confirmPasswordVisibility }) {
+                            Icon(imageVector = image, contentDescription = "Toggle confirm password visibility")
+                        }
+                    }
+                )
+                if (confirmPassword.isNotBlank() && password != confirmPassword) {
+                    Text(
+                        text = "Passwords do not match",
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
-            }
-        }
-
-        // Success message
-        if (uiState.successMessage != null) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Text(
-                    text = uiState.successMessage!!,
-                    modifier = Modifier.padding(16.dp),
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            }
-        }
-
-        // Error message
-        if (uiState.errorMessage != null) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer
-                )
-            ) {
-                Text(
-                    text = uiState.errorMessage!!,
-                    modifier = Modifier.padding(16.dp),
-                    color = MaterialTheme.colorScheme.onErrorContainer
-                )
             }
         }
 
@@ -283,6 +229,7 @@ fun LoginScreen(
                 onClick = {
                     if (isSignUp) {
                         if (password != confirmPassword) {
+                            viewModel.setError("Passwords do not match.")
                             return@Button
                         }
                         viewModel.signUp(email, password)
@@ -293,10 +240,10 @@ fun LoginScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 16.dp),
-                enabled = !uiState.isLoading 
-                    && email.isNotBlank() 
-                    && password.isNotBlank()
-                    && (!isSignUp || (confirmPassword.isNotBlank() && password == confirmPassword))
+                enabled = !uiState.isLoading
+                        && email.isNotBlank()
+                        && password.isNotBlank()
+                        && (!isSignUp || (confirmPassword.isNotBlank() && password == confirmPassword))
             ) {
                 if (uiState.isLoading) {
                     CircularProgressIndicator(
@@ -307,83 +254,92 @@ fun LoginScreen(
                     Text(if (isSignUp) "Sign Up" else "Sign In")
                 }
             }
+        } else {
+            // Send Reset Link button for forgot password
+            Button(
+                onClick = { viewModel.resetPassword(email) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                enabled = !uiState.isLoading && email.isNotBlank()
+            ) {
+                if (uiState.isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Text("Send Reset Link")
+                }
+            }
         }
 
         // Toggle sign up/sign in
-        if (!showForgotPassword) {
+        TextButton(
+            onClick = {
+                isSignUp = !isSignUp
+                showForgotPassword = false // Reset forgot password mode
+                viewModel.clearMessages()
+            },
+            enabled = !uiState.isLoading
+        ) {
+            Text(if (isSignUp) "Already have an account? Sign In" else "Don't have an account? Sign Up")
+        }
+
+        // Forgot Password link
+        if (!isSignUp) {
             TextButton(
-                onClick = { 
-                    isSignUp = !isSignUp
+                onClick = {
+                    showForgotPassword = !showForgotPassword
                     viewModel.clearMessages()
                 },
                 enabled = !uiState.isLoading
             ) {
-                Text(if (isSignUp) "Already have an account? Sign In" else "Don't have an account? Sign Up")
+                Text(if (showForgotPassword) "Back to Sign In" else "Forgot Password?")
             }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
         // Divider
-        if (!showForgotPassword) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                HorizontalDivider(modifier = Modifier.weight(1f))
-                Text(
-                    text = "OR",
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    style = MaterialTheme.typography.bodySmall
-                )
-                HorizontalDivider(modifier = Modifier.weight(1f))
-            }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HorizontalDivider(modifier = Modifier.weight(1f))
+            Text(
+                text = "OR",
+                modifier = Modifier.padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.bodySmall
+            )
+            HorizontalDivider(modifier = Modifier.weight(1f))
+        }
 
-            Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
-            // Google Sign-In button
-            OutlinedButton(
-                onClick = {
-                    val activity = context as? ComponentActivity
-                    if (activity != null) {
-                        try {
-                            val signInIntent = googleSignInClient.signInIntent
-                            googleSignInLauncher.launch(signInIntent)
-                        } catch (e: Exception) {
-                            Timber.e(e, "Failed to launch Google Sign-In")
-                            // Error will be handled by the launcher callback
-                        }
-                    } else {
-                        viewModel.setError("Unable to start Google Sign-In")
+        // Google Sign-In button
+        OutlinedButton(
+            onClick = {
+                val activity = context as? ComponentActivity
+                if (activity != null) {
+                    try {
+                        Timber.d("Launching Google Sign-In")
+                        val signInIntent = googleSignInClient.signInIntent
+                        googleSignInLauncher.launch(signInIntent)
+                    } catch (e: Exception) {
+                        Timber.e(e, "Failed to launch Google Sign-In")
+                        viewModel.setError("Failed to launch Google Sign-In: ${e.message}")
                     }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !uiState.isLoading
-            ) {
-                // Google icon - using a colored circle with "G"
-                Box(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .padding(end = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Canvas(
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        drawCircle(
-                            color = Color(0xFF4285F4),
-                            radius = size.minDimension / 2
-                        )
-                    }
-                    Text(
-                        text = "G",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold
-                    )
+                } else {
+                    Timber.e("Activity context not available for Google Sign-In")
+                    viewModel.setError("Activity context not available for Google Sign-In.")
                 }
-                Text("Sign in with Google")
-            }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !uiState.isLoading
+        ) {
+            Text("Sign in with Google")
         }
     }
 }
+
