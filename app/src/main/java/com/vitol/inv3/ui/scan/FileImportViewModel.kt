@@ -57,17 +57,36 @@ class FileImportViewModel @Inject constructor() : ViewModel() {
     fun addToQueue(uris: List<Uri>) {
         _processingQueue.value = uris
         _currentIndex.value = 0
+        Timber.d("=== FileImportViewModel.addToQueue ===")
         Timber.d("Added ${uris.size} items to processing queue")
+        Timber.d("First 10 URIs in queue (with indices):")
+        uris.take(10).forEachIndexed { idx, uri ->
+            val name = uri.lastPathSegment ?: "unknown"
+            Timber.d("  [$idx] $name")
+        }
+        if (uris.isNotEmpty()) {
+            val firstUri = uris[0]
+            val firstName = firstUri.lastPathSegment ?: "unknown"
+            Timber.d("First URI in queue [0]: $firstName")
+            Timber.d("Queue size: ${uris.size}, Current index reset to: 0")
+        }
     }
     
     fun getNextUri(): Uri? {
         val queue = _processingQueue.value
         val index = _currentIndex.value
-        return if (index < queue.size) {
+        val uri = if (index < queue.size) {
             queue[index]
         } else {
             null
         }
+        if (uri != null) {
+            val name = uri.lastPathSegment ?: "unknown"
+            Timber.d("getNextUri() [index=$index/${queue.size}]: $name")
+        } else {
+            Timber.d("getNextUri() [index=$index/${queue.size}]: null")
+        }
+        return uri
     }
     
     fun moveToNext() {

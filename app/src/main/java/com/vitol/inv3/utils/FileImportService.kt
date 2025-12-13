@@ -2,12 +2,15 @@ package com.vitol.inv3.utils
 
 import android.content.ContentResolver
 import android.content.Context
+import android.database.Cursor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -99,6 +102,45 @@ class FileImportService(private val context: Context) {
                mimeType == "image/heif" ||
                uri.path?.endsWith(".heic", ignoreCase = true) == true ||
                uri.path?.endsWith(".heif", ignoreCase = true) == true
+    }
+    
+    /**
+     * Gets the display name (filename) from a URI
+     * Works with document tree URIs, content URIs, and file URIs
+     */
+    fun getDisplayName(uri: Uri): String? {
+        return try {
+            // Try DocumentsContract first (for document tree URIs)
+            if (DocumentsContract.isDocumentUri(context, uri)) {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst() && cursor.columnCount > 0) {
+                        cursor.getString(0)
+                    } else null
+                }
+            } else {
+                // Try OpenableColumns for regular content URIs
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst() && cursor.columnCount > 0) {
+                        cursor.getString(0)
+                    } else null
+                } ?: uri.lastPathSegment // Fallback to last path segment
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to get display name for URI: $uri")
+            uri.lastPathSegment // Fallback to last path segment
+        }
     }
 
     /**
@@ -253,6 +295,144 @@ class FileImportService(private val context: Context) {
         } catch (e: Exception) {
             Timber.e(e, "Failed to process file")
             Result.failure(e)
+        }
+    }
+    
+    /**
+     * Recursively scans a folder (via DocumentTree URI) for invoice files (PDFs and images)
+     * Returns list of URIs for all invoice files found, sorted alphabetically by display name
+     */
+    suspend fun scanFolderForInvoices(treeUri: Uri): Result<List<Uri>> = withContext(Dispatchers.IO) {
+        try {
+            // Store URI and display name pairs for proper sorting
+            val invoiceFilesWithNames = mutableListOf<Pair<Uri, String>>()
+            val contentResolver = context.contentResolver
+            
+            // Take persistable URI permission
+            val takeFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                contentResolver.takePersistableUriPermission(treeUri, takeFlags)
+            } catch (e: Exception) {
+                Timber.w(e, "Could not take persistable URI permission (may already be granted)")
+            }
+            
+            // Recursively scan the folder
+            scanDirectoryRecursive(treeUri, treeUri, contentResolver, invoiceFilesWithNames)
+            
+            // Log files BEFORE sorting
+            Timber.d("=== FILES BEFORE SORTING ===")
+            Timber.d("Found ${invoiceFilesWithNames.size} invoice file(s) in folder")
+            invoiceFilesWithNames.take(10).forEachIndexed { idx, (_, name) ->
+                val lowerName = name.lowercase()
+                Timber.d("  [$idx] '$name' (lowercase: '$lowerName')")
+            }
+            
+            // Sort files alphabetically by display name (case-insensitive)
+            invoiceFilesWithNames.sortBy { (_, displayName) ->
+                displayName.lowercase()
+            }
+            
+            // Log files AFTER sorting
+            Timber.d("=== FILES AFTER SORTING (alphabetically by display name) ===")
+            Timber.d("First 10 files in sorted order:")
+            invoiceFilesWithNames.take(10).forEachIndexed { idx, (_, name) ->
+                val lowerName = name.lowercase()
+                Timber.d("  [$idx] '$name' (lowercase: '$lowerName')")
+            }
+            
+            // Extract just the URIs after sorting
+            val invoiceFiles = invoiceFilesWithNames.map { it.first }
+            
+            // Verify first file
+            if (invoiceFiles.isNotEmpty()) {
+                val firstUri = invoiceFiles[0]
+                val firstName = invoiceFilesWithNames[0].second
+                Timber.d("First file in sorted list: '$firstName' (URI: ${firstUri.lastPathSegment})")
+            }
+            
+            Result.success(invoiceFiles)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to scan folder for invoices")
+            Result.failure(e)
+        }
+    }
+    
+    /**
+     * Recursively scans a directory for invoice files
+     * Stores URI and display name pairs for proper sorting
+     */
+    private fun scanDirectoryRecursive(
+        treeUri: Uri,
+        directoryUri: Uri,
+        contentResolver: ContentResolver,
+        invoiceFiles: MutableList<Pair<Uri, String>>
+    ) {
+        try {
+            // Get document ID from the directory URI
+            // If it's a tree URI, extract the document ID; if it's a document URI, use it directly
+            val documentId = if (DocumentsContract.isTreeUri(directoryUri)) {
+                DocumentsContract.getTreeDocumentId(directoryUri)
+            } else {
+                DocumentsContract.getDocumentId(directoryUri)
+            }
+            
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
+            
+            val cursor: Cursor? = contentResolver.query(
+                childrenUri,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME
+                ),
+                null,
+                null,
+                null
+            )
+            
+            cursor?.use {
+                while (it.moveToNext()) {
+                    val childDocumentId = it.getString(0)
+                    val mimeType = it.getString(1)
+                    val displayName = it.getString(2)
+                    
+                    val childDocumentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocumentId)
+                    
+                    // Check if it's a directory
+                    if (DocumentsContract.Document.MIME_TYPE_DIR == mimeType) {
+                        // Recursively scan subdirectory
+                        scanDirectoryRecursive(treeUri, childDocumentUri, contentResolver, invoiceFiles)
+                    } else {
+                        // Check if it's an invoice file (PDF or image)
+                        if (isPdf(childDocumentUri) || isImage(childDocumentUri)) {
+                            // Try to take persistable URI permission on the document URI
+                            // This ensures we can read the file later
+                            try {
+                                val takeFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                // For document URIs from a tree, we need to use the tree URI
+                                // But we can't take persistable permission on individual documents
+                                // Instead, we'll rely on the tree permission and ensure we can read it
+                                // Test if we can read the file
+                                contentResolver.openInputStream(childDocumentUri)?.use {
+                                    // File is readable, add it with display name for sorting
+                                    invoiceFiles.add(Pair(childDocumentUri, displayName ?: ""))
+                                    Timber.d("Found invoice file: $displayName")
+                                } ?: run {
+                                    Timber.w("Cannot read file: $displayName, skipping")
+                                }
+                            } catch (e: Exception) {
+                                Timber.w(e, "Error checking file access: $displayName")
+                                // Still try to add it - permission might work later
+                                invoiceFiles.add(Pair(childDocumentUri, displayName ?: ""))
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Error scanning directory: $directoryUri")
         }
     }
 }

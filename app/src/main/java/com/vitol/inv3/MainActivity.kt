@@ -167,18 +167,49 @@ fun AppNavHost(
             )
         }
         composable(Routes.Home) { HomeScreen(navController) }
+        composable("${Routes.Scan}/addPage/{existingPages}") { backStackEntry ->
+            val existingPagesParam = backStackEntry.arguments?.getString("existingPages")
+            val existingPages = if (existingPagesParam.isNullOrBlank()) {
+                emptyList<android.net.Uri>()
+            } else {
+                try {
+                    existingPagesParam.split(",").mapNotNull { encodedUri ->
+                        try {
+                            android.net.Uri.parse(java.net.URLDecoder.decode(encodedUri, "UTF-8"))
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                } catch (e: Exception) {
+                    emptyList()
+                }
+            }
+            com.vitol.inv3.ui.scan.ScanScreen(
+                navController = navController,
+                existingPages = existingPages
+            )
+        }
         composable(Routes.Scan) { com.vitol.inv3.ui.scan.ScanScreen(navController = navController) }
         composable("review/{uri}") { backStackEntry ->
             val uriString = backStackEntry.arguments?.getString("uri")
-            val uri = if (uriString.isNullOrBlank()) null else {
+            val uris = if (uriString.isNullOrBlank()) {
+                emptyList<android.net.Uri>()
+            } else {
                 try {
-                    android.net.Uri.parse(java.net.URLDecoder.decode(uriString, "UTF-8"))
+                    // Support comma-separated URIs for multi-page invoices
+                    uriString.split(",").mapNotNull { encodedUri ->
+                        try {
+                            android.net.Uri.parse(java.net.URLDecoder.decode(encodedUri, "UTF-8"))
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
                 } catch (e: Exception) {
-                    null
+                    emptyList()
                 }
             }
-            if (uri != null) {
-                com.vitol.inv3.ui.review.ReviewScreen(imageUri = uri, navController = navController)
+            if (uris.isNotEmpty()) {
+                com.vitol.inv3.ui.review.ReviewScreen(imageUris = uris, navController = navController)
             } else {
                 PlaceholderScreen("Missing image")
             }
@@ -275,31 +306,327 @@ fun HomeScreen(
     var showInvoiceTypeDialog by remember { mutableStateOf(false) }
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     
-    // File picker launcher for Import button
-    val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        if (uri != null) {
+    // Folder picker launcher for Import Folder button
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri: Uri? ->
+        if (treeUri != null) {
+            // Take persistable URI permission in Activity context
+            val takeFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(treeUri, takeFlags)
+            } catch (e: Exception) {
+                Timber.w(e, "Could not take persistable URI permission in Activity (may already be granted)")
+            }
+            
             isProcessingFile = true
             showProcessingDialog = true
-            processingMessage = "Processing file..."
+            processingMessage = "Scanning folder for invoices..."
             
             scope.launch {
-                processSelectedFile(uri, fileImportService, snackbarHostState) { uris ->
-                    isProcessingFile = false
+                val result = fileImportService.scanFolderForInvoices(treeUri)
+                result.onSuccess { uris ->
                     if (uris.isNotEmpty()) {
-                        fileImportViewModel.addToQueue(uris)
-                        processingMessage = "Found ${uris.size} invoice(s). Opening first invoice..."
+                        processingMessage = "Processing ${uris.size} file(s) from folder..."
+                        
+                        // Process each file sequentially (convert PDFs to images, etc.)
+                        // Maintain mapping of original URI to processed URIs to preserve sorting by original filename
+                        // Note: uris list is already sorted alphabetically by display name from scanFolderForInvoices
+                        // Store original filename with each processed URI for verification
+                        val uriToProcessedUris = mutableListOf<Pair<Uri, List<Uri>>>()
+                        val processedUriToOriginalInfo = mutableMapOf<Uri, Pair<String, Int>>() // processedUri -> (originalFileName, originalIndex)
+                        var processedCount = 0
+                        var failedCount = 0
+                        
+                        // Process files sequentially to maintain order
+                        for ((index, uri) in uris.withIndex()) {
+                            val originalFileName = fileImportService.getDisplayName(uri) ?: uri.lastPathSegment ?: "unknown"
+                            processingMessage = "Processing file ${index + 1} of ${uris.size}: $originalFileName"
+                            Timber.d("Starting to process file [$index/${uris.size}]: '$originalFileName'")
+                            
+                            // Process file directly (it's a suspend function - will wait for completion)
+                            val result = fileImportService.processFile(uri)
+                            
+                            when {
+                                result.isSuccess -> {
+                                    val processedUris = result.getOrNull() ?: emptyList()
+                                    if (processedUris.isNotEmpty()) {
+                                        uriToProcessedUris.add(uri to processedUris)
+                                        // Store mapping of processed URIs to original file info
+                                        processedUris.forEach { processedUri ->
+                                            processedUriToOriginalInfo[processedUri] = originalFileName to index
+                                        }
+                                        processedCount++
+                                        Timber.d("✓ Successfully processed file [$index]: '$originalFileName' -> ${processedUris.size} image(s)")
+                                    } else {
+                                        failedCount++
+                                        Timber.w("✗ File [$index] produced no images: '$originalFileName'")
+                                    }
+                                }
+                                result.isFailure -> {
+                                    failedCount++
+                                    val error = result.exceptionOrNull()
+                                    Timber.e(error, "✗ Failed to process file [$index]: '$originalFileName'")
+                                    // Show error in snackbar
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar("Failed to process file: ${error?.message ?: "Unknown error"}")
+                                    }
+                                }
+                            }
+                        }
+                        
+                        Timber.d("Finished processing all files. Total: ${uriToProcessedUris.size} successful, $failedCount failed")
+                        
+                        isProcessingFile = false
+                        if (uriToProcessedUris.isNotEmpty()) {
+                            // Log ALL original files with their display names BEFORE building the final list
+                            Timber.d("=== ORIGINAL FILES SORTING VERIFICATION ===")
+                            uriToProcessedUris.forEachIndexed { idx, (originalUri, processedUris) ->
+                                val originalName = fileImportService.getDisplayName(originalUri) ?: originalUri.lastPathSegment ?: "unknown"
+                                val lowerName = originalName.lowercase()
+                                Timber.d("  [$idx] Original file: '$originalName' (lowercase: '$lowerName') -> ${processedUris.size} page(s)")
+                            }
+                            
+                            // Build final list maintaining the original sorted order
+                            val allProcessedUris = uriToProcessedUris.flatMap { (originalUri, processedUris) ->
+                                processedUris
+                            }
+                            
+                            Timber.d("=== FINAL QUEUE VERIFICATION ===")
+                            Timber.d("Total processed URIs: ${allProcessedUris.size}")
+                            Timber.d("Mapping original files to processed URIs (first 10):")
+                            uriToProcessedUris.take(10).forEachIndexed { idx, (originalUri, processedUris) ->
+                                val originalName = fileImportService.getDisplayName(originalUri) ?: originalUri.lastPathSegment ?: "unknown"
+                                Timber.d("  [$idx] Original: '$originalName' -> ${processedUris.size} page(s)")
+                                processedUris.take(3).forEachIndexed { pageIdx, processedUri ->
+                                    val processedName = processedUri.lastPathSegment ?: "unknown"
+                                    Timber.d("      Page ${pageIdx + 1}: $processedName")
+                                }
+                            }
+                            
+                            Timber.d("Final queue order with original file names (first 10 processed URIs):")
+                            allProcessedUris.take(10).forEachIndexed { idx, uri ->
+                                val originalInfo = processedUriToOriginalInfo[uri]
+                                val originalName = originalInfo?.first ?: "UNKNOWN_ORIGINAL"
+                                val originalIdx = originalInfo?.second ?: -1
+                                val processedName = uri.lastPathSegment ?: "unknown"
+                                Timber.d("  [$idx] Processed URI: $processedName -> FROM original file [$originalIdx]: '$originalName'")
+                            }
+                            
+                            // Verify first file
+                            if (uriToProcessedUris.isNotEmpty()) {
+                                val (firstOriginalUri, firstProcessedUris) = uriToProcessedUris[0]
+                                val firstOriginalName = fileImportService.getDisplayName(firstOriginalUri) ?: firstOriginalUri.lastPathSegment ?: "unknown"
+                                val firstProcessedUri = allProcessedUris[0]
+                                val firstProcessedName = firstProcessedUri.lastPathSegment ?: "unknown"
+                                val firstProcessedOriginalInfo = processedUriToOriginalInfo[firstProcessedUri]
+                                Timber.d("=== CRITICAL VERIFICATION ===")
+                                Timber.d("First original file [0]: '$firstOriginalName'")
+                                Timber.d("First processed URI [0]: $firstProcessedName")
+                                Timber.d("First processed URI's original file: '${firstProcessedOriginalInfo?.first ?: "UNKNOWN"}' [index ${firstProcessedOriginalInfo?.second ?: -1}]")
+                                Timber.d("First processed URI should come from: ${firstProcessedUris.firstOrNull()?.lastPathSegment}")
+                                if (firstProcessedUris.firstOrNull() != firstProcessedUri) {
+                                    Timber.e("ERROR: First processed URI does not match first original file's first page!")
+                                } else if (firstProcessedOriginalInfo?.first != firstOriginalName || firstProcessedOriginalInfo?.second != 0) {
+                                    Timber.e("ERROR: First processed URI mapping is incorrect! Expected: '$firstOriginalName' [0], Got: '${firstProcessedOriginalInfo?.first}' [${firstProcessedOriginalInfo?.second}]")
+                                } else {
+                                    Timber.d("✓ VERIFICATION PASSED: First processed URI matches first original file's first page")
+                                }
+                            }
+                            
+                            fileImportViewModel.addToQueue(allProcessedUris)
+                            
+                            // Use getNextUri() to ensure consistency with the queue system
+                            val firstUri = fileImportViewModel.getNextUri()
+                            if (firstUri != null) {
+                                val firstUriName = firstUri.lastPathSegment ?: "unknown"
+                                val firstUriOriginalInfo = processedUriToOriginalInfo[firstUri]
+                                val firstUriOriginalName = firstUriOriginalInfo?.first ?: "UNKNOWN_ORIGINAL"
+                                Timber.d("=== NAVIGATION VERIFICATION ===")
+                                Timber.d("Queue set. getNextUri() returns: $firstUriName")
+                                Timber.d("This URI comes from original file: '$firstUriOriginalName' [index ${firstUriOriginalInfo?.second ?: -1}]")
+                                processingMessage = "Found ${allProcessedUris.size} invoice(s) from ${processedCount} file(s). Opening first invoice..."
+                                // Small delay to show the message, then navigate
+                                scope.launch {
+                                    kotlinx.coroutines.delay(300)
+                                    showProcessingDialog = false
+                                    // Navigate to first item (invoice type is already set in ViewModel)
+                                    Timber.d("Navigating to first invoice: $firstUriName (from original: '$firstUriOriginalName')")
+                                    navController.navigate("review/${Uri.encode(firstUri.toString())}")
+                                }
+                            } else {
+                                Timber.e("ERROR: getNextUri() returned null after adding ${allProcessedUris.size} items to queue!")
+                                showProcessingDialog = false
+                            }
+                        } else {
+                            processingMessage = if (failedCount > 0) {
+                                "No invoices found in selected folder"
+                            } else {
+                                "No invoices found in folder"
+                            }
+                        }
+                    } else {
+                        isProcessingFile = false
+                        processingMessage = "No invoice files found in selected folder"
+                    }
+                }.onFailure { error ->
+                    isProcessingFile = false
+                    processingMessage = "Failed to scan folder: ${error.message}"
+                }
+            }
+        }
+    }
+    
+    // File picker launcher for Import button - supports multiple file selection
+    // Use custom contract to ensure multiple selection is enabled
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = object : ActivityResultContracts.GetMultipleContents() {
+            override fun createIntent(context: android.content.Context, input: String): android.content.Intent {
+                return super.createIntent(context, input).apply {
+                    // Explicitly enable multiple selection
+                    putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true)
+                }
+            }
+        }
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            isProcessingFile = true
+            showProcessingDialog = true
+            processingMessage = "Processing ${uris.size} file(s)..."
+            
+            scope.launch {
+                // Log files BEFORE sorting
+                Timber.d("=== MULTIPLE FILE SELECTION: FILES BEFORE SORTING ===")
+                uris.take(10).forEachIndexed { idx, uri ->
+                    val name = fileImportService.getDisplayName(uri) ?: uri.lastPathSegment ?: "unknown"
+                    val lowerName = name.lowercase()
+                    Timber.d("  [$idx] '$name' (lowercase: '$lowerName')")
+                }
+                
+                // Sort files first by display name (matches file explorer order)
+                val sortedUris = uris.sortedBy { originalUri ->
+                    fileImportService.getDisplayName(originalUri)?.lowercase() ?: originalUri.lastPathSegment?.lowercase() ?: ""
+                }
+                
+                // Log files AFTER sorting
+                Timber.d("=== MULTIPLE FILE SELECTION: FILES AFTER SORTING ===")
+                sortedUris.take(10).forEachIndexed { idx, uri ->
+                    val name = fileImportService.getDisplayName(uri) ?: uri.lastPathSegment ?: "unknown"
+                    val lowerName = name.lowercase()
+                    Timber.d("  [$idx] '$name' (lowercase: '$lowerName')")
+                }
+                
+                // Process each file sequentially to maintain sorted order
+                // Store original filename with each processed URI for verification
+                val uriToProcessedUris = mutableListOf<Pair<Uri, List<Uri>>>()
+                val processedUriToOriginalInfo = mutableMapOf<Uri, Pair<String, Int>>() // processedUri -> (originalFileName, originalIndex)
+                var processedCount = 0
+                var failedCount = 0
+                
+                for ((index, uri) in sortedUris.withIndex()) {
+                    val originalFileName = fileImportService.getDisplayName(uri) ?: uri.lastPathSegment ?: "unknown"
+                    processingMessage = "Processing file ${index + 1} of ${sortedUris.size}: $originalFileName"
+                    Timber.d("Starting to process file [$index/${sortedUris.size}]: '$originalFileName'")
+                    
+                    // Process file directly (it's a suspend function)
+                    val result = fileImportService.processFile(uri)
+                    result.onSuccess { processedUris ->
+                        if (processedUris.isNotEmpty()) {
+                            uriToProcessedUris.add(uri to processedUris)
+                            // Store mapping of processed URIs to original file info
+                            processedUris.forEach { processedUri ->
+                                processedUriToOriginalInfo[processedUri] = originalFileName to index
+                            }
+                            processedCount++
+                            Timber.d("✓ Successfully processed file [$index]: '$originalFileName' -> ${processedUris.size} image(s)")
+                        } else {
+                            failedCount++
+                            Timber.w("✗ File [$index] produced no images: '$originalFileName'")
+                        }
+                    }.onFailure { error ->
+                        failedCount++
+                        Timber.e(error, "✗ Failed to process file [$index]: '$originalFileName'")
+                        // Show error in snackbar
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Failed to process file: ${error.message ?: "Unknown error"}")
+                        }
+                    }
+                }
+                
+                isProcessingFile = false
+                if (uriToProcessedUris.isNotEmpty()) {
+                    // Log ALL original files with their display names BEFORE building the final list
+                    Timber.d("=== ORIGINAL FILES SORTING VERIFICATION (Multiple File Selection) ===")
+                    uriToProcessedUris.forEachIndexed { idx, (originalUri, processedUris) ->
+                        val originalName = fileImportService.getDisplayName(originalUri) ?: originalUri.lastPathSegment ?: "unknown"
+                        val lowerName = originalName.lowercase()
+                        Timber.d("  [$idx] Original file: '$originalName' (lowercase: '$lowerName') -> ${processedUris.size} page(s)")
+                    }
+                    
+                    // Build final list maintaining the sorted order
+                    val allProcessedUris = uriToProcessedUris.flatMap { (originalUri, processedUris) ->
+                        processedUris
+                    }
+                    
+                    Timber.d("Final queue order with original file names (first 10 processed URIs):")
+                    allProcessedUris.take(10).forEachIndexed { idx, uri ->
+                        val originalInfo = processedUriToOriginalInfo[uri]
+                        val originalName = originalInfo?.first ?: "UNKNOWN_ORIGINAL"
+                        val originalIdx = originalInfo?.second ?: -1
+                        val processedName = uri.lastPathSegment ?: "unknown"
+                        Timber.d("  [$idx] Processed URI: $processedName -> FROM original file [$originalIdx]: '$originalName'")
+                    }
+                    
+                    // Verify first file
+                    if (uriToProcessedUris.isNotEmpty()) {
+                        val (firstOriginalUri, firstProcessedUris) = uriToProcessedUris[0]
+                        val firstOriginalName = fileImportService.getDisplayName(firstOriginalUri) ?: firstOriginalUri.lastPathSegment ?: "unknown"
+                        val firstProcessedUri = allProcessedUris[0]
+                        val firstProcessedName = firstProcessedUri.lastPathSegment ?: "unknown"
+                        val firstProcessedOriginalInfo = processedUriToOriginalInfo[firstProcessedUri]
+                        Timber.d("=== CRITICAL VERIFICATION (Multiple File Selection) ===")
+                        Timber.d("First original file [0]: '$firstOriginalName'")
+                        Timber.d("First processed URI [0]: $firstProcessedName")
+                        Timber.d("First processed URI's original file: '${firstProcessedOriginalInfo?.first ?: "UNKNOWN"}' [index ${firstProcessedOriginalInfo?.second ?: -1}]")
+                        if (firstProcessedUris.firstOrNull() != firstProcessedUri) {
+                            Timber.e("ERROR: First processed URI does not match first original file's first page!")
+                        } else if (firstProcessedOriginalInfo?.first != firstOriginalName || firstProcessedOriginalInfo?.second != 0) {
+                            Timber.e("ERROR: First processed URI mapping is incorrect! Expected: '$firstOriginalName' [0], Got: '${firstProcessedOriginalInfo?.first}' [${firstProcessedOriginalInfo?.second}]")
+                        } else {
+                            Timber.d("✓ VERIFICATION PASSED: First processed URI matches first original file's first page")
+                        }
+                    }
+                    
+                    fileImportViewModel.addToQueue(allProcessedUris)
+                    
+                    // Use getNextUri() to ensure consistency with the queue system
+                    val firstUri = fileImportViewModel.getNextUri()
+                    if (firstUri != null) {
+                        val firstUriName = firstUri.lastPathSegment ?: "unknown"
+                        val firstUriOriginalInfo = processedUriToOriginalInfo[firstUri]
+                        val firstUriOriginalName = firstUriOriginalInfo?.first ?: "UNKNOWN_ORIGINAL"
+                        Timber.d("=== NAVIGATION VERIFICATION (Multiple File Selection) ===")
+                        Timber.d("Queue set. getNextUri() returns: $firstUriName")
+                        Timber.d("This URI comes from original file: '$firstUriOriginalName' [index ${firstUriOriginalInfo?.second ?: -1}]")
+                        processingMessage = "Found ${allProcessedUris.size} invoice(s) from ${processedCount} file(s). Opening first invoice..."
                         // Small delay to show the message, then navigate
                         scope.launch {
                             kotlinx.coroutines.delay(300)
                             showProcessingDialog = false
                             // Navigate to first item (invoice type is already set in ViewModel)
-                            val firstUri = uris[0]
+                            Timber.d("Navigating to first invoice: $firstUriName (from original: '$firstUriOriginalName')")
                             navController.navigate("review/${Uri.encode(firstUri.toString())}")
                         }
                     } else {
-                        processingMessage = "No invoices found in file"
+                        Timber.e("ERROR: getNextUri() returned null after adding ${allProcessedUris.size} items to queue!")
+                        showProcessingDialog = false
+                    }
+                } else {
+                    processingMessage = if (failedCount > 0) {
+                        "No invoices found in selected file(s)"
+                    } else {
+                        "No invoices found in file(s)"
                     }
                 }
             }
@@ -366,7 +693,7 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Import File and Scan with Camera buttons
+                // Import File, Import Folder, and Scan with Camera buttons
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -374,6 +701,8 @@ fun HomeScreen(
                     // Import File button
                     Button(
                         onClick = {
+                            // Launch with "*/*" to allow all file types (PDFs and images)
+                            // The custom contract ensures multiple selection is enabled
                             pendingAction = { filePickerLauncher.launch("*/*") }
                             showInvoiceTypeDialog = true
                         },
@@ -385,6 +714,24 @@ fun HomeScreen(
                             modifier = Modifier.padding(end = 8.dp)
                         )
                         Text("Import File")
+                    }
+                    
+                    // Import Folder button
+                    Button(
+                        onClick = {
+                            pendingAction = { 
+                                folderPickerLauncher.launch(null)
+                            }
+                            showInvoiceTypeDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = "Import from folder",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Import Folder")
                     }
                     
                     // Scan with Camera button

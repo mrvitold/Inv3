@@ -42,6 +42,9 @@ class ExportsViewModel @Inject constructor(
     private val _expandedCompanies = MutableStateFlow<Set<String>>(emptySet())
     val expandedCompanies: StateFlow<Set<String>> = _expandedCompanies.asStateFlow()
 
+    private val _expandedSalesPurchase = MutableStateFlow<Set<String>>(emptySet())
+    val expandedSalesPurchase: StateFlow<Set<String>> = _expandedSalesPurchase.asStateFlow()
+
     // Cache validation results to avoid recalculating
     private val _validationResults = MutableStateFlow<Map<String, InvoiceValidationResult>>(emptyMap())
     private val validationResults: Map<String, InvoiceValidationResult>
@@ -150,30 +153,42 @@ class ExportsViewModel @Inject constructor(
         Timber.d("Calculated ${summaries.size} monthly summaries for year $year")
     }
 
-    fun getCompanySummariesForMonth(month: String): List<CompanySummary> {
-        val year = _selectedYear.value
-        val monthInvoices = _invoices.value.filter { invoice ->
-            val dateStr = invoice.date
-            if (!dateStr.isNullOrBlank()) {
-                try {
-                    val invoiceMonth = when {
-                        dateStr.contains("-") -> dateStr.substring(0, 7)
-                        dateStr.contains(".") -> {
-                            val parts = dateStr.split(".")
-                            if (parts.size == 3) {
-                                val yearPart = parts[2].trim()
-                                val monthPart = parts[1].trim().padStart(2, '0')
-                                "$yearPart-$monthPart"
-                            } else null
-                        }
-                        else -> null
-                    }
-                    invoiceMonth == month
-                } catch (e: Exception) {
-                    false
-                }
+    fun getSalesPurchaseSummariesForMonth(month: String): List<SalesPurchaseSummary> {
+        val monthInvoices = getInvoicesForMonth(month)
+
+        // Group by invoice type (S = Sales, P = Purchase)
+        val typeMap = mutableMapOf<String, MutableList<InvoiceRecord>>()
+        monthInvoices.forEach { invoice ->
+            val invoiceType = invoice.invoice_type ?: "P" // Default to Purchase if not set
+            typeMap.getOrPut(invoiceType) { mutableListOf() }.add(invoice)
+        }
+
+        // Calculate summaries for each type
+        return typeMap.map { (type, typeInvoices) ->
+            val totalAmount = typeInvoices.sumOf { it.amount_without_vat_eur ?: 0.0 }
+            val totalVat = typeInvoices.sumOf { it.vat_amount_eur ?: 0.0 }
+            // Count invoices with errors
+            val errorCount = typeInvoices.count { invoice ->
+                val invoiceId = invoice.id ?: return@count false
+                validationResults[invoiceId]?.hasErrors == true
+            }
+            SalesPurchaseSummary(
+                type = type,
+                typeLabel = if (type == "S") "Sales" else "Purchase",
+                invoiceCount = typeInvoices.size,
+                totalAmount = totalAmount,
+                totalVat = totalVat,
+                errorCount = errorCount
+            )
+        }.sortedByDescending { it.type } // Sales (S) first, then Purchase (P)
+    }
+
+    fun getCompanySummariesForMonth(month: String, invoiceType: String? = null): List<CompanySummary> {
+        val monthInvoices = getInvoicesForMonth(month).filter { invoice ->
+            if (invoiceType != null) {
+                (invoice.invoice_type ?: "P") == invoiceType
             } else {
-                false
+                true
             }
         }
 
@@ -240,15 +255,37 @@ class ExportsViewModel @Inject constructor(
         _expandedMonths.value = current
     }
 
-    fun getInvoicesForCompany(month: String, companyName: String): List<InvoiceRecord> {
+    fun getInvoicesForCompany(month: String, companyName: String, invoiceType: String? = null): List<InvoiceRecord> {
         val monthInvoices = getInvoicesForMonth(month)
         return monthInvoices.filter { invoice ->
-            (invoice.company_name ?: "Unknown") == companyName
+            val matchesCompany = (invoice.company_name ?: "Unknown") == companyName
+            val matchesType = invoiceType == null || (invoice.invoice_type ?: "P") == invoiceType
+            matchesCompany && matchesType
         }
     }
 
-    fun toggleCompanyExpansion(month: String, companyName: String) {
-        val key = "$month|$companyName"
+    fun toggleSalesPurchaseExpansion(month: String, invoiceType: String) {
+        val key = "$month|$invoiceType"
+        val current = _expandedSalesPurchase.value.toMutableSet()
+        if (current.contains(key)) {
+            current.remove(key)
+        } else {
+            current.add(key)
+        }
+        _expandedSalesPurchase.value = current
+    }
+
+    fun isSalesPurchaseExpanded(month: String, invoiceType: String): Boolean {
+        val key = "$month|$invoiceType"
+        return _expandedSalesPurchase.value.contains(key)
+    }
+
+    fun toggleCompanyExpansion(month: String, companyName: String, invoiceType: String? = null) {
+        val key = if (invoiceType != null) {
+            "$month|$invoiceType|$companyName"
+        } else {
+            "$month|$companyName"
+        }
         val current = _expandedCompanies.value.toMutableSet()
         if (current.contains(key)) {
             current.remove(key)
@@ -258,8 +295,12 @@ class ExportsViewModel @Inject constructor(
         _expandedCompanies.value = current
     }
 
-    fun isCompanyExpanded(month: String, companyName: String): Boolean {
-        val key = "$month|$companyName"
+    fun isCompanyExpanded(month: String, companyName: String, invoiceType: String? = null): Boolean {
+        val key = if (invoiceType != null) {
+            "$month|$invoiceType|$companyName"
+        } else {
+            "$month|$companyName"
+        }
         return _expandedCompanies.value.contains(key)
     }
 

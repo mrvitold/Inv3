@@ -80,6 +80,7 @@ fun ExportsScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val expandedMonths by viewModel.expandedMonths.collectAsState()
     val expandedCompanies by viewModel.expandedCompanies.collectAsState()
+    val expandedSalesPurchase by viewModel.expandedSalesPurchase.collectAsState()
     val availableYears = viewModel.getAvailableYears()
     
     var exportDialogState by remember { mutableStateOf<ExportDialogState?>(null) }
@@ -245,8 +246,8 @@ fun ExportsScreen(
                                 month = summary.month
                             )
                         },
-                        companySummaries = if (expandedMonths.contains(summary.month)) {
-                            viewModel.getCompanySummariesForMonth(summary.month)
+                        salesPurchaseSummaries = if (expandedMonths.contains(summary.month)) {
+                            viewModel.getSalesPurchaseSummariesForMonth(summary.month)
                         } else {
                             emptyList()
                         },
@@ -254,6 +255,7 @@ fun ExportsScreen(
                         navController = navController,
                         month = summary.month,
                         expandedCompanies = expandedCompanies,
+                        expandedSalesPurchase = expandedSalesPurchase,
                         onDeleteInvoice = { invoice -> invoiceToDelete = invoice },
                         onDeleteMonth = { month -> monthToDelete = month }
                     )
@@ -311,11 +313,12 @@ fun MonthlySummaryCard(
     isExpanded: Boolean,
     onExpandClick: () -> Unit,
     onExportClick: () -> Unit,
-    companySummaries: List<CompanySummary>,
+    salesPurchaseSummaries: List<SalesPurchaseSummary>,
     viewModel: ExportsViewModel,
     navController: androidx.navigation.NavController?,
     month: String,
     expandedCompanies: Set<String>,
+    expandedSalesPurchase: Set<String>,
     onDeleteInvoice: (com.vitol.inv3.data.remote.InvoiceRecord) -> Unit,
     onDeleteMonth: (String) -> Unit
 ) {
@@ -407,20 +410,14 @@ fun MonthlySummaryCard(
                 )
             }
 
-            // Expanded company breakdown
-            if (isExpanded && companySummaries.isNotEmpty()) {
+            // Expanded Sales/Purchase breakdown
+            if (isExpanded && salesPurchaseSummaries.isNotEmpty()) {
                 Spacer(modifier = Modifier.padding(vertical = 8.dp))
-                Text(
-                    text = "Companies:",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-                companySummaries.forEach { company ->
-                    val companyKey = "$month|${company.companyName}"
-                    val isCompanyExpanded = expandedCompanies.contains(companyKey)
-                    val companyInvoices = if (isCompanyExpanded) {
-                        viewModel.getInvoicesForCompany(month, company.companyName)
+                salesPurchaseSummaries.forEach { salesPurchase ->
+                    val salesPurchaseKey = "$month|${salesPurchase.type}"
+                    val isSalesPurchaseExpanded = expandedSalesPurchase.contains(salesPurchaseKey)
+                    val companySummariesForType = if (isSalesPurchaseExpanded) {
+                        viewModel.getCompanySummariesForMonth(month, salesPurchase.type)
                     } else {
                         emptyList()
                     }
@@ -430,7 +427,7 @@ fun MonthlySummaryCard(
                             .fillMaxWidth()
                             .padding(vertical = 4.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
                         )
                     ) {
                         Column(
@@ -442,110 +439,185 @@ fun MonthlySummaryCard(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { viewModel.toggleCompanyExpansion(month, company.companyName) },
+                                    .clickable { viewModel.toggleSalesPurchaseExpansion(month, salesPurchase.type) },
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = company.companyName,
+                                        text = salesPurchase.typeLabel,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Medium
+                                        fontWeight = FontWeight.Bold
                                     )
                                     Text(
                                         text = buildAnnotatedString {
-                                            append("invoices: ${company.invoiceCount}")
-                                            if (company.errorCount > 0) {
+                                            append("invoices: ${salesPurchase.invoiceCount}")
+                                            if (salesPurchase.errorCount > 0) {
                                                 withStyle(style = SpanStyle(color = darkRed)) {
-                                                    append(" [${company.errorCount} to check]")
+                                                    append(" [${salesPurchase.errorCount} to check]")
                                                 }
                                             }
                                         },
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
-                                        text = "${numberFormat.format(company.totalAmount)} EUR (without VAT)",
+                                        text = "${numberFormat.format(salesPurchase.totalAmount)} EUR (without VAT)",
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
-                                        text = "${numberFormat.format(company.totalVat)} EUR (VAT)",
+                                        text = "${numberFormat.format(salesPurchase.totalVat)} EUR (VAT)",
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                 }
                                 Icon(
-                                    imageVector = if (isCompanyExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                    contentDescription = if (isCompanyExpanded) "Collapse" else "Expand"
+                                    imageVector = if (isSalesPurchaseExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = if (isSalesPurchaseExpanded) "Collapse" else "Expand"
                                 )
                             }
                             
-                            // Expanded invoices list
-                            if (isCompanyExpanded && companyInvoices.isNotEmpty()) {
+                            // Expanded company breakdown for this type
+                            if (isSalesPurchaseExpanded && companySummariesForType.isNotEmpty()) {
                                 Spacer(modifier = Modifier.padding(vertical = 8.dp))
-                                companyInvoices.forEach { invoice ->
-                                    val invoiceErrors = viewModel.getInvoiceErrors(invoice)
-                                    val hasErrors = invoiceErrors.isNotEmpty()
-                                    val textColor = if (hasErrors) darkRed else Color.Unspecified
+                                Text(
+                                    text = "Companies:",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                                companySummariesForType.forEach { company ->
+                                    val companyKey = "$month|${salesPurchase.type}|${company.companyName}"
+                                    val isCompanyExpanded = expandedCompanies.contains(companyKey)
+                                    val companyInvoices = if (isCompanyExpanded) {
+                                        viewModel.getInvoicesForCompany(month, company.companyName, salesPurchase.type)
+                                    } else {
+                                        emptyList()
+                                    }
                                     
                                     Card(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 2.dp),
+                                            .padding(vertical = 4.dp),
                                         colors = CardDefaults.cardColors(
-                                            containerColor = MaterialTheme.colorScheme.surface
+                                            containerColor = MaterialTheme.colorScheme.surfaceVariant
                                         )
                                     ) {
-                                        Row(
+                                        Column(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(8.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                                .padding(12.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = invoice.invoice_id ?: "No ID",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = textColor
-                                                )
-                                                Text(
-                                                    text = invoice.date ?: "",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = textColor
-                                                )
-                                                Text(
-                                                    text = "${numberFormat.format(invoice.amount_without_vat_eur ?: 0.0)} EUR (without VAT)",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = textColor
-                                                )
-                                                Text(
-                                                    text = "${numberFormat.format(invoice.vat_amount_eur ?: 0.0)} EUR (VAT)",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = textColor
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { viewModel.toggleCompanyExpansion(month, company.companyName, salesPurchase.type) },
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = company.companyName,
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.Medium
+                                                    )
+                                                    Text(
+                                                        text = buildAnnotatedString {
+                                                            append("invoices: ${company.invoiceCount}")
+                                                            if (company.errorCount > 0) {
+                                                                withStyle(style = SpanStyle(color = darkRed)) {
+                                                                    append(" [${company.errorCount} to check]")
+                                                                }
+                                                            }
+                                                        },
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                    Text(
+                                                        text = "${numberFormat.format(company.totalAmount)} EUR (without VAT)",
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                    Text(
+                                                        text = "${numberFormat.format(company.totalVat)} EUR (VAT)",
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                }
+                                                Icon(
+                                                    imageVector = if (isCompanyExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                    contentDescription = if (isCompanyExpanded) "Collapse" else "Expand"
                                                 )
                                             }
-                                            IconButton(
-                                                onClick = {
-                                                    invoice.id?.let { id ->
-                                                        navController?.navigate("${Routes.EditInvoice}/$id")
+                                            
+                                            // Expanded invoices list
+                                            if (isCompanyExpanded && companyInvoices.isNotEmpty()) {
+                                                Spacer(modifier = Modifier.padding(vertical = 8.dp))
+                                                companyInvoices.forEach { invoice ->
+                                                    val invoiceErrors = viewModel.getInvoiceErrors(invoice)
+                                                    val hasErrors = invoiceErrors.isNotEmpty()
+                                                    val textColor = if (hasErrors) darkRed else Color.Unspecified
+                                                    
+                                                    Card(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(vertical = 2.dp),
+                                                        colors = CardDefaults.cardColors(
+                                                            containerColor = MaterialTheme.colorScheme.surface
+                                                        )
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(8.dp),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Column(modifier = Modifier.weight(1f)) {
+                                                                Text(
+                                                                    text = invoice.invoice_id ?: "No ID",
+                                                                    style = MaterialTheme.typography.bodySmall,
+                                                                    fontWeight = FontWeight.Medium,
+                                                                    color = textColor
+                                                                )
+                                                                Text(
+                                                                    text = invoice.date ?: "",
+                                                                    style = MaterialTheme.typography.bodySmall,
+                                                                    color = textColor
+                                                                )
+                                                                Text(
+                                                                    text = "${numberFormat.format(invoice.amount_without_vat_eur ?: 0.0)} EUR (without VAT)",
+                                                                    style = MaterialTheme.typography.bodySmall,
+                                                                    color = textColor
+                                                                )
+                                                                Text(
+                                                                    text = "${numberFormat.format(invoice.vat_amount_eur ?: 0.0)} EUR (VAT)",
+                                                                    style = MaterialTheme.typography.bodySmall,
+                                                                    color = textColor
+                                                                )
+                                                            }
+                                                            IconButton(
+                                                                onClick = {
+                                                                    invoice.id?.let { id ->
+                                                                        navController?.navigate("${Routes.EditInvoice}/$id")
+                                                                    }
+                                                                }
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Edit,
+                                                                    contentDescription = "Edit invoice"
+                                                                )
+                                                            }
+                                                            IconButton(
+                                                                onClick = {
+                                                                    onDeleteInvoice(invoice)
+                                                                }
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Delete,
+                                                                    contentDescription = "Delete invoice",
+                                                                    tint = MaterialTheme.colorScheme.error
+                                                                )
+                                                            }
+                                                        }
                                                     }
                                                 }
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Edit,
-                                                    contentDescription = "Edit invoice"
-                                                )
-                                            }
-                                            IconButton(
-                                                onClick = {
-                                                    onDeleteInvoice(invoice)
-                                                }
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Delete,
-                                                    contentDescription = "Delete invoice",
-                                                    tint = MaterialTheme.colorScheme.error
-                                                )
                                             }
                                         }
                                     }

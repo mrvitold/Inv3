@@ -29,8 +29,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Folder
@@ -69,6 +71,7 @@ import java.util.Locale
 fun ScanScreen(
     modifier: Modifier = Modifier,
     navController: NavHostController,
+    existingPages: List<Uri> = emptyList(),
     fileImportViewModel: FileImportViewModel = run {
         // Use Activity-scoped ViewModel to share state across navigation routes
         val activity = LocalContext.current as? ComponentActivity
@@ -106,28 +109,61 @@ fun ScanScreen(
         onResult = { granted -> hasPermission = granted }
     )
 
-    // File picker launcher - supports images and PDFs
+    // File picker launcher - supports images and PDFs, multiple file selection
     // Filter by MIME types: images/* and application/pdf
+    // Use custom contract to ensure multiple selection is enabled
     val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        if (uri != null) {
+        contract = object : ActivityResultContracts.GetMultipleContents() {
+            override fun createIntent(context: android.content.Context, input: String): android.content.Intent {
+                return super.createIntent(context, input).apply {
+                    // Explicitly enable multiple selection
+                    putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true)
+                }
+            }
+        }
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
             isProcessingFile = true
             showProcessingDialog = true
-            processingMessage = "Processing file..."
+            processingMessage = "Processing ${uris.size} file(s)..."
             
             scope.launch {
-                processSelectedFile(uri, fileImportService, snackbarHostState) { uris ->
-                    isProcessingFile = false
-                    if (uris.isNotEmpty()) {
-                        fileImportViewModel.addToQueue(uris)
-                        processingMessage = "Found ${uris.size} invoice(s). Processing first invoice..."
-                        // Navigate to first item (invoice type is already set in ViewModel)
-                        val firstUri = uris[0]
-                        showProcessingDialog = false
-                        navController.navigate("review/${Uri.encode(firstUri.toString())}")
-                    } else {
-                        processingMessage = "No invoices found in file"
+                val allProcessedUris = mutableListOf<Uri>()
+                var processedCount = 0
+                var failedCount = 0
+                var completedCount = 0
+                
+                // Process each selected file
+                uris.forEachIndexed { index, uri ->
+                    processingMessage = "Processing file ${index + 1} of ${uris.size}..."
+                    
+                    processSelectedFile(uri, fileImportService, snackbarHostState) { processedUris ->
+                        completedCount++
+                        if (processedUris.isNotEmpty()) {
+                            allProcessedUris.addAll(processedUris)
+                            processedCount++
+                        } else {
+                            failedCount++
+                        }
+                        
+                        // Check if all files are processed
+                        if (completedCount == uris.size) {
+                            isProcessingFile = false
+                            if (allProcessedUris.isNotEmpty()) {
+                                fileImportViewModel.addToQueue(allProcessedUris)
+                                processingMessage = "Found ${allProcessedUris.size} invoice(s) from ${processedCount} file(s). Processing first invoice..."
+                                // Navigate to first item (invoice type is already set in ViewModel)
+                                val firstUri = allProcessedUris[0]
+                                showProcessingDialog = false
+                                navController.navigate("review/${Uri.encode(firstUri.toString())}")
+                            } else {
+                                processingMessage = if (failedCount > 0) {
+                                    "No invoices found in selected file(s)"
+                                } else {
+                                    "No invoices found in file(s)"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -185,8 +221,16 @@ fun ScanScreen(
                     capturePhoto(context, capturer) { result ->
                         result.onSuccess { uri ->
                             scope.launch { snackbarHostState.showSnackbar("Saved: ${uri.lastPathSegment}") }
+                            // If adding to existing pages, combine them; otherwise use single URI
+                            val allPages = if (existingPages.isNotEmpty()) {
+                                existingPages + uri
+                            } else {
+                                listOf(uri)
+                            }
+                            // Encode all URIs for navigation
+                            val encodedUris = allPages.joinToString(",") { Uri.encode(it.toString()) }
                             // Invoice type is already set in ViewModel
-                            navController.navigate("review/${Uri.encode(uri.toString())}")
+                            navController.navigate("review/$encodedUris")
                         }.onFailure { e ->
                             scope.launch { snackbarHostState.showSnackbar("Capture failed: ${e.message}") }
                         }
@@ -194,12 +238,30 @@ fun ScanScreen(
                 },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 32.dp)
+                    .padding(bottom = 100.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.Camera,
                     contentDescription = "Capture photo"
                 )
+            }
+            
+            // Show indicator if adding to existing pages
+            if (existingPages.isNotEmpty()) {
+                androidx.compose.material3.Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 16.dp)
+                ) {
+                    Text(
+                        text = "Adding page ${existingPages.size + 1}",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                        color = androidx.compose.material3.MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
             }
         } else if (!hasPermission) {
             // Show message when camera permission is not granted

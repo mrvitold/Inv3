@@ -13,6 +13,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import timber.log.Timber
+import java.io.InputStream
 
 data class OcrBlock(
     val text: String,
@@ -26,11 +27,29 @@ class InvoiceTextRecognizer(
 
     suspend fun recognize(uri: Uri): Result<List<OcrBlock>> {
         return try {
+            // Helper function to open input stream with fallback for document tree URIs
+            fun openInputStream(uri: Uri): InputStream? {
+                return try {
+                    context.contentResolver.openInputStream(uri)
+                } catch (e: SecurityException) {
+                    // If openInputStream fails with SecurityException, try openFileDescriptor
+                    Timber.w(e, "SecurityException when reading URI, trying openFileDescriptor: $uri")
+                    try {
+                        context.contentResolver.openFileDescriptor(uri, "r")?.let { pfd ->
+                            java.io.FileInputStream(pfd.fileDescriptor)
+                        }
+                    } catch (e2: Exception) {
+                        Timber.e(e2, "Failed to read image from URI: $uri")
+                        null
+                    }
+                }
+            }
+            
             // First, get image dimensions to ensure we load full resolution
             val options = BitmapFactory.Options().apply {
                 inJustDecodeBounds = true
             }
-            context.contentResolver.openInputStream(uri)?.use {
+            openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, options)
             }
             
@@ -53,8 +72,8 @@ class InvoiceTextRecognizer(
                 inPreferredConfig = Bitmap.Config.RGB_565 // Faster decoding, still good quality
             }
             
-            val srcBitmap = context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, decodeOptions)
+            val srcBitmap: Bitmap = openInputStream(uri)?.use { inputStream ->
+                BitmapFactory.decodeStream(inputStream, null, decodeOptions)
             } ?: return Result.failure(IllegalStateException("Cannot decode image"))
             
             Timber.d("OCR: Decoded bitmap size ${srcBitmap.width}x${srcBitmap.height}")

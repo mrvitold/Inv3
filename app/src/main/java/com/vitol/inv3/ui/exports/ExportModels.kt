@@ -8,6 +8,15 @@ data class MonthlySummary(
     val errorCount: Int = 0
 )
 
+data class SalesPurchaseSummary(
+    val type: String, // "S" for Sales, "P" for Purchase
+    val typeLabel: String, // "Sales" or "Purchase"
+    val invoiceCount: Int,
+    val totalAmount: Double,
+    val totalVat: Double,
+    val errorCount: Int = 0
+)
+
 data class CompanySummary(
     val companyName: String,
     val invoiceCount: Int,

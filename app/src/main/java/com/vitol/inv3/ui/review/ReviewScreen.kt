@@ -40,8 +40,11 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.MergeType
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -95,7 +98,7 @@ import javax.inject.Inject
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReviewScreen(
-    imageUri: Uri,
+    imageUris: List<Uri>,
     navController: NavController? = null,
     viewModel: ReviewViewModel = hiltViewModel(),
     fileImportViewModel: com.vitol.inv3.ui.scan.FileImportViewModel = run {
@@ -114,7 +117,30 @@ fun ReviewScreen(
         }
     }
 ) {
+    // Use first URI as primary for backward compatibility
+    val imageUri = imageUris.firstOrNull() ?: return
     val context = androidx.compose.ui.platform.LocalContext.current
+    
+    // Track all pages for this invoice
+    var allImageUris by remember(imageUris) { mutableStateOf(imageUris) }
+    
+    // Check if invoice is from camera (FileProvider) or from import
+    // Camera photos are saved in "captures" directory with "INV3_" prefix
+    // Imports can be:
+    //   - External storage URIs: content://com.android.externalstorage.documents/...
+    //   - PDF pages converted to images: .../pdf_pages/...
+    //   - HEIC converted images: .../converted_images/...
+    val isFromCamera = remember(imageUri) {
+        val uriString = imageUri.toString()
+        // Camera photos are in "captures" directory with "INV3_" prefix
+        uriString.contains("/captures/", ignoreCase = true) && 
+        uriString.contains("INV3_", ignoreCase = true)
+    }
+    
+    // Helper function to encode multiple URIs for navigation
+    fun encodeUris(uris: List<Uri>): String {
+        return uris.joinToString(",") { android.net.Uri.encode(it.toString()) }
+    }
     
     // Get active own company ID to exclude from matching
     val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
@@ -273,12 +299,312 @@ fun ReviewScreen(
         }
     }
 
+    // Track which URIs have been processed
+    var processedUris by remember(allImageUris) { mutableStateOf<Set<Uri>>(emptySet()) }
+    
     // Track if OCR has been triggered (keyed by imageUri to handle multiple images)
     var ocrTriggeredForUri by remember(imageUri) { mutableStateOf(false) }
     
+    // Helper function to merge OCR results intelligently
+    val mergeOcrResults: (String, Map<String, String>, (Map<String, String>) -> Unit) -> Unit = { newParsed, currentFields, onMerged ->
+        val lines = newParsed.split("\n")
+        val mergedFields = currentFields.toMutableMap()
+        
+        // Update text with new parsed content for tax code determination
+        text = if (text.isBlank()) newParsed else "$text\n$newParsed"
+        
+        lines.forEach { line ->
+            val parts = line.split(":", limit = 2)
+            if (parts.size == 2) {
+                val key = parts[0].trim()
+                val value = parts[1].trim()
+                
+                when (key) {
+                    // Only update if field is empty or value is more complete
+                    "Invoice_ID" -> {
+                        if (mergedFields["Invoice_ID"].isNullOrBlank() && value.isNotBlank()) {
+                            mergedFields["Invoice_ID"] = value
+                        }
+                    }
+                    "Date" -> {
+                        if (mergedFields["Date"].isNullOrBlank() && value.isNotBlank()) {
+                            mergedFields["Date"] = value
+                        }
+                    }
+                    "Company_name" -> {
+                        if (value.isNotBlank() && (mergedFields["Company_name"].isNullOrBlank() || value.length > (mergedFields["Company_name"]?.length ?: 0))) {
+                            mergedFields["Company_name"] = value
+                        }
+                    }
+                    "Amount_without_VAT_EUR" -> {
+                        // Sum amounts from multiple pages
+                        val currentValue = mergedFields["Amount_without_VAT_EUR"]?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+                        val newValue = value.replace(",", ".").toDoubleOrNull() ?: 0.0
+                        val total = currentValue + newValue
+                        if (total > 0) {
+                            mergedFields["Amount_without_VAT_EUR"] = total.toString()
+                        }
+                    }
+                    "VAT_amount_EUR" -> {
+                        // Sum VAT amounts from multiple pages
+                        val currentValue = mergedFields["VAT_amount_EUR"]?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+                        val newValue = value.replace(",", ".").toDoubleOrNull() ?: 0.0
+                        val total = currentValue + newValue
+                        if (total > 0) {
+                            mergedFields["VAT_amount_EUR"] = total.toString()
+                            // Recalculate VAT rate
+                            val amountWithoutVat = mergedFields["Amount_without_VAT_EUR"]?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+                            if (amountWithoutVat > 0 && total > 0) {
+                                val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, total)
+                                if (calculatedRate != null) {
+                                    mergedFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                    val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, text)
+                                    mergedFields["Tax_code"] = taxCode
+                                }
+                            }
+                        }
+                    }
+                    "VAT_number" -> {
+                        val normalizedValue = value.replace(" ", "").uppercase()
+                        val normalizedOwnVat = ownCompanyVatNumber?.replace(" ", "")?.uppercase()
+                        if (normalizedOwnVat == null || !normalizedValue.equals(normalizedOwnVat, ignoreCase = true)) {
+                            if (mergedFields["VAT_number"].isNullOrBlank() && normalizedValue.isNotBlank()) {
+                                mergedFields["VAT_number"] = normalizedValue
+                            }
+                        }
+                    }
+                    "Company_number" -> {
+                        val ownCompanyNum = ownCompanyNumber
+                        val trimmedValue = value.trim()
+                        if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
+                            if (mergedFields["Company_number"].isNullOrBlank() && trimmedValue.isNotBlank()) {
+                                mergedFields["Company_number"] = trimmedValue
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        onMerged(mergedFields.toMap())
+    }
+    
+    // Helper function to process a page with Azure
+    val processPageWithAzure: (Uri, Boolean) -> Unit = { uri, isSinglePage ->
+        viewModel.runOcrWithDocumentAi(
+            uri,
+            firstPassCompanyNumber = null,
+            firstPassVatNumber = null,
+            excludeCompanyId = activeCompanyId,
+            excludeOwnCompanyNumber = ownCompanyNumber,
+            excludeOwnVatNumber = ownCompanyVatNumber,
+            onDone = { result ->
+                result.onSuccess { parsed ->
+                    if (isSinglePage) {
+                        // Single page - fill fields directly
+                        val lines = parsed.split("\n")
+                        val newFields = fields.toMutableMap()
+                        lines.forEach { line ->
+                            val parts = line.split(":", limit = 2)
+                            if (parts.size == 2) {
+                                val key = parts[0].trim()
+                                val value = parts[1].trim()
+                                when (key) {
+                                    "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
+                                    "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
+                                    "Company_name" -> {
+                                        if (value.isNotBlank()) {
+                                            newFields["Company_name"] = value
+                                            Timber.d("processPageWithAzure - Setting company name: '$value'")
+                                        }
+                                    }
+                                    "Amount_without_VAT_EUR" -> {
+                                        if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) {
+                                            newFields["Amount_without_VAT_EUR"] = value
+                                            // Auto-calculate VAT rate if VAT amount is already set
+                                            val vatAmountStr = newFields["VAT_amount_EUR"]?.replace(",", ".")
+                                            val amountStr = value.replace(",", ".")
+                                            val amountWithoutVat = amountStr.toDoubleOrNull()
+                                            val vatAmount = vatAmountStr?.toDoubleOrNull()
+                                            if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                                                val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                                                if (calculatedRate != null) {
+                                                    newFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                                    val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, parsed)
+                                                    newFields["Tax_code"] = taxCode
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "VAT_amount_EUR" -> {
+                                        if (newFields["VAT_amount_EUR"].isNullOrBlank()) {
+                                            newFields["VAT_amount_EUR"] = value
+                                            // Auto-calculate VAT rate if amount without VAT is already set
+                                            val amountStr = newFields["Amount_without_VAT_EUR"]?.replace(",", ".")
+                                            val vatAmountStr = value.replace(",", ".")
+                                            val amountWithoutVat = amountStr?.toDoubleOrNull()
+                                            val vatAmount = vatAmountStr.toDoubleOrNull()
+                                            if (amountWithoutVat != null && vatAmount != null && amountWithoutVat > 0) {
+                                                val calculatedRate = TaxCodeDeterminer.calculateVatRate(amountWithoutVat, vatAmount)
+                                                if (calculatedRate != null) {
+                                                    newFields["VAT_rate"] = calculatedRate.toInt().toString()
+                                                    val taxCode = TaxCodeDeterminer.determineTaxCode(calculatedRate, parsed)
+                                                    newFields["Tax_code"] = taxCode
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "VAT_number" -> {
+                                        val normalizedValue = value.replace(" ", "").uppercase()
+                                        val normalizedOwnVat = ownCompanyVatNumber?.replace(" ", "")?.uppercase()
+                                        if (normalizedOwnVat == null || !normalizedValue.equals(normalizedOwnVat, ignoreCase = true)) {
+                                            newFields["VAT_number"] = normalizedValue
+                                            Timber.d("processPageWithAzure - Setting VAT_number: '$normalizedValue'")
+                                        }
+                                    }
+                                    "Company_number" -> {
+                                        val ownCompanyNum = ownCompanyNumber
+                                        val trimmedValue = value.trim()
+                                        if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
+                                            newFields["Company_number"] = trimmedValue
+                                            Timber.d("processPageWithAzure - Setting Company_number: '$trimmedValue'")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Set text for tax code determination
+                        text = parsed
+                        fields = newFields.toMap()
+                        processedUris = processedUris + uri
+                        if (processedUris.size == allImageUris.size) {
+                            isReanalyzing = false
+                            currentInvoiceProcessingStarted = true
+                        }
+                        Timber.d("processPageWithAzure - Single page processing complete - Company_name: '${newFields["Company_name"]}', Invoice_ID: '${newFields["Invoice_ID"]}', Date: '${newFields["Date"]}'")
+                        // Cache the result
+                        fileImportViewModel.cacheOcrResult(uri, Result.success(parsed))
+                    } else {
+                        // Multi-page - merge results
+                        mergeOcrResults(parsed, fields) { mergedFields ->
+                            fields = mergedFields
+                        }
+                        processedUris = processedUris + uri
+                        if (processedUris.size == allImageUris.size) {
+                            isReanalyzing = false
+                        }
+                    }
+                }.onFailure { error ->
+                    Timber.e(error, "Failed to process page: $uri")
+                    processedUris = processedUris + uri
+                    if (processedUris.size == allImageUris.size) {
+                        isReanalyzing = false
+                    }
+                }
+            },
+            onMethodUsed = { method ->
+                if (processedUris.isEmpty()) {
+                    ocrMethod = method
+                }
+            }
+        )
+    }
+    
+    // Process all pages when URIs change (handles both single and multi-page)
+    LaunchedEffect(allImageUris) {
+        // Process any new URIs that haven't been processed yet
+        val newUris = allImageUris.filter { it !in processedUris }
+        if (newUris.isNotEmpty() && !isReanalyzing && !ocrTriggeredForUri) {
+            Timber.d("Processing ${newUris.size} new page(s) for invoice (total pages: ${allImageUris.size})")
+            isReanalyzing = true
+            isLoading = false
+            ocrTriggeredForUri = true // Mark as triggered to prevent duplicate processing
+            
+            // Process each new page sequentially or in parallel
+            newUris.forEachIndexed { index, uri ->
+                val cached = fileImportViewModel.getCachedOcrResult(uri)
+                if (cached != null) {
+                    cached.onSuccess { parsed ->
+                        if (allImageUris.size == 1) {
+                            // Single page - use existing logic
+                            val lines = parsed.split("\n")
+                            val newFields = fields.toMutableMap()
+                            lines.forEach { line ->
+                                val parts = line.split(":", limit = 2)
+                                if (parts.size == 2) {
+                                    val key = parts[0].trim()
+                                    val value = parts[1].trim()
+                                    when (key) {
+                                        "Invoice_ID" -> if (newFields["Invoice_ID"].isNullOrBlank()) newFields["Invoice_ID"] = value
+                                        "Date" -> if (newFields["Date"].isNullOrBlank()) newFields["Date"] = value
+                                        "Company_name" -> {
+                                            if (value.isNotBlank()) {
+                                                newFields["Company_name"] = value
+                                            }
+                                        }
+                                        "Amount_without_VAT_EUR" -> {
+                                            if (newFields["Amount_without_VAT_EUR"].isNullOrBlank()) {
+                                                newFields["Amount_without_VAT_EUR"] = value
+                                            }
+                                        }
+                                        "VAT_amount_EUR" -> {
+                                            if (newFields["VAT_amount_EUR"].isNullOrBlank()) {
+                                                newFields["VAT_amount_EUR"] = value
+                                            }
+                                        }
+                                        "VAT_number" -> {
+                                            val normalizedValue = value.replace(" ", "").uppercase()
+                                            val normalizedOwnVat = ownCompanyVatNumber?.replace(" ", "")?.uppercase()
+                                            if (normalizedOwnVat == null || !normalizedValue.equals(normalizedOwnVat, ignoreCase = true)) {
+                                                newFields["VAT_number"] = normalizedValue
+                                            }
+                                        }
+                                        "Company_number" -> {
+                                            val ownCompanyNum = ownCompanyNumber
+                                            val trimmedValue = value.trim()
+                                            if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
+                                                newFields["Company_number"] = trimmedValue
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            fields = newFields.toMap()
+                            text = parsed
+                            Timber.d("Cached result applied (allImageUris) - Company_name: '${newFields["Company_name"]}', Invoice_ID: '${newFields["Invoice_ID"]}', Date: '${newFields["Date"]}'")
+                        } else {
+                            // Multi-page - merge results
+                            mergeOcrResults(parsed, fields) { mergedFields ->
+                                fields = mergedFields
+                            }
+                            text = if (text.isBlank()) parsed else "$text\n$parsed"
+                        }
+                        processedUris = processedUris + uri
+                        if (processedUris.size == allImageUris.size) {
+                            isReanalyzing = false
+                            ocrMethod = "Cached"
+                            currentInvoiceProcessingStarted = true
+                        }
+                    }.onFailure {
+                        // Process with Azure if cache failed
+                        processPageWithAzure(uri, index == 0 && allImageUris.size == 1)
+                    }
+                } else {
+                    processPageWithAzure(uri, index == 0 && allImageUris.size == 1)
+                }
+            }
+        }
+    }
+    
     // Start Azure Document Intelligence immediately (skip unreliable first local OCR pass)
     // Only depend on imageUri - ownCompanyNumber/VatNumber can be null initially, we'll use current values when calling
+    // This LaunchedEffect handles single-page invoices for backward compatibility
     LaunchedEffect(imageUri) {
+        // Skip if already processed by multi-page logic or if we have multiple pages
+        if (allImageUris.size > 1 || imageUri in processedUris) {
+            return@LaunchedEffect
+        }
+        
         // Trigger OCR once when image is available
         // Note: ownCompanyNumber and ownCompanyVatNumber may be null initially, but that's OK - we'll pass current values to exclude
         Timber.d("ReviewScreen LaunchedEffect triggered - imageUri: $imageUri, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, ocrTriggeredForUri: $ocrTriggeredForUri, isReanalyzing: $isReanalyzing")
@@ -484,9 +810,11 @@ fun ReviewScreen(
                                 }
                             }
                         }
+                        // Set text for tax code determination
+                        text = parsed
                         fields = newFields.toMap()
                         isReanalyzing = false
-                        Timber.d("Current invoice processing complete - All fields extracted, Company_name: '${newFields["Company_name"]}'")
+                        Timber.d("Current invoice processing complete - All fields extracted, Company_name: '${newFields["Company_name"]}', Invoice_ID: '${newFields["Invoice_ID"]}', Date: '${newFields["Date"]}', Amount: '${newFields["Amount_without_VAT_EUR"]}', VAT: '${newFields["VAT_amount_EUR"]}'")
                         // Cache the result for potential reuse
                         fileImportViewModel.cacheOcrResult(imageUri, Result.success(parsed))
                         
@@ -650,7 +978,7 @@ fun ReviewScreen(
         modifier = Modifier
             .fillMaxSize()
             .imePadding() // Allow scrolling when keyboard is active
-            .padding(16.dp),
+            .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 16.dp), // Add top padding to avoid status bar
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // Background processing progress indicator (only show if there are invoices processing in background)
@@ -733,6 +1061,21 @@ fun ReviewScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text("Verify fields")
+                            // Show page indicator for multi-page invoices
+                            if (allImageUris.size > 1) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = androidx.compose.material3.MaterialTheme.colorScheme.secondaryContainer,
+                                    modifier = Modifier.padding(start = 12.dp)
+                                ) {
+                                    Text(
+                                        text = "${allImageUris.size} page${if (allImageUris.size > 1) "s" else ""}",
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                        color = androidx.compose.material3.MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                            }
                             // Show progress indicator when queue is active (even if not loading)
                             if (processingQueue.isNotEmpty()) {
                                 Surface(
@@ -752,7 +1095,7 @@ fun ReviewScreen(
                     }
                 }
                 
-                // Invoice type and OCR method indicator in top right
+                // Invoice type label in top right
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -769,30 +1112,6 @@ fun ReviewScreen(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                 style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
                                 color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    
-                    // OCR method indicator
-                    ocrMethod?.let { method ->
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = when (method) {
-                                "Azure", "Cached" -> androidx.compose.material3.MaterialTheme.colorScheme.primaryContainer
-                                "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.secondaryContainer
-                                else -> androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant
-                            },
-                            modifier = Modifier.padding(start = 8.dp)
-                        ) {
-                            Text(
-                                text = if (method == "Azure" || method == "Cached") "online" else method,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
-                                color = when (method) {
-                                    "Azure", "Cached" -> androidx.compose.material3.MaterialTheme.colorScheme.onPrimaryContainer
-                                    "Local" -> androidx.compose.material3.MaterialTheme.colorScheme.onSecondaryContainer
-                                    else -> androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
-                                }
                             )
                         }
                     }
@@ -1088,6 +1407,65 @@ fun ReviewScreen(
             }
         }
         
+        // Redo button - navigate back to camera
+        // Only show when invoice is from camera (not from import)
+        if (isFromCamera) {
+            item {
+                OutlinedButton(
+                    onClick = {
+                        // Navigate back to Scan screen to take a new photo
+                        navController?.navigate(Routes.Scan) {
+                            // Pop current screen and navigate to Scan
+                            popUpTo(Routes.Scan) { inclusive = false }
+                        }
+                    },
+                    enabled = !isSaving && !isMerging,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Redo")
+                    }
+                }
+            }
+        }
+        
+        // Add Page button - navigate to camera to add another page
+        // Only show when invoice is from camera (not from import)
+        if (isFromCamera) {
+            item {
+                OutlinedButton(
+                    onClick = {
+                        // Navigate to Scan screen to capture additional page
+                        // Pass current pages so we can add to them
+                        val encodedUris = encodeUris(allImageUris)
+                        navController?.navigate("${Routes.Scan}/addPage/$encodedUris")
+                    },
+                    enabled = !isSaving && !isMerging && !isLoading && !isReanalyzing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Add Page")
+                    }
+                }
+            }
+        }
+        
         // Merge with next invoice button (only show if there's a next invoice) - moved to bottom
         item {
             if (fileImportViewModel.hasNext() && !isSaving && !isMerging) {
@@ -1213,9 +1591,11 @@ fun ReviewScreen(
                                     // Move to previous item in queue
                                     fileImportViewModel.moveToPrevious()
                                     // Navigate to previous invoice
-                                    navController?.navigate("review/${android.net.Uri.encode(previousUri.toString())}") {
+                                    val encodedPreviousUri = android.net.Uri.encode(previousUri.toString())
+                                    val encodedCurrentUris = encodeUris(allImageUris)
+                                    navController?.navigate("review/$encodedPreviousUri") {
                                         // Pop current screen and navigate to previous
-                                        popUpTo("review/${android.net.Uri.encode(imageUri.toString())}") { inclusive = true }
+                                        popUpTo("review/$encodedCurrentUris") { inclusive = true }
                                     }
                                 }
                             }

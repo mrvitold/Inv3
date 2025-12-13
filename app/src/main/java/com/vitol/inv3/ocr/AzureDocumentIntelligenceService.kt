@@ -2,6 +2,7 @@ package com.vitol.inv3.ocr
 
 import android.content.Context
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -15,6 +16,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import timber.log.Timber
 import android.util.Base64
+import java.io.FileInputStream
 
 /**
  * Service for processing invoices using Azure AI Document Intelligence REST API.
@@ -446,9 +448,32 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     }
     
     private suspend fun readImageFromUri(uri: Uri): ByteArray = withContext(Dispatchers.IO) {
-        context.contentResolver.openInputStream(uri)?.use { inputStream ->
-            inputStream.readBytes()
-        } ?: throw IllegalStateException("Could not read image from URI: $uri")
+        try {
+            // Try openInputStream first (works for most URIs)
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                inputStream.readBytes()
+            } ?: run {
+                // If openInputStream fails, try openFileDescriptor (works better for document tree URIs)
+                context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    FileInputStream(pfd.fileDescriptor).use { fis ->
+                        fis.readBytes()
+                    }
+                } ?: throw IllegalStateException("Could not read image from URI: $uri")
+            }
+        } catch (e: SecurityException) {
+            // If we get a SecurityException, try with openFileDescriptor
+            Timber.w(e, "SecurityException when reading URI, trying openFileDescriptor: $uri")
+            try {
+                context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    FileInputStream(pfd.fileDescriptor).use { fis ->
+                        fis.readBytes()
+                    }
+                } ?: throw IllegalStateException("Could not read image from URI: $uri")
+            } catch (e2: Exception) {
+                Timber.e(e2, "Failed to read image from URI: $uri")
+                throw IllegalStateException("Could not read image from URI: $uri", e2)
+            }
+        }
     }
     
     private fun determineMimeType(uri: Uri): String {
