@@ -4,10 +4,10 @@ import android.app.Application
 import com.vitol.inv3.BuildConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.createSupabaseClient
-import io.github.jan.supabase.functions.Functions
 import io.github.jan.supabase.gotrue.Auth
-import io.github.jan.supabase.gotrue.ExternalAuthAction
+import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.postgrest.Postgrest
+import io.github.jan.supabase.functions.Functions
 
 object SupabaseFactory {
     fun create(app: Application): SupabaseClient? {
@@ -20,10 +20,8 @@ object SupabaseFactory {
         ) {
             install(Postgrest)
             install(Auth) {
-                // Configure auth for deep links
-                scheme = "com.vitol.inv3" // Your app's custom scheme
-                host = "auth" // Your app's custom host
-                defaultExternalAuthAction = ExternalAuthAction.CustomTabs()
+                scheme = "com.vitol.inv3"
+                host = "auth"
             }
             install(Functions)
         }

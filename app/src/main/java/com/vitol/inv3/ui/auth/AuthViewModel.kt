@@ -26,142 +26,119 @@ class AuthViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(AuthUiState())
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
 
-    init {
-        viewModelScope.launch {
-            authManager.isAuthenticated.collect { isAuthenticated ->
-                _uiState.value = _uiState.value.copy(isAuthenticated = isAuthenticated)
-            }
-        }
-    }
-
     fun signIn(email: String, password: String) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
-            authManager.signInWithEmail(email, password)
-                .onSuccess {
-                    _uiState.value = _uiState.value.copy(isLoading = false, isAuthenticated = true)
-                }
-                .onFailure { e ->
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        errorMessage = e.message ?: "Sign in failed"
-                    )
-                }
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            val result = authManager.signInWithEmail(email, password)
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                errorMessage = result.exceptionOrNull()?.message,
+                isAuthenticated = result.isSuccess
+            )
         }
     }
 
     fun signUp(email: String, password: String) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
-            authManager.signUpWithEmail(email, password)
-                .onSuccess {
-                    val session = authManager.getCurrentSession()
-                    if (session == null) {
-                        // Email confirmation required
-                        _uiState.value = _uiState.value.copy(
-                            isLoading = false,
-                            showEmailConfirmation = true,
-                            successMessage = "Please check your email to confirm your account before signing in."
-                        )
-                    } else {
-                        _uiState.value = _uiState.value.copy(isLoading = false, isAuthenticated = true)
-                    }
-                }
-                .onFailure { e ->
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        errorMessage = e.message ?: "Sign up failed"
-                    )
-                }
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, showEmailConfirmation = false)
+            val result = authManager.signUpWithEmail(email, password)
+            if (result.isSuccess) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    showEmailConfirmation = true,
+                    successMessage = "Please check your email to confirm your account."
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    errorMessage = result.exceptionOrNull()?.message ?: "Sign up failed"
+                )
+            }
+        }
+    }
+
+    fun handleGoogleSignInResult(idToken: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            val result = authManager.signInWithGoogle(idToken)
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                errorMessage = result.exceptionOrNull()?.message,
+                isAuthenticated = result.isSuccess
+            )
+        }
+    }
+
+    fun signOut() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            val result = authManager.signOut()
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                isAuthenticated = false,
+                successMessage = if (result.isSuccess) "Signed out successfully" else null,
+                errorMessage = result.exceptionOrNull()?.message
+            )
         }
     }
 
     fun resetPassword(email: String) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
-            authManager.resetPassword(email)
-                .onSuccess {
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        successMessage = "Password reset email sent. Please check your inbox."
-                    )
-                }
-                .onFailure { e ->
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        errorMessage = e.message ?: "Failed to send password reset email"
-                    )
-                }
-        }
-    }
-
-    fun deleteAccount() {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
-            authManager.deleteAccount()
-                .onSuccess {
-                    _uiState.value = AuthUiState(isAuthenticated = false, isLoading = false, successMessage = "Account deleted successfully (local session cleared).")
-                }
-                .onFailure { e ->
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        errorMessage = e.message ?: "Failed to delete account"
-                    )
-                }
-        }
-    }
-
-    fun clearMessages() {
-        _uiState.value = _uiState.value.copy(errorMessage = null, successMessage = null, showEmailConfirmation = false)
-    }
-
-    fun setError(message: String) {
-        _uiState.value = _uiState.value.copy(
-            isLoading = false,
-            errorMessage = message
-        )
-    }
-
-    fun handleGoogleSignInResult(idToken: String) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
-            authManager.signInWithGoogle(idToken)
-                .onSuccess {
-                    _uiState.value = _uiState.value.copy(isLoading = false, isAuthenticated = true)
-                }
-                .onFailure { e ->
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        errorMessage = e.message ?: "Google sign in failed"
-                    )
-                }
-        }
-    }
-
-    fun signOut() {
-        viewModelScope.launch {
-            authManager.signOut()
-            _uiState.value = AuthUiState()
+            val result = authManager.resetPassword(email)
+            if (result.isSuccess) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    successMessage = "Password reset email sent. Please check your inbox."
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    errorMessage = result.exceptionOrNull()?.message ?: "Failed to send reset email"
+                )
+            }
         }
     }
 
     fun changePassword(newPassword: String) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
-            authManager.changePassword(newPassword)
-                .onSuccess {
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        successMessage = "Password changed successfully"
-                    )
-                }
-                .onFailure { e ->
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        errorMessage = e.message ?: "Failed to change password"
-                    )
-                }
+            val result = authManager.changePassword(newPassword)
+            if (result.isSuccess) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    successMessage = "Password changed successfully. You will be logged out."
+                )
+                // Sign out after password change
+                authManager.signOut()
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    errorMessage = result.exceptionOrNull()?.message ?: "Failed to change password"
+                )
+            }
         }
+    }
+
+    fun deleteAccount() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, successMessage = null)
+            val result = authManager.deleteAccount()
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                isAuthenticated = false,
+                successMessage = if (result.isSuccess) "Account deleted successfully" else null,
+                errorMessage = result.exceptionOrNull()?.message
+            )
+        }
+    }
+
+    fun clearMessages() {
+        _uiState.value = _uiState.value.copy(errorMessage = null, successMessage = null)
+    }
+
+    fun setError(message: String) {
+        _uiState.value = _uiState.value.copy(errorMessage = message)
     }
 }
 

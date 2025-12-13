@@ -30,8 +30,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Logout
-import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -62,10 +60,10 @@ import com.vitol.inv3.ui.scan.processSelectedFile
 import com.vitol.inv3.utils.FileImportService
 import com.vitol.inv3.auth.AuthManager
 import com.vitol.inv3.auth.AuthState
-import com.vitol.inv3.ui.auth.AuthViewModel
 import com.vitol.inv3.ui.auth.LoginScreen
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -77,9 +75,42 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 val navController = rememberNavController()
                 val viewModel: MainActivityViewModel = hiltViewModel()
+                
+                // Handle deep links on creation
+                LaunchedEffect(Unit) {
+                    handleIntent(intent, viewModel.authManager)
+                }
+                
                 Surface(color = MaterialTheme.colorScheme.background) {
                     AppNavHost(navController, viewModel.authManager)
                 }
+            }
+        }
+    }
+    
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Handle deep link in composable context
+        setContent {
+            val viewModel: MainActivityViewModel = hiltViewModel()
+            LaunchedEffect(intent) {
+                handleIntent(intent, viewModel.authManager)
+            }
+        }
+    }
+    
+    private suspend fun handleIntent(intent: android.content.Intent?, authManager: AuthManager) {
+        val data = intent?.data
+        if (data != null) {
+            Timber.d("Received deep link intent: ${data.toString()}")
+            val result = authManager.handleDeepLink(data.toString())
+            result.onSuccess { message ->
+                Timber.d("Deep link handled successfully: $message")
+                // The auth state will update automatically, triggering navigation
+            }.onFailure { error ->
+                Timber.e(error, "Failed to handle deep link: ${error.message}")
+                // Show error to user - we could use a snackbar or update UI state
             }
         }
     }
@@ -103,21 +134,25 @@ fun AppNavHost(
     navController: NavHostController,
     authManager: AuthManager
 ) {
-    val authState by authManager.authState.collectAsState(initial = AuthState.Unauthenticated)
+    val authState by authManager.authState.collectAsState(initial = AuthState.Loading)
+    
+    // Navigate to login when unauthenticated
+    LaunchedEffect(authState) {
+        if (authState is AuthState.Unauthenticated && navController.currentDestination?.route != Routes.Login) {
+            navController.navigate(Routes.Login) {
+                popUpTo(0) { inclusive = true }
+            }
+        } else if (authState is AuthState.Authenticated && navController.currentDestination?.route == Routes.Login) {
+            navController.navigate(Routes.Home) {
+                popUpTo(Routes.Login) { inclusive = true }
+            }
+        }
+    }
     
     // Determine start destination based on auth state
     val startDestination = when (authState) {
         is AuthState.Authenticated -> Routes.Home
         else -> Routes.Login
-    }
-    
-    // Navigate to login when user signs out
-    LaunchedEffect(authState) {
-        if (authState !is AuthState.Authenticated) {
-            navController.navigate(Routes.Login) {
-                popUpTo(0) { inclusive = true }
-            }
-        }
     }
     
     NavHost(navController = navController, startDestination = startDestination) {
@@ -207,8 +242,7 @@ fun HomeScreen(
         }
     },
     ownCompanyViewModel: OwnCompanyViewModel = hiltViewModel(),
-    repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo,
-    authViewModel: AuthViewModel = hiltViewModel()
+    repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -299,55 +333,28 @@ fun HomeScreen(
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top row with Company selector and Logout button
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Your Company section - wrapped in Box with weight to leave space for logout button
-                Box(modifier = Modifier.weight(1f)) {
-                    OwnCompanySelector(
-                        activeCompanyId = activeCompanyId,
-                        activeCompanyName = activeCompanyName,
-                        onCompanySelected = { newCompanyId ->
-                            scope.launch {
-                                if (newCompanyId != null) {
-                                    val company = repo.getCompanyById(newCompanyId)
-                                    activeCompanyName = company?.company_name
-                                } else {
-                                    activeCompanyName = null
-                                }
-                            }
-                        },
-                        onShowSnackbar = { message ->
-                            scope.launch {
-                                snackbarHostState.showSnackbar(message)
-                            }
-                        },
-                        navController = navController,
-                        viewModel = ownCompanyViewModel
-                    )
-                }
-                
-                // Logout button
-                IconButton(
-                    onClick = {
-                        scope.launch {
-                            authViewModel.signOut()
-                            snackbarHostState.showSnackbar("Signed out successfully")
+            // Your Company section at the top
+            OwnCompanySelector(
+                activeCompanyId = activeCompanyId,
+                activeCompanyName = activeCompanyName,
+                onCompanySelected = { newCompanyId ->
+                    scope.launch {
+                        if (newCompanyId != null) {
+                            val company = repo.getCompanyById(newCompanyId)
+                            activeCompanyName = company?.company_name
+                        } else {
+                            activeCompanyName = null
                         }
-                    },
-                    modifier = Modifier.padding(start = 8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Logout,
-                        contentDescription = "Sign out"
-                    )
-                }
-            }
+                    }
+                },
+                onShowSnackbar = { message ->
+                    scope.launch {
+                        snackbarHostState.showSnackbar(message)
+                    }
+                },
+                navController = navController,
+                viewModel = ownCompanyViewModel
+            )
             
             Spacer(modifier = Modifier.height(16.dp))
             

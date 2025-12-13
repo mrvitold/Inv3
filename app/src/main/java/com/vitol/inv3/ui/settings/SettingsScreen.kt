@@ -19,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import com.vitol.inv3.ui.auth.AuthViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
@@ -26,10 +28,10 @@ fun SettingsScreen(
     authViewModel: AuthViewModel = hiltViewModel()
 ) {
     val uiState by authViewModel.uiState.collectAsState()
-    
+
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
-    
+
     var newPassword by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
     var newPasswordVisibility by remember { mutableStateOf(false) }
@@ -50,7 +52,9 @@ fun SettingsScreen(
         // Error Message Card
         uiState.errorMessage?.let { message ->
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
             ) {
                 Text(
@@ -64,7 +68,9 @@ fun SettingsScreen(
         // Success Message Card
         uiState.successMessage?.let { message ->
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
             ) {
                 Text(
@@ -75,82 +81,78 @@ fun SettingsScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Change Password Card
+        // Change Password Option
         Card(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { showChangePasswordDialog = true }
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = !uiState.isLoading) {
+                    showChangePasswordDialog = true
+                    authViewModel.clearMessages()
+                },
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
         ) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = "Change password",
-                        tint = MaterialTheme.colorScheme.primary
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = "Change password",
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text(
+                        text = "Change Password",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
-                    Column {
-                        Text(
-                            text = "Change Password",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Text(
-                            text = "Update your account password",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                    }
+                    Text(
+                        text = "Update your account password",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Delete Account Card
+        // Delete Account Option
         Card(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { showDeleteAccountDialog = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = !uiState.isLoading) {
+                    showDeleteAccountDialog = true
+                    authViewModel.clearMessages()
+                },
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+                containerColor = MaterialTheme.colorScheme.errorContainer
             )
         ) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Delete account",
-                        tint = MaterialTheme.colorScheme.error
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Delete account",
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text(
+                        text = "Delete My Account",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
                     )
-                    Column {
-                        Text(
-                            text = "Delete My Account",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Text(
-                            text = "Permanently delete your account and all data",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                    }
+                    Text(
+                        text = "Permanently delete your account and all data",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                    )
                 }
             }
         }
@@ -168,37 +170,38 @@ fun SettingsScreen(
             title = { Text("Change Password") },
             text = {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Text(
-                        text = "Enter your new password. You must be signed in to change your password.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        text = "Enter your new password. You will be logged out after changing your password.",
+                        style = MaterialTheme.typography.bodyMedium
                     )
-
-                    // New Password
                     OutlinedTextField(
                         value = newPassword,
-                        onValueChange = { newPassword = it },
-                        label = { Text("New Password") },
+                        onValueChange = {
+                            newPassword = it
+                            authViewModel.clearMessages()
+                        },
+                        label = { Text("New Password (min 6 characters)") },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = if (newPasswordVisibility) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         trailingIcon = {
                             IconButton(onClick = { newPasswordVisibility = !newPasswordVisibility }) {
                                 Icon(
-                                    imageVector = if (newPasswordVisibility) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    imageVector = if (newPasswordVisibility) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
                                     contentDescription = "Toggle password visibility"
                                 )
                             }
-                        }
+                        },
+                        enabled = !uiState.isLoading
                     )
-
-                    // Confirm New Password
                     OutlinedTextField(
                         value = confirmPassword,
-                        onValueChange = { confirmPassword = it },
+                        onValueChange = {
+                            confirmPassword = it
+                            authViewModel.clearMessages()
+                        },
                         label = { Text("Confirm New Password") },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = if (confirmPasswordVisibility) VisualTransformation.None else PasswordVisualTransformation(),
@@ -206,24 +209,23 @@ fun SettingsScreen(
                         trailingIcon = {
                             IconButton(onClick = { confirmPasswordVisibility = !confirmPasswordVisibility }) {
                                 Icon(
-                                    imageVector = if (confirmPasswordVisibility) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    imageVector = if (confirmPasswordVisibility) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
                                     contentDescription = "Toggle password visibility"
                                 )
                             }
-                        }
+                        },
+                        enabled = !uiState.isLoading
                     )
-
-                    if (confirmPassword.isNotBlank() && newPassword != confirmPassword) {
+                    if (newPassword.isNotBlank() && confirmPassword.isNotBlank() && newPassword != confirmPassword) {
                         Text(
                             text = "Passwords do not match",
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-
                     if (newPassword.isNotBlank() && newPassword.length < 6) {
                         Text(
-                            text = "Password must be at least 6 characters",
+                            text = "Password must be at least 6 characters long",
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -233,21 +235,13 @@ fun SettingsScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (newPassword != confirmPassword) {
-                            authViewModel.setError("Passwords do not match")
-                            return@Button
+                        if (newPassword.length >= 6 && newPassword == confirmPassword) {
+                            authViewModel.changePassword(newPassword)
+                        } else {
+                            authViewModel.setError("Please ensure passwords match and are at least 6 characters long.")
                         }
-                        if (newPassword.length < 6) {
-                            authViewModel.setError("Password must be at least 6 characters")
-                            return@Button
-                        }
-                        authViewModel.changePassword(newPassword)
                     },
-                    enabled = !uiState.isLoading
-                        && newPassword.isNotBlank()
-                        && confirmPassword.isNotBlank()
-                        && newPassword == confirmPassword
-                        && newPassword.length >= 6
+                    enabled = !uiState.isLoading && newPassword.isNotBlank() && confirmPassword.isNotBlank() && newPassword == confirmPassword && newPassword.length >= 6
                 ) {
                     if (uiState.isLoading) {
                         CircularProgressIndicator(
@@ -316,9 +310,7 @@ fun SettingsScreen(
                 }
             },
             dismissButton = {
-                TextButton(
-                    onClick = { showDeleteAccountDialog = false }
-                ) {
+                TextButton(onClick = { showDeleteAccountDialog = false }) {
                     Text("Cancel")
                 }
             }
@@ -327,9 +319,9 @@ fun SettingsScreen(
 
     // Auto-close change password dialog on success
     LaunchedEffect(uiState.successMessage) {
-        val successMessage = uiState.successMessage
-        if (successMessage != null && showChangePasswordDialog && successMessage.contains("Password changed")) {
-            kotlinx.coroutines.delay(2000)
+        val currentSuccessMessage = uiState.successMessage
+        if (currentSuccessMessage != null && showChangePasswordDialog && currentSuccessMessage.contains("Password changed")) {
+            delay(2000)
             showChangePasswordDialog = false
             newPassword = ""
             confirmPassword = ""
