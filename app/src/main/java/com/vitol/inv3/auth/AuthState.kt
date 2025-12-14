@@ -6,3 +6,4 @@ sealed class AuthState {
     object Loading : AuthState()
 }
 
+

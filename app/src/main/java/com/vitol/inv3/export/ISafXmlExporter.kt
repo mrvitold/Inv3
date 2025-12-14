@@ -313,8 +313,9 @@ class ISafXmlExporter(private val context: Context) {
         val masterFiles = doc.createElementNS(NAMESPACE, "MasterFiles")
         
         // Extract unique customers from sales invoices
+        // Default to "P" (Purchase) if invoice_type is null or empty, as per schema default
         val uniqueCustomers = invoices
-            .filter { it.invoice_type == "S" }
+            .filter { (it.invoice_type ?: "P") == "S" }
             .distinctBy { invoice ->
                 // Use VAT number as unique key, or company number if VAT is "ND"
                 normalizeVatNumber(invoice.vat_number) ?: invoice.company_number ?: ""
@@ -326,8 +327,9 @@ class ISafXmlExporter(private val context: Context) {
             }
         
         // Extract unique suppliers from purchase invoices
+        // Default to "P" (Purchase) if invoice_type is null or empty, as per schema default
         val uniqueSuppliers = invoices
-            .filter { it.invoice_type == "P" }
+            .filter { (it.invoice_type ?: "P") == "P" }
             .distinctBy { invoice ->
                 // Use VAT number as unique key, or company number if VAT is "ND"
                 normalizeVatNumber(invoice.vat_number) ?: invoice.company_number ?: ""
@@ -459,8 +461,9 @@ class ISafXmlExporter(private val context: Context) {
         val sourceDocuments = doc.createElementNS(NAMESPACE, "SourceDocuments")
         
         // Separate invoices by type
-        val purchaseInvoices = invoices.filter { it.invoice_type == "P" }
-        val salesInvoices = invoices.filter { it.invoice_type == "S" }
+        // Default to "P" (Purchase) if invoice_type is null or empty, as per schema default
+        val purchaseInvoices = invoices.filter { (it.invoice_type ?: "P") == "P" }
+        val salesInvoices = invoices.filter { (it.invoice_type ?: "P") == "S" }
         
         // PurchaseInvoices
         if (purchaseInvoices.isNotEmpty()) {
@@ -729,11 +732,20 @@ class ISafXmlExporter(private val context: Context) {
         amount.textContent = formatMonetary(invoice.vat_amount_eur ?: 0.0)
         documentTotal.appendChild(amount)
         
-        // VATPointDate2 (optional, only for Sales invoices)
+        // VATPointDate2 (required for Sales invoices, nillable)
+        // This is the supply date if different from invoice date, or nil if same
         if (!isPurchase) {
-            // VATPointDate2 can be added here if we have the data
-            // For now, we don't have this field in InvoiceRecord, so we skip it
-            // If needed in the future, add invoice.vat_point_date_2 field
+            val vatPointDate2 = doc.createElementNS(NAMESPACE, "VATPointDate2")
+            // Use invoice date as VATPointDate2 (same as VATPointDate)
+            // If invoice date is not available, set as nil
+            val invoiceDateValue = formatDate(invoice.date)
+            if (invoiceDateValue != null) {
+                vatPointDate2.textContent = invoiceDateValue
+            } else {
+                // Set as nil if date is not available
+                vatPointDate2.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
+            }
+            documentTotal.appendChild(vatPointDate2)
         }
         
         documentTotals.appendChild(documentTotal)

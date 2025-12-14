@@ -246,8 +246,10 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             
             if (fields != null) {
                 // Map Azure fields to your ParsedInvoice
+                // IMPORTANT: Always use valueString to preserve leading zeros in invoice numbers
                 fields.get("InvoiceId")?.asJsonObject?.get("valueString")?.asString?.let {
-                    invoiceId = it
+                    // Preserve as string - do not convert to number to keep leading zeros
+                    invoiceId = it.trim()
                 }
                 
                 fields.get("InvoiceDate")?.asJsonObject?.get("valueDate")?.asString?.let {
@@ -321,9 +323,20 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 }
                 
                 // Also check alternative field names for invoice ID
+                // IMPORTANT: Always use valueString to preserve leading zeros (never use valueNumber)
                 if (invoiceId == null) {
                     fields.get("InvoiceNumber")?.asJsonObject?.get("valueString")?.asString?.let {
-                        invoiceId = it
+                        // Preserve as string - do not convert to number to keep leading zeros
+                        invoiceId = it.trim()
+                    }
+                }
+                // Also check if Azure returns invoice number as a number (should be avoided, but handle it)
+                if (invoiceId == null) {
+                    fields.get("InvoiceNumber")?.asJsonObject?.get("valueNumber")?.asDouble?.let {
+                        // Convert to string without losing precision, but this may lose leading zeros
+                        // Prefer valueString if available
+                        invoiceId = it.toLong().toString()
+                        Timber.w("InvoiceNumber returned as number instead of string - leading zeros may be lost: $invoiceId")
                     }
                 }
                 

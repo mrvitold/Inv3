@@ -660,9 +660,12 @@ object InvoiceParser {
      * Serial number usually goes after word "Serija", just before invoice number, or 1-2 words separated.
      */
     fun extractInvoiceIdWithSerialAndNumber(lines: List<String>): String? {
-        // Pattern for serial: 2-6 alphanumeric characters with at least one letter (e.g., "25DF", "SSP", "A1B2")
+        // IMPORTANT: Invoice numbers must be preserved as strings with leading zeros intact
+        // Pattern for serial: 2-6 alphanumeric characters with at least one letter (e.g., "25DF", "SSP", "A1B2", "0SS")
+        // Leading zeros in serial are preserved (e.g., "0SS", "00AB")
         val serialPattern = Regex("\\b([A-Z0-9]{2,6})\\b", RegexOption.IGNORE_CASE)
-        // Pattern for invoice number: 3-15 digits (e.g., "2569", "000393734", "41222181749")
+        // Pattern for invoice number: 3-15 digits (e.g., "2569", "000393734", "41222181749", "000123")
+        // Leading zeros in invoice number are preserved (e.g., "000393734", "000123")
         val numberPattern = Regex("\\b([0-9]{3,15})\\b")
         
         // Look for "Serija" keyword (primary keyword for serial)
@@ -699,18 +702,22 @@ object InvoiceParser {
                                 val afterSerial = afterSerija.substring(serialEndIndex).take(30)
                                 
                                 // Extract number that comes after serial (within 1-2 words)
+                                // IMPORTANT: Preserve as string to keep leading zeros (e.g., "000393734" not "393734")
                                 val numberMatch = numberPattern.find(afterSerial)
                                 if (numberMatch != null) {
+                                    // Get full string including leading zeros - never convert to number
                                     val numberCandidate = numberMatch.groupValues[1]
                                     
                                     // Validate number: should be 3-15 digits, not a date component
                                     if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                        // Only use toIntOrNull for validation (checking if it's a date), not for storage
                                         val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                             num in 1..31 && numberCandidate.length <= 2
                                         } ?: false
                                         if (!isDateComponent) {
+                                            // String concatenation preserves leading zeros in both serial and number
                                             val combined = "$serialCandidate$numberCandidate"
-                                            Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' in same line: $line -> $combined")
+                                            Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' (preserving leading zeros) in same line: $line -> $combined")
                                             return combined
                                         }
                                     }
@@ -729,14 +736,17 @@ object InvoiceParser {
                                         val afterNumberKeyword = line.substring(numberKeywordIndex + numberKeywordInLine.length).take(30)
                                         val numberMatch2 = numberPattern.find(afterNumberKeyword)
                                         if (numberMatch2 != null) {
+                                            // Get full string including leading zeros - never convert to number
                                             val numberCandidate = numberMatch2.groupValues[1]
                                             if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                                // Only use toIntOrNull for validation (checking if it's a date), not for storage
                                                 val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                                     num in 1..31 && numberCandidate.length <= 2
                                                 } ?: false
                                                 if (!isDateComponent) {
+                                                    // String concatenation preserves leading zeros in both serial and number
                                                     val combined = "$serialCandidate$numberCandidate"
-                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' after number keyword in same line: $line -> $combined")
+                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' (preserving leading zeros) after number keyword in same line: $line -> $combined")
                                                     return combined
                                                 }
                                             }
@@ -753,14 +763,17 @@ object InvoiceParser {
                                         
                                         val numberMatch3 = numberPattern.find(nextLine)
                                         if (numberMatch3 != null) {
+                                            // Get full string including leading zeros - never convert to number
                                             val numberCandidate = numberMatch3.groupValues[1]
                                             if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                                // Only use toIntOrNull for validation (checking if it's a date), not for storage
                                                 val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                                     num in 1..31 && numberCandidate.length <= 2
                                                 } ?: false
                                                 if (!isDateComponent) {
+                                                    // String concatenation preserves leading zeros in both serial and number
                                                     val combined = "$serialCandidate$numberCandidate"
-                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' in line $i and number '$numberCandidate' in next line (offset $offset): $combined")
+                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' in line $i and number '$numberCandidate' (preserving leading zeros) in next line (offset $offset): $combined")
                                                     return combined
                                                 }
                                             }
@@ -778,48 +791,58 @@ object InvoiceParser {
     }
     
     private fun extractInvoiceIdFromLine(line: String): String? {
+        // IMPORTANT: All patterns preserve leading zeros in invoice numbers
         // Pattern 1: "Nr. SSP000393734" or "Nr SSP000393734" or "Nr: SSP000393734"
+        // Preserves leading zeros in the number part (e.g., "SSP000393734")
         val nrPattern = Regex("nr\\.?\\s*:?\\s*([A-Z]{2,}[0-9]+)", RegexOption.IGNORE_CASE)
         val nrMatch = nrPattern.find(line)
         if (nrMatch != null) {
+            // Get full string including leading zeros - never convert to number
             val id = nrMatch.groupValues.getOrNull(1)
             if (id != null && id.length >= 6 && id.uppercase() != "INVOICE") {
-                Timber.d("Extracted Invoice ID from 'Nr.' pattern: ${id.uppercase()}")
+                Timber.d("Extracted Invoice ID from 'Nr.' pattern (preserving leading zeros): ${id.uppercase()}")
                 return id.uppercase()
             }
         }
         
         // Pattern 2: "SSP000393734" standalone (letters followed by numbers)
+        // Preserves leading zeros in the number part (e.g., "SSP000393734")
         val invoiceIdPattern = Regex("\\b([A-Z]{2,}[0-9]{6,})\\b", RegexOption.IGNORE_CASE)
         val idMatch = invoiceIdPattern.find(line)
         if (idMatch != null) {
+            // Get full string including leading zeros - never convert to number
             val id = idMatch.value
             if (id.uppercase() != "INVOICE" && id.length >= 6) {
-                Timber.d("Extracted Invoice ID from standalone pattern: ${id.uppercase()}")
+                Timber.d("Extracted Invoice ID from standalone pattern (preserving leading zeros): ${id.uppercase()}")
                 return id.uppercase()
             }
         }
         
         // Pattern 3: "Saskaitos numeris: SSP000393734" or similar
+        // Preserves leading zeros in the number part (e.g., "SSP000393734")
         val colonPattern = Regex("(?:numeris|serija|number|id)[:.]?\\s*([A-Z]{2,}[0-9]+)", RegexOption.IGNORE_CASE)
         val colonMatch = colonPattern.find(line)
         if (colonMatch != null) {
+            // Get full string including leading zeros - never convert to number
             val id = colonMatch.groupValues.getOrNull(1)
             if (id != null && id.length >= 6 && id.uppercase() != "INVOICE") {
-                Timber.d("Extracted Invoice ID from colon pattern: ${id.uppercase()}")
+                Timber.d("Extracted Invoice ID from colon pattern (preserving leading zeros): ${id.uppercase()}")
                 return id.uppercase()
             }
         }
         
         // Pattern 4: Combined serial and number on same line (e.g., "Serija: 25DF Numeris: 2569" or "Serija SS Nr. 41222181749")
+        // IMPORTANT: Preserve leading zeros in both serial and number parts
         val serialNumberPattern = Regex("(?:serija|series)[:.]?\\s*([A-Z0-9]{2,6})\\s+(?:numeris|number|nr)[:.]?\\s*([0-9]{3,15})", RegexOption.IGNORE_CASE)
         val serialNumberMatch = serialNumberPattern.find(line)
         if (serialNumberMatch != null) {
+            // Get full strings including leading zeros - never convert to numbers
             val serial = serialNumberMatch.groupValues.getOrNull(1)?.uppercase()
-            val number = serialNumberMatch.groupValues.getOrNull(2)
+            val number = serialNumberMatch.groupValues.getOrNull(2) // Preserve leading zeros (e.g., "000393734")
             if (serial != null && number != null && serial.any { it.isLetter() }) {
+                // String concatenation preserves leading zeros in both serial and number
                 val combined = "$serial$number"
-                Timber.d("Extracted Invoice ID from serial+number pattern: $combined")
+                Timber.d("Extracted Invoice ID from serial+number pattern (preserving leading zeros): $combined")
                 return combined
             }
         }
