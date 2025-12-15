@@ -218,40 +218,45 @@ object InvoiceParser {
         }
         
         // Second pass: VAT number with context
+        // For purchase invoices: look for seller/vendor VAT (exclude own company)
+        // For sales invoices: look for buyer/customer VAT (exclude own company)
+        // Since we don't know invoice type during OCR, check both sections and exclude own company
         if (vatNumber == null) {
-            var sellerVatNumber: String? = null
+            var partnerVatNumber: String? = null
             for (i in lines.indices) {
                 val line = lines[i]
                 val l = line.lowercase()
+                // Check if we're in seller section (for purchase invoices) or buyer section (for sales invoices)
                 val isInSellerSection = i < lines.size / 2 || 
                                        (i > 0 && lines[i-1].lowercase().contains("pardavejas"))
+                val isInBuyerSection = i > lines.size / 2 || 
+                                      (i > 0 && (lines[i-1].lowercase().contains("pirkėjas") || 
+                                       lines[i-1].lowercase().contains("pirkėjo")))
                 val hasVatContext = l.contains("pvm kodas") || l.contains("pvmkodas") || 
-                                   l.contains("pvm numeris") || l.contains("pvmnumeris")
+                                   l.contains("pvm numeris") || l.contains("pvmnumeris") ||
+                                   l.contains("pvm kodas:") || l.contains("pvmkodas:")
                 val extracted = FieldExtractors.tryExtractVatNumber(line, excludeOwnVatNumber)
                 if (extracted != null && !isIban(extracted)) {
-                    // Normalize for comparison
-                    val normalizedExtracted = extracted.replace(" ", "").uppercase()
-                    val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
                     // Double-check: exclude own company VAT number even if extracted
-                    if (normalizedExclude == null || !normalizedExtracted.equals(normalizedExclude, ignoreCase = true)) {
-                        if (hasVatContext && isInSellerSection) {
-                            sellerVatNumber = normalizedExtracted
-                            Timber.d("Found seller VAT number with context: $normalizedExtracted")
+                    if (excludeOwnVatNumber == null || !extracted.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                        // Accept VAT number from either seller or buyer section (whichever is not own company)
+                        if (hasVatContext && (isInSellerSection || isInBuyerSection)) {
+                            partnerVatNumber = extracted
+                            Timber.d("Found partner VAT number with context (seller/buyer section): $extracted")
+                            break // Use first valid VAT number found
                         }
                     } else {
-                        Timber.d("Skipped own company VAT number in second pass: $normalizedExtracted")
+                        Timber.d("Skipped own company VAT number in second pass: $extracted")
                     }
                 }
             }
-            if (sellerVatNumber != null) {
-                vatNumber = sellerVatNumber
+            if (partnerVatNumber != null) {
+                vatNumber = partnerVatNumber
             }
         }
         
         // Second pass: Company number - ensure it's different from VAT number and own company number
-        // Normalize VAT number for comparison
-        val normalizedVatForComparison = vatNumber?.replace(" ", "")?.uppercase()?.removePrefix("LT")
-        if (companyNumber == null || companyNumber == normalizedVatForComparison) {
+        if (companyNumber == null || companyNumber == vatNumber?.removePrefix("LT")?.removePrefix("lt")) {
             // Look for company number that's different from VAT number and own company number
             for (i in lines.indices) {
                 val line = lines[i]
@@ -660,12 +665,9 @@ object InvoiceParser {
      * Serial number usually goes after word "Serija", just before invoice number, or 1-2 words separated.
      */
     fun extractInvoiceIdWithSerialAndNumber(lines: List<String>): String? {
-        // IMPORTANT: Invoice numbers must be preserved as strings with leading zeros intact
-        // Pattern for serial: 2-6 alphanumeric characters with at least one letter (e.g., "25DF", "SSP", "A1B2", "0SS")
-        // Leading zeros in serial are preserved (e.g., "0SS", "00AB")
+        // Pattern for serial: 2-6 alphanumeric characters with at least one letter (e.g., "25DF", "SSP", "A1B2")
         val serialPattern = Regex("\\b([A-Z0-9]{2,6})\\b", RegexOption.IGNORE_CASE)
-        // Pattern for invoice number: 3-15 digits (e.g., "2569", "000393734", "41222181749", "000123")
-        // Leading zeros in invoice number are preserved (e.g., "000393734", "000123")
+        // Pattern for invoice number: 3-15 digits (e.g., "2569", "000393734", "41222181749")
         val numberPattern = Regex("\\b([0-9]{3,15})\\b")
         
         // Look for "Serija" keyword (primary keyword for serial)
@@ -694,30 +696,39 @@ object InvoiceParser {
                     if (serialMatch != null) {
                         val serialCandidate = serialMatch.groupValues[1].uppercase()
                         
-                        // Validate serial: should contain at least one letter, not just digits
-                        if (serialCandidate.any { it.isLetter() } && serialCandidate.length >= 2 && serialCandidate.length <= 6) {
-                            if (!serialCandidate.matches(Regex("^[0-9]{4}$"))) { // Not a year
+                        // Validate serial: can be alphanumeric (with at least one letter) OR purely numeric (2-6 digits, but not a year)
+                        val isValidSerial = if (serialCandidate.any { it.isLetter() }) {
+                            // Alphanumeric serial: must have at least one letter
+                            serialCandidate.length >= 2 && serialCandidate.length <= 6
+                        } else {
+                            // Numeric serial: must be 2-6 digits and not a 4-digit year
+                            serialCandidate.length >= 2 && serialCandidate.length <= 6 && 
+                            !serialCandidate.matches(Regex("^[0-9]{4}$")) // Not a year
+                        }
+                        
+                        if (isValidSerial) {
                                 // Now look for invoice number after the serial (within 1-2 words)
                                 val serialEndIndex = serialMatch.range.last + 1
                                 val afterSerial = afterSerija.substring(serialEndIndex).take(30)
                                 
+                                // Try to find number keyword first
+                                val hasNumberKeyword = numberKeywords.any { keyword ->
+                                    afterSerial.lowercase().contains(Regex("\\b$keyword\\b", RegexOption.IGNORE_CASE))
+                                }
+                                
                                 // Extract number that comes after serial (within 1-2 words)
-                                // IMPORTANT: Preserve as string to keep leading zeros (e.g., "000393734" not "393734")
                                 val numberMatch = numberPattern.find(afterSerial)
                                 if (numberMatch != null) {
-                                    // Get full string including leading zeros - never convert to number
                                     val numberCandidate = numberMatch.groupValues[1]
                                     
                                     // Validate number: should be 3-15 digits, not a date component
                                     if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
-                                        // Only use toIntOrNull for validation (checking if it's a date), not for storage
                                         val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                             num in 1..31 && numberCandidate.length <= 2
                                         } ?: false
                                         if (!isDateComponent) {
-                                            // String concatenation preserves leading zeros in both serial and number
                                             val combined = "$serialCandidate$numberCandidate"
-                                            Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' (preserving leading zeros) in same line: $line -> $combined")
+                                            Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' in same line: $line -> $combined")
                                             return combined
                                         }
                                     }
@@ -736,17 +747,14 @@ object InvoiceParser {
                                         val afterNumberKeyword = line.substring(numberKeywordIndex + numberKeywordInLine.length).take(30)
                                         val numberMatch2 = numberPattern.find(afterNumberKeyword)
                                         if (numberMatch2 != null) {
-                                            // Get full string including leading zeros - never convert to number
                                             val numberCandidate = numberMatch2.groupValues[1]
                                             if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
-                                                // Only use toIntOrNull for validation (checking if it's a date), not for storage
                                                 val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                                     num in 1..31 && numberCandidate.length <= 2
                                                 } ?: false
                                                 if (!isDateComponent) {
-                                                    // String concatenation preserves leading zeros in both serial and number
                                                     val combined = "$serialCandidate$numberCandidate"
-                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' (preserving leading zeros) after number keyword in same line: $line -> $combined")
+                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' and number '$numberCandidate' after number keyword in same line: $line -> $combined")
                                                     return combined
                                                 }
                                             }
@@ -761,19 +769,21 @@ object InvoiceParser {
                                         val nextLine = lines[nextLineIndex].trim()
                                         val nextLineLower = nextLine.lowercase()
                                         
+                                        // Check if next line has number keyword
+                                        val hasNumberKeyword = numberKeywords.any { keyword ->
+                                            nextLineLower.contains(Regex("\\b$keyword\\b", RegexOption.IGNORE_CASE))
+                                        }
+                                        
                                         val numberMatch3 = numberPattern.find(nextLine)
                                         if (numberMatch3 != null) {
-                                            // Get full string including leading zeros - never convert to number
                                             val numberCandidate = numberMatch3.groupValues[1]
                                             if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
-                                                // Only use toIntOrNull for validation (checking if it's a date), not for storage
                                                 val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                                     num in 1..31 && numberCandidate.length <= 2
                                                 } ?: false
                                                 if (!isDateComponent) {
-                                                    // String concatenation preserves leading zeros in both serial and number
                                                     val combined = "$serialCandidate$numberCandidate"
-                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' in line $i and number '$numberCandidate' (preserving leading zeros) in next line (offset $offset): $combined")
+                                                    Timber.d("Found serial '$serialCandidate' after 'Serija' in line $i and number '$numberCandidate' in next line (offset $offset): $combined")
                                                     return combined
                                                 }
                                             }
@@ -785,65 +795,65 @@ object InvoiceParser {
                     }
                 }
             }
-        }
         
         return null
     }
     
     private fun extractInvoiceIdFromLine(line: String): String? {
-        // IMPORTANT: All patterns preserve leading zeros in invoice numbers
         // Pattern 1: "Nr. SSP000393734" or "Nr SSP000393734" or "Nr: SSP000393734"
-        // Preserves leading zeros in the number part (e.g., "SSP000393734")
         val nrPattern = Regex("nr\\.?\\s*:?\\s*([A-Z]{2,}[0-9]+)", RegexOption.IGNORE_CASE)
         val nrMatch = nrPattern.find(line)
         if (nrMatch != null) {
-            // Get full string including leading zeros - never convert to number
             val id = nrMatch.groupValues.getOrNull(1)
             if (id != null && id.length >= 6 && id.uppercase() != "INVOICE") {
-                Timber.d("Extracted Invoice ID from 'Nr.' pattern (preserving leading zeros): ${id.uppercase()}")
+                Timber.d("Extracted Invoice ID from 'Nr.' pattern: ${id.uppercase()}")
                 return id.uppercase()
             }
         }
         
         // Pattern 2: "SSP000393734" standalone (letters followed by numbers)
-        // Preserves leading zeros in the number part (e.g., "SSP000393734")
         val invoiceIdPattern = Regex("\\b([A-Z]{2,}[0-9]{6,})\\b", RegexOption.IGNORE_CASE)
         val idMatch = invoiceIdPattern.find(line)
         if (idMatch != null) {
-            // Get full string including leading zeros - never convert to number
             val id = idMatch.value
             if (id.uppercase() != "INVOICE" && id.length >= 6) {
-                Timber.d("Extracted Invoice ID from standalone pattern (preserving leading zeros): ${id.uppercase()}")
+                Timber.d("Extracted Invoice ID from standalone pattern: ${id.uppercase()}")
                 return id.uppercase()
             }
         }
         
         // Pattern 3: "Saskaitos numeris: SSP000393734" or similar
-        // Preserves leading zeros in the number part (e.g., "SSP000393734")
         val colonPattern = Regex("(?:numeris|serija|number|id)[:.]?\\s*([A-Z]{2,}[0-9]+)", RegexOption.IGNORE_CASE)
         val colonMatch = colonPattern.find(line)
         if (colonMatch != null) {
-            // Get full string including leading zeros - never convert to number
             val id = colonMatch.groupValues.getOrNull(1)
             if (id != null && id.length >= 6 && id.uppercase() != "INVOICE") {
-                Timber.d("Extracted Invoice ID from colon pattern (preserving leading zeros): ${id.uppercase()}")
+                Timber.d("Extracted Invoice ID from colon pattern: ${id.uppercase()}")
                 return id.uppercase()
             }
         }
         
-        // Pattern 4: Combined serial and number on same line (e.g., "Serija: 25DF Numeris: 2569" or "Serija SS Nr. 41222181749")
-        // IMPORTANT: Preserve leading zeros in both serial and number parts
+        // Pattern 4: Combined serial and number on same line (e.g., "Serija: 25DF Numeris: 2569" or "Serija 01 Nr. 1442")
         val serialNumberPattern = Regex("(?:serija|series)[:.]?\\s*([A-Z0-9]{2,6})\\s+(?:numeris|number|nr)[:.]?\\s*([0-9]{3,15})", RegexOption.IGNORE_CASE)
         val serialNumberMatch = serialNumberPattern.find(line)
         if (serialNumberMatch != null) {
-            // Get full strings including leading zeros - never convert to numbers
             val serial = serialNumberMatch.groupValues.getOrNull(1)?.uppercase()
-            val number = serialNumberMatch.groupValues.getOrNull(2) // Preserve leading zeros (e.g., "000393734")
-            if (serial != null && number != null && serial.any { it.isLetter() }) {
-                // String concatenation preserves leading zeros in both serial and number
-                val combined = "$serial$number"
-                Timber.d("Extracted Invoice ID from serial+number pattern (preserving leading zeros): $combined")
-                return combined
+            val number = serialNumberMatch.groupValues.getOrNull(2)
+            if (serial != null && number != null) {
+                // Validate serial: can be alphanumeric (with at least one letter) OR purely numeric (2-6 digits, but not a year)
+                val isValidSerial = if (serial.any { it.isLetter() }) {
+                    // Alphanumeric serial: must have at least one letter
+                    serial.length >= 2 && serial.length <= 6
+                } else {
+                    // Numeric serial: must be 2-6 digits and not a 4-digit year
+                    serial.length >= 2 && serial.length <= 6 && 
+                    !serial.matches(Regex("^[0-9]{4}$")) // Not a year
+                }
+                if (isValidSerial) {
+                    val combined = "$serial$number"
+                    Timber.d("Extracted Invoice ID from serial+number pattern: $combined")
+                    return combined
+                }
             }
         }
         
@@ -977,8 +987,10 @@ object InvoiceParser {
             }
         }
         
-        // Strategy 2: Find "PARDAVEJAS" or "TIEKEJAS" section
-        val labelKeywords = listOf("pardavejas", "tiekejas", "gavejas")
+        // Strategy 2: Find "PARDAVEJAS" (Seller) or "PIRKĖJAS" (Buyer) section
+        // For purchase invoices: look for seller/vendor (exclude own company)
+        // For sales invoices: look for buyer/customer (exclude own company)
+        val labelKeywords = listOf("pardavejas", "tiekejas", "gavejas", "pirkėjas", "pirkėjo")
         for (i in lines.indices) {
             val line = lines[i]
             val l = line.lowercase().trim()

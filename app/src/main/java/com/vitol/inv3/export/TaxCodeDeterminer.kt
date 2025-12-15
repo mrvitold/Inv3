@@ -19,12 +19,28 @@ object TaxCodeDeterminer {
      * @return Tax code (e.g., "PVM1", "PVM25")
      */
     fun determineTaxCode(vatRate: Double?, invoiceText: String? = null): String {
-        // Check for special keywords first
+        // Check for special keywords first - reverse charge VAT (PVM25)
         val text = invoiceText?.uppercase() ?: ""
-        if (text.contains("96 STRAIPSNIS", ignoreCase = true) || 
-            text.contains("ATVIRKŠTINIS PVM", ignoreCase = true)) {
-            Timber.d("Tax code determined: PVM25 (special case: 96 straipsnis or atvirkštinis PVM)")
-            return "PVM25"
+        // Check for various patterns indicating reverse charge VAT (Article 96)
+        val reverseChargePatterns = listOf(
+            "96 STRAIPSNIS",
+            "96 STR",
+            "96 STR\\.",
+            "ATVIRKŠTINIS PVM",
+            "ATVIRKŠTINIS PVM APMOKESTINIMAS",
+            "APMOKESTINIMAS PAGAL 96",
+            "APMOKESTINIMAS PAGAL 96 STR",
+            "APMOKESTINIMAS PAGAL 96 STR\\.",
+            "PAGAL 96 STRAIPSNIS",
+            "PAGAL 96 STR",
+            "PAGAL 96 STR\\."
+        )
+        
+        for (pattern in reverseChargePatterns) {
+            if (text.contains(Regex(pattern, RegexOption.IGNORE_CASE))) {
+                Timber.d("Tax code determined: PVM25 (reverse charge detected: pattern '$pattern')")
+                return "PVM25"
+            }
         }
         
         // Map VAT rate to default tax codes
@@ -64,6 +80,10 @@ object TaxCodeDeterminer {
         return roundedRate
     }
 }
+
+
+
+
 
 
 

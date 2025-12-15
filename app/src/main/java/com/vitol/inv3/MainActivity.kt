@@ -63,13 +63,19 @@ import com.vitol.inv3.auth.AuthState
 import com.vitol.inv3.ui.auth.LoginScreen
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.SupervisorJob
 import timber.log.Timber
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    private lateinit var viewModel: MainActivityViewModel
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Initialize ViewModel for lifecycle-aware access in onResume
+        viewModel = androidx.lifecycle.ViewModelProvider(this)[MainActivityViewModel::class.java]
         
         setContent {
             MaterialTheme {
@@ -81,9 +87,29 @@ class MainActivity : ComponentActivity() {
                     handleIntent(intent, viewModel.authManager)
                 }
                 
+                // Refresh session when app comes to foreground (to work around free plan limitations)
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        viewModel.authManager.refreshSessionIfNeeded()
+                    }
+                }
+                
                 Surface(color = MaterialTheme.colorScheme.background) {
                     AppNavHost(navController, viewModel.authManager)
                 }
+            }
+        }
+    }
+    
+    override fun onResume() {
+        super.onResume()
+        // Refresh session when app resumes (comes to foreground)
+        // This helps work around free plan's 1-day refresh token expiration
+        // By refreshing proactively when user opens the app, we extend the session
+        // as long as the user uses the app at least once per day
+        if (::viewModel.isInitialized) {
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob()).launch {
+                viewModel.authManager.refreshSessionIfNeeded()
             }
         }
     }

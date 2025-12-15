@@ -22,7 +22,8 @@ data class ExportInvoice(
     val amountWithoutVatEur: Double?,
     val vatAmountEur: Double?,
     val vatNumber: String?,
-    val companyNumber: String?
+    val companyNumber: String?,
+    val invoiceType: String? = null // P = Purchase/Received, S = Sales/Issued
 )
 
 class ExcelExporter(private val context: Context) {
@@ -30,21 +31,23 @@ class ExcelExporter(private val context: Context) {
         val wb = XSSFWorkbook()
         val sheet = wb.createSheet("Invoices")
 
+        // Column order: Date first, then Invoice_ID, Invoice_Type, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number
         val header = listOf(
-            "Invoice_ID", "Date", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number"
+            "Date", "Invoice_ID", "Invoice_Type", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number"
         )
         val headerRow = sheet.createRow(0)
         header.forEachIndexed { idx, title -> headerRow.createCell(idx).setCellValue(title) }
 
         invoices.forEachIndexed { i, inv ->
             val row = sheet.createRow(i + 1)
-            row.createCell(0).setCellValue(inv.invoiceId ?: "")
-            row.createCell(1).setCellValue(inv.date ?: "")
-            row.createCell(2).setCellValue(inv.companyName ?: "")
-            row.createCell(3).setCellValue(inv.amountWithoutVatEur ?: 0.0)
-            row.createCell(4).setCellValue(inv.vatAmountEur ?: 0.0)
-            row.createCell(5).setCellValue(inv.vatNumber ?: "")
-            row.createCell(6).setCellValue(inv.companyNumber ?: "")
+            row.createCell(0).setCellValue(inv.date ?: "") // Date first
+            row.createCell(1).setCellValue(inv.invoiceId ?: "")
+            row.createCell(2).setCellValue(inv.invoiceType ?: "") // Invoice Type (P/S)
+            row.createCell(3).setCellValue(inv.companyName ?: "")
+            row.createCell(4).setCellValue(inv.amountWithoutVatEur ?: 0.0)
+            row.createCell(5).setCellValue(inv.vatAmountEur ?: 0.0)
+            row.createCell(6).setCellValue(inv.vatNumber ?: "")
+            row.createCell(7).setCellValue(inv.companyNumber ?: "")
         }
 
         // Use month-specific filename if provided, otherwise use timestamp
@@ -70,21 +73,23 @@ class ExcelExporter(private val context: Context) {
         val wb = XSSFWorkbook()
         val sheet = wb.createSheet("Invoices")
 
+        // Column order: Date first, then Invoice_ID, Invoice_Type, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number
         val header = listOf(
-            "Invoice_ID", "Date", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number"
+            "Date", "Invoice_ID", "Invoice_Type", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number"
         )
         val headerRow = sheet.createRow(0)
         header.forEachIndexed { idx, title -> headerRow.createCell(idx).setCellValue(title) }
 
         invoices.forEachIndexed { i, inv ->
             val row = sheet.createRow(i + 1)
-            row.createCell(0).setCellValue(inv.invoiceId ?: "")
-            row.createCell(1).setCellValue(inv.date ?: "")
-            row.createCell(2).setCellValue(inv.companyName ?: "")
-            row.createCell(3).setCellValue(inv.amountWithoutVatEur ?: 0.0)
-            row.createCell(4).setCellValue(inv.vatAmountEur ?: 0.0)
-            row.createCell(5).setCellValue(inv.vatNumber ?: "")
-            row.createCell(6).setCellValue(inv.companyNumber ?: "")
+            row.createCell(0).setCellValue(inv.date ?: "") // Date first
+            row.createCell(1).setCellValue(inv.invoiceId ?: "")
+            row.createCell(2).setCellValue(inv.invoiceType ?: "") // Invoice Type (P/S)
+            row.createCell(3).setCellValue(inv.companyName ?: "")
+            row.createCell(4).setCellValue(inv.amountWithoutVatEur ?: 0.0)
+            row.createCell(5).setCellValue(inv.vatAmountEur ?: 0.0)
+            row.createCell(6).setCellValue(inv.vatNumber ?: "")
+            row.createCell(7).setCellValue(inv.companyNumber ?: "")
         }
 
         // Use month-specific filename if provided, otherwise use timestamp

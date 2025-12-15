@@ -2,7 +2,6 @@ package com.vitol.inv3.ocr
 
 import android.content.Context
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -16,7 +15,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import timber.log.Timber
 import android.util.Base64
-import java.io.FileInputStream
 
 /**
  * Service for processing invoices using Azure AI Document Intelligence REST API.
@@ -46,7 +44,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
      * @param imageUri URI of the invoice image
      * @return ParsedInvoice with extracted fields, or null if processing failed
      */
-    suspend fun processInvoice(imageUri: Uri, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null): ParsedInvoice? = withContext(Dispatchers.IO) {
+    suspend fun processInvoice(imageUri: Uri, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, invoiceType: String? = null): ParsedInvoice? = withContext(Dispatchers.IO) {
         try {
             // Validate configuration
             if (apiKey.isBlank() || endpoint.isBlank()) {
@@ -75,7 +73,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
             
             // Step 3: Parse results to ParsedInvoice
-            parseResultsToInvoice(result, excludeOwnCompanyNumber, excludeOwnVatNumber)
+            parseResultsToInvoice(result, excludeOwnCompanyNumber, excludeOwnVatNumber, invoiceType)
             
         } catch (e: Exception) {
             Timber.e(e, "Failed to process invoice with Azure Document Intelligence")
@@ -227,7 +225,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         }
     }
     
-    private fun parseResultsToInvoice(result: JsonObject, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null): ParsedInvoice {
+    private fun parseResultsToInvoice(result: JsonObject, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, invoiceType: String? = null): ParsedInvoice {
         var invoiceId: String? = null
         var date: String? = null
         var companyName: String? = null
@@ -246,30 +244,84 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             
             if (fields != null) {
                 // Map Azure fields to your ParsedInvoice
-                // IMPORTANT: Always use valueString to preserve leading zeros in invoice numbers
                 fields.get("InvoiceId")?.asJsonObject?.get("valueString")?.asString?.let {
-                    // Preserve as string - do not convert to number to keep leading zeros
-                    invoiceId = it.trim()
+                    invoiceId = it
                 }
                 
                 fields.get("InvoiceDate")?.asJsonObject?.get("valueDate")?.asString?.let {
                     date = normalizeDate(it)
                 }
                 
-                // Vendor/Supplier name
-                fields.get("VendorName")?.asJsonObject?.get("valueString")?.asString?.let {
-                    val vendorName = it.trim()
-                    // Check if VendorName contains company type suffix (UAB, MB, IĮ, AB, etc.)
-                    val lowerVendorName = vendorName.lowercase()
-                    val hasCompanyType = lowerVendorName.contains("uab") || lowerVendorName.contains("ab") || 
-                                        lowerVendorName.contains("mb") || lowerVendorName.contains("iį") ||
-                                        lowerVendorName.contains("ltd") || lowerVendorName.contains("oy") || 
-                                        lowerVendorName.contains("as") || lowerVendorName.contains("sp")
-                    if (hasCompanyType && vendorName.length >= 5) {
-                        companyName = vendorName
-                        Timber.d("Azure: Extracted company name from VendorName: $companyName")
-                    } else {
-                        Timber.d("Azure: VendorName '$vendorName' doesn't contain company type suffix, will try text extraction")
+                // Determine if this is a sales invoice
+                val isSalesInvoice = invoiceType == "S"
+                
+                // For sales invoices: prioritize CustomerName (buyer), exclude VendorName (seller = own company)
+                // For purchase invoices: prioritize VendorName (seller), exclude CustomerName (buyer = own company)
+                if (isSalesInvoice) {
+                    // SALES INVOICE: Extract customer (buyer) info, exclude vendor (seller = own company)
+                    fields.get("CustomerName")?.asJsonObject?.get("valueString")?.asString?.let {
+                        val customerName = it.trim()
+                        val lowerCustomerName = customerName.lowercase()
+                        val hasCompanyType = lowerCustomerName.contains("uab") || lowerCustomerName.contains("ab") || 
+                                            lowerCustomerName.contains("mb") || lowerCustomerName.contains("iį") ||
+                                            lowerCustomerName.contains("ltd") || lowerCustomerName.contains("oy") || 
+                                            lowerCustomerName.contains("as") || lowerCustomerName.contains("sp")
+                        if (hasCompanyType && customerName.length >= 5) {
+                            // For sales invoices, customer is the partner company (exclude own company)
+                            companyName = customerName
+                            Timber.d("Azure: [SALES] Extracted company name from CustomerName: $customerName")
+                        } else {
+                            Timber.d("Azure: [SALES] CustomerName '$customerName' doesn't contain company type suffix, will try text extraction")
+                        }
+                    }
+                    // Fallback to VendorName only if CustomerName wasn't found (shouldn't happen for sales invoices)
+                    if (companyName == null) {
+                        fields.get("VendorName")?.asJsonObject?.get("valueString")?.asString?.let {
+                            val vendorName = it.trim()
+                            val lowerVendorName = vendorName.lowercase()
+                            val hasCompanyType = lowerVendorName.contains("uab") || lowerVendorName.contains("ab") || 
+                                                lowerVendorName.contains("mb") || lowerVendorName.contains("iį") ||
+                                                lowerVendorName.contains("ltd") || lowerVendorName.contains("oy") || 
+                                                lowerVendorName.contains("as") || lowerVendorName.contains("sp")
+                            if (hasCompanyType && vendorName.length >= 5) {
+                                // Check if this is NOT the own company before using it
+                                // For sales invoices, vendor is usually the own company, so we should exclude it
+                                companyName = vendorName
+                                Timber.d("Azure: [SALES] Fallback: Extracted company name from VendorName: $vendorName (will be excluded if matches own company)")
+                            }
+                        }
+                    }
+                } else {
+                    // PURCHASE INVOICE: Extract vendor (seller) info, exclude customer (buyer = own company)
+                    fields.get("VendorName")?.asJsonObject?.get("valueString")?.asString?.let {
+                        val vendorName = it.trim()
+                        val lowerVendorName = vendorName.lowercase()
+                        val hasCompanyType = lowerVendorName.contains("uab") || lowerVendorName.contains("ab") || 
+                                            lowerVendorName.contains("mb") || lowerVendorName.contains("iį") ||
+                                            lowerVendorName.contains("ltd") || lowerVendorName.contains("oy") || 
+                                            lowerVendorName.contains("as") || lowerVendorName.contains("sp")
+                        if (hasCompanyType && vendorName.length >= 5) {
+                            // For purchase invoices, vendor is the partner company (exclude own company)
+                            companyName = vendorName
+                            Timber.d("Azure: [PURCHASE] Extracted company name from VendorName: $vendorName")
+                        } else {
+                            Timber.d("Azure: [PURCHASE] VendorName '$vendorName' doesn't contain company type suffix, will try text extraction")
+                        }
+                    }
+                    // Fallback to CustomerName only if VendorName wasn't found
+                    if (companyName == null) {
+                        fields.get("CustomerName")?.asJsonObject?.get("valueString")?.asString?.let {
+                            val customerName = it.trim()
+                            val lowerCustomerName = customerName.lowercase()
+                            val hasCompanyType = lowerCustomerName.contains("uab") || lowerCustomerName.contains("ab") || 
+                                                lowerCustomerName.contains("mb") || lowerCustomerName.contains("iį") ||
+                                                lowerCustomerName.contains("ltd") || lowerCustomerName.contains("oy") || 
+                                                lowerCustomerName.contains("as") || lowerCustomerName.contains("sp")
+                            if (hasCompanyType && customerName.length >= 5) {
+                                companyName = customerName
+                                Timber.d("Azure: [PURCHASE] Fallback: Extracted company name from CustomerName: $customerName")
+                            }
+                        }
                     }
                 }
                 
@@ -307,36 +359,63 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                     }
                 }
                 
-                // Vendor Tax ID (VAT number) - only accept if it has "LT" prefix
-                // If there's no "LT", it's not a VAT number
-                // Exclude own company VAT number
-                fields.get("VendorTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
-                    // Normalize: remove spaces, uppercase
-                    val vatValue = it.replace(" ", "").trim().uppercase()
-                    // Only accept if it starts with "LT" - otherwise it's not a VAT number
-                    // Normalize exclude value for comparison
-                    val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
-                    // Exclude own company VAT number
-                    if (vatValue.startsWith("LT") && (normalizedExclude == null || !vatValue.equals(normalizedExclude, ignoreCase = true))) {
-                        vatNumber = vatValue
+                // VAT number extraction - prioritize based on invoice type
+                if (isSalesInvoice) {
+                    // SALES INVOICE: Extract customer VAT (buyer), exclude vendor VAT (seller = own company)
+                    fields.get("CustomerTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
+                        val vatValue = it.trim().uppercase()
+                        // Only accept if it starts with "LT" and exclude own company VAT number
+                        if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
+                            vatNumber = vatValue
+                            Timber.d("Azure: [SALES] Extracted VAT number from CustomerTaxId: $vatNumber")
+                        } else {
+                            Timber.d("Azure: [SALES] Skipped CustomerTaxId '$vatValue' (no LT prefix or matches own company)")
+                        }
+                    }
+                    // Fallback to VendorTaxId only if CustomerTaxId wasn't found (shouldn't happen for sales invoices)
+                    if (vatNumber == null) {
+                        fields.get("VendorTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
+                            val vatValue = it.trim().uppercase()
+                            // Exclude own company VAT number - for sales invoices, vendor is usually own company
+                            if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
+                                vatNumber = vatValue
+                                Timber.d("Azure: [SALES] Fallback: Extracted VAT number from VendorTaxId: $vatNumber")
+                            } else {
+                                Timber.d("Azure: [SALES] Skipped VendorTaxId '$vatValue' (no LT prefix or matches own company)")
+                            }
+                        }
+                    }
+                } else {
+                    // PURCHASE INVOICE: Extract vendor VAT (seller), exclude customer VAT (buyer = own company)
+                    fields.get("VendorTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
+                        val vatValue = it.trim().uppercase()
+                        // Only accept if it starts with "LT" and exclude own company VAT number
+                        if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
+                            vatNumber = vatValue
+                            Timber.d("Azure: [PURCHASE] Extracted VAT number from VendorTaxId: $vatNumber")
+                        } else {
+                            Timber.d("Azure: [PURCHASE] Skipped VendorTaxId '$vatValue' (no LT prefix or matches own company)")
+                        }
+                    }
+                    // Fallback to CustomerTaxId only if VendorTaxId wasn't found
+                    if (vatNumber == null) {
+                        fields.get("CustomerTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
+                            val vatValue = it.trim().uppercase()
+                            // Only accept if it starts with "LT" and exclude own company VAT number
+                            if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
+                                vatNumber = vatValue
+                                Timber.d("Azure: [PURCHASE] Fallback: Extracted VAT number from CustomerTaxId: $vatNumber")
+                            } else {
+                                Timber.d("Azure: [PURCHASE] Skipped CustomerTaxId '$vatValue' (no LT prefix or matches own company)")
+                            }
+                        }
                     }
                 }
                 
                 // Also check alternative field names for invoice ID
-                // IMPORTANT: Always use valueString to preserve leading zeros (never use valueNumber)
                 if (invoiceId == null) {
                     fields.get("InvoiceNumber")?.asJsonObject?.get("valueString")?.asString?.let {
-                        // Preserve as string - do not convert to number to keep leading zeros
-                        invoiceId = it.trim()
-                    }
-                }
-                // Also check if Azure returns invoice number as a number (should be avoided, but handle it)
-                if (invoiceId == null) {
-                    fields.get("InvoiceNumber")?.asJsonObject?.get("valueNumber")?.asDouble?.let {
-                        // Convert to string without losing precision, but this may lose leading zeros
-                        // Prefer valueString if available
-                        invoiceId = it.toLong().toString()
-                        Timber.w("InvoiceNumber returned as number instead of string - leading zeros may be lost: $invoiceId")
+                        invoiceId = it
                     }
                 }
                 
@@ -375,51 +454,53 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
         }
         
-        // If amounts are still null, or company name doesn't have company type suffix, try to extract from text using local parser
-        if (amountNoVat == null || vatAmount == null || companyName == null || 
-            !hasCompanyTypeSuffix(companyName)) {
-            val parsedFromText = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
-            if (amountNoVat == null && parsedFromText.amountWithoutVatEur != null) {
-                amountNoVat = parsedFromText.amountWithoutVatEur
-                Timber.d("Azure: Extracted amount without VAT from text: $amountNoVat")
+        // Always try to extract from text using local parser for missing fields or to improve accuracy
+        // This is especially important for sales invoices where we need to extract buyer info
+        val parsedFromText = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
+        
+        // Extract amounts if not found
+        if (amountNoVat == null && parsedFromText.amountWithoutVatEur != null) {
+            amountNoVat = parsedFromText.amountWithoutVatEur
+            Timber.d("Azure: Extracted amount without VAT from text: $amountNoVat")
+        }
+        if (vatAmount == null && parsedFromText.vatAmountEur != null) {
+            vatAmount = parsedFromText.vatAmountEur
+            Timber.d("Azure: Extracted VAT amount from text: $vatAmount")
+        }
+        
+        // Extract company name from text if not found or doesn't have company type suffix
+        if ((companyName == null || !hasCompanyTypeSuffix(companyName)) && parsedFromText.companyName != null) {
+            val extractedCompanyName = parsedFromText.companyName
+            if (hasCompanyTypeSuffix(extractedCompanyName)) {
+                companyName = extractedCompanyName
+                Timber.d("Azure: Extracted company name from text: $companyName")
+            } else {
+                Timber.d("Azure: Extracted company name '$extractedCompanyName' doesn't have company type suffix")
             }
-            if (vatAmount == null && parsedFromText.vatAmountEur != null) {
-                vatAmount = parsedFromText.vatAmountEur
-                Timber.d("Azure: Extracted VAT amount from text: $vatAmount")
+        }
+        
+        // Always try to extract company number from text if not found
+        // This is critical for sales invoices where Azure might not extract buyer's company number
+        if (companyNumber == null && parsedFromText.companyNumber != null) {
+            val extractedCompanyNo = parsedFromText.companyNumber
+            val vatDigits = vatNumber?.removePrefix("LT")?.removePrefix("lt")
+            // Only use if different from VAT number and own company number
+            if (extractedCompanyNo != vatDigits && (excludeOwnCompanyNumber == null || extractedCompanyNo != excludeOwnCompanyNumber)) {
+                companyNumber = extractedCompanyNo
+                Timber.d("Azure: Extracted company number from text: $companyNumber")
+            } else {
+                Timber.d("Azure: Skipped company number '$extractedCompanyNo' (same as VAT number or own company number)")
             }
-            // Extract company name from text if not found or doesn't have company type suffix
-            if ((companyName == null || !hasCompanyTypeSuffix(companyName)) && parsedFromText.companyName != null) {
-                val extractedCompanyName = parsedFromText.companyName
-                if (hasCompanyTypeSuffix(extractedCompanyName)) {
-                    companyName = extractedCompanyName
-                    Timber.d("Azure: Extracted company name from text: $companyName")
-                } else {
-                    Timber.d("Azure: Extracted company name '$extractedCompanyName' doesn't have company type suffix")
-                }
-            }
-            // Also extract company number from text if not found
-            // Ensure it's different from VAT number and own company number
-            if (companyNumber == null && parsedFromText.companyNumber != null) {
-                val extractedCompanyNo = parsedFromText.companyNumber
-                val vatDigits = vatNumber?.removePrefix("LT")?.removePrefix("lt")
-                // Only use if different from VAT number and own company number
-                if (extractedCompanyNo != vatDigits && (excludeOwnCompanyNumber == null || extractedCompanyNo != excludeOwnCompanyNumber)) {
-                    companyNumber = extractedCompanyNo
-                    Timber.d("Azure: Extracted company number from text: $companyNumber")
-                } else {
-                    Timber.d("Azure: Skipped company number '$extractedCompanyNo' (same as VAT number or own company number)")
-                }
-            }
-            // Also extract VAT number from text if not found and exclude own company VAT
-            if (vatNumber == null && parsedFromText.vatNumber != null) {
-                val extractedVat = parsedFromText.vatNumber.replace(" ", "").uppercase()
-                val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
-                if (normalizedExclude == null || !extractedVat.equals(normalizedExclude, ignoreCase = true)) {
-                    vatNumber = extractedVat
-                    Timber.d("Azure: Extracted VAT number from text: $vatNumber")
-                } else {
-                    Timber.d("Azure: Skipped VAT number '$extractedVat' (same as own company VAT number)")
-                }
+        }
+        
+        // Also extract VAT number from text if not found and exclude own company VAT
+        if (vatNumber == null && parsedFromText.vatNumber != null) {
+            val extractedVat = parsedFromText.vatNumber
+            if (excludeOwnVatNumber == null || !extractedVat.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                vatNumber = extractedVat
+                Timber.d("Azure: Extracted VAT number from text: $vatNumber")
+            } else {
+                Timber.d("Azure: Skipped VAT number '$extractedVat' (same as own company VAT number)")
             }
         }
         
@@ -461,32 +542,9 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     }
     
     private suspend fun readImageFromUri(uri: Uri): ByteArray = withContext(Dispatchers.IO) {
-        try {
-            // Try openInputStream first (works for most URIs)
-            context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                inputStream.readBytes()
-            } ?: run {
-                // If openInputStream fails, try openFileDescriptor (works better for document tree URIs)
-                context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                    FileInputStream(pfd.fileDescriptor).use { fis ->
-                        fis.readBytes()
-                    }
-                } ?: throw IllegalStateException("Could not read image from URI: $uri")
-            }
-        } catch (e: SecurityException) {
-            // If we get a SecurityException, try with openFileDescriptor
-            Timber.w(e, "SecurityException when reading URI, trying openFileDescriptor: $uri")
-            try {
-                context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                    FileInputStream(pfd.fileDescriptor).use { fis ->
-                        fis.readBytes()
-                    }
-                } ?: throw IllegalStateException("Could not read image from URI: $uri")
-            } catch (e2: Exception) {
-                Timber.e(e2, "Failed to read image from URI: $uri")
-                throw IllegalStateException("Could not read image from URI: $uri", e2)
-            }
-        }
+        context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            inputStream.readBytes()
+        } ?: throw IllegalStateException("Could not read image from URI: $uri")
     }
     
     private fun determineMimeType(uri: Uri): String {

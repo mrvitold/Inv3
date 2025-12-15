@@ -289,6 +289,7 @@ fun ReviewScreen(
                             excludeCompanyId = activeCompanyId,
                             excludeOwnCompanyNumber = ownCompanyNumber, // Can be null, that's OK
                             excludeOwnVatNumber = ownCompanyVatNumber, // Can be null, that's OK
+                            invoiceType = invoiceType, // Pass invoice type to OCR service
                             onDone = onDone,
                             onMethodUsed = { },
                             initialDelayMs = staggeredDelay // Staggered delay to prevent rate limiting
@@ -398,6 +399,7 @@ fun ReviewScreen(
             excludeCompanyId = activeCompanyId,
             excludeOwnCompanyNumber = ownCompanyNumber,
             excludeOwnVatNumber = ownCompanyVatNumber,
+            invoiceType = invoiceType, // Pass invoice type to OCR service
             onDone = { result ->
                 result.onSuccess { parsed ->
                     if (isSinglePage) {
@@ -726,13 +728,26 @@ fun ReviewScreen(
                 excludeCompanyId = activeCompanyId,
                 excludeOwnCompanyNumber = ownCompanyNumber,
                 excludeOwnVatNumber = ownCompanyVatNumber,
+                invoiceType = invoiceType, // Pass invoice type to OCR service
                 onDone = { result ->
                     result.onSuccess { parsed ->
                         // If Azure Document Intelligence succeeded, use it
                         // The parsed string already has the correct company name from database lookup
-                        val lines = parsed.split("\n")
+                        // Extract full invoice text for tax code determination (after ---FULL_INVOICE_TEXT--- separator)
+                        val fullTextSeparator = "---FULL_INVOICE_TEXT---\n"
+                        val fullInvoiceText = if (parsed.contains(fullTextSeparator)) {
+                            parsed.substringAfter(fullTextSeparator)
+                        } else {
+                            parsed // Fallback to full parsed text if separator not found
+                        }
+                        val formattedLines = if (parsed.contains(fullTextSeparator)) {
+                            parsed.substringBefore(fullTextSeparator).split("\n")
+                        } else {
+                            parsed.split("\n")
+                        }
+                        
                         val newFields = fields.toMutableMap()
-                        lines.forEach { line ->
+                        formattedLines.forEach { line ->
                             val parts = line.split(":", limit = 2)
                             if (parts.size == 2) {
                                 val key = parts[0].trim()
@@ -810,8 +825,9 @@ fun ReviewScreen(
                                 }
                             }
                         }
-                        // Set text for tax code determination
-                        text = parsed
+                        // Set text for tax code determination - use full invoice text
+                        // fullInvoiceText was already extracted above at line 736, reuse it
+                        text = fullInvoiceText
                         fields = newFields.toMap()
                         isReanalyzing = false
                         Timber.d("Current invoice processing complete - All fields extracted, Company_name: '${newFields["Company_name"]}', Invoice_ID: '${newFields["Invoice_ID"]}', Date: '${newFields["Date"]}', Amount: '${newFields["Amount_without_VAT_EUR"]}', VAT: '${newFields["VAT_amount_EUR"]}'")
@@ -1495,6 +1511,7 @@ fun ReviewScreen(
                                             excludeCompanyId = activeCompanyId,
                                             excludeOwnCompanyNumber = ownCompanyNumber,
                                             excludeOwnVatNumber = ownCompanyVatNumber,
+                                            invoiceType = invoiceType, // Pass invoice type to OCR service
                                             onDone = { result ->
                                                 result.onSuccess { parsed ->
                                                     val nextFields = parseOcrResultToFields(parsed)
@@ -1521,6 +1538,7 @@ fun ReviewScreen(
                                         excludeCompanyId = activeCompanyId,
                                         excludeOwnCompanyNumber = ownCompanyNumber,
                                         excludeOwnVatNumber = ownCompanyVatNumber,
+                                        invoiceType = invoiceType, // Pass invoice type to OCR service
                                         onDone = { result ->
                                             result.onSuccess { parsed ->
                                                 val nextFields = parseOcrResultToFields(parsed)
@@ -2132,6 +2150,7 @@ class ReviewViewModel @Inject constructor(
         excludeCompanyId: String? = null,
         excludeOwnCompanyNumber: String? = null,
         excludeOwnVatNumber: String? = null,
+        invoiceType: String? = null, // P = Purchase, S = Sales
         onDone: (Result<String>) -> Unit, 
         onMethodUsed: ((String) -> Unit)? = null,
         initialDelayMs: Long = 0 // Delay before starting (0 for current invoice, staggered for background)
@@ -2146,11 +2165,15 @@ class ReviewViewModel @Inject constructor(
                 }
                 
                 // Try Azure Document Intelligence first
-                val parsed = documentAiService.processInvoice(uri, excludeOwnCompanyNumber, excludeOwnVatNumber)
+                val parsed = documentAiService.processInvoice(uri, excludeOwnCompanyNumber, excludeOwnVatNumber, invoiceType)
                 
                 if (parsed != null) {
                     Timber.d("Azure Document Intelligence processing successful")
                     onMethodUsed?.invoke("Azure") // Notify that Azure Document Intelligence was used
+                    
+                    // Store full invoice text for tax code determination (PVM25 detection)
+                    // This will be used later when determining tax code
+                    val fullInvoiceTextForTaxCode = parsed.lines.joinToString("\n")
                     
                     // Store blocks for template learning (create dummy blocks from text)
                     currentOcrBlocks = parsed.lines.mapIndexed { index, text ->
@@ -2229,13 +2252,19 @@ class ReviewViewModel @Inject constructor(
                     }
                     
                     // Format result
-                    "Invoice_ID: ${finalParsed.invoiceId ?: ""}\n" +
+                    // Append full invoice text at the end (after a separator) for tax code determination
+                    // This ensures we can detect "Atvirkštinis PVM apmokestinimas pagal 96 str" etc.
+                    val formattedResult = "Invoice_ID: ${finalParsed.invoiceId ?: ""}\n" +
                     "Date: ${finalParsed.date ?: ""}\n" +
                     "Company_name: ${finalParsed.companyName ?: ""}\n" +
                     "Amount_without_VAT_EUR: ${finalParsed.amountWithoutVatEur ?: ""}\n" +
                     "VAT_amount_EUR: ${finalParsed.vatAmountEur ?: ""}\n" +
                     "VAT_number: ${finalParsed.vatNumber ?: ""}\n" +
-                    "Company_number: ${finalParsed.companyNumber ?: ""}"
+                    "Company_number: ${finalParsed.companyNumber ?: ""}\n" +
+                    "---FULL_INVOICE_TEXT---\n" +
+                    fullInvoiceTextForTaxCode
+                    
+                    formattedResult
                 } else {
                     Timber.w("Azure Document Intelligence processing returned null, falling back to local OCR")
                     onMethodUsed?.invoke("Local") // Notify that local OCR is being used

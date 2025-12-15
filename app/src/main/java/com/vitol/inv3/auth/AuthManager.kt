@@ -66,27 +66,21 @@ class AuthManager(
                 saveSessionLocally(userId)
                 _authState.value = AuthState.Authenticated(userId)
                 Timber.d("Session loaded: User ID = $userId")
+                // Proactively refresh session if needed (Supabase client handles this automatically, but we ensure it)
+                refreshSessionIfNeeded()
             } else {
                 // Check if we have a local session
                 val localUserId = dataStore.data.first()[USER_ID_KEY]
                 if (localUserId != null) {
                     // Try to refresh the session
-                    try {
-                        supabaseClient.auth.refreshCurrentSession()
-                        val refreshedUser = supabaseClient.auth.currentUserOrNull()
-                        if (refreshedUser != null) {
-                            val userId = refreshedUser.id.toString()
-                            saveSessionLocally(userId)
-                            _authState.value = AuthState.Authenticated(userId)
-                            Timber.d("Session refreshed: User ID = $userId")
-                        } else {
-                            clearSession()
-                            _authState.value = AuthState.Unauthenticated
-                        }
-                    } catch (e: Exception) {
-                        Timber.w(e, "Failed to refresh session")
+                    if (refreshSessionIfNeeded()) {
+                        // Session refreshed successfully
+                        return
+                    } else {
+                        // Refresh failed - clear session
                         clearSession()
                         _authState.value = AuthState.Unauthenticated
+                        Timber.w("Session refresh failed, user needs to sign in again")
                     }
                 } else {
                     _authState.value = AuthState.Unauthenticated
@@ -95,6 +89,65 @@ class AuthManager(
         } catch (e: Exception) {
             Timber.e(e, "Error loading session")
             _authState.value = AuthState.Unauthenticated
+        }
+    }
+    
+    /**
+     * Proactively refresh the session if the token is expired or about to expire.
+     * Returns true if session is valid (either already valid or successfully refreshed), false otherwise.
+     */
+    suspend fun refreshSessionIfNeeded(): Boolean {
+        return try {
+            if (supabaseClient == null) {
+                return false
+            }
+            
+            // Check if we have a current user
+            val user = supabaseClient.auth.currentUserOrNull()
+            if (user != null) {
+                // User exists, try to refresh to get new tokens
+                try {
+                    supabaseClient.auth.refreshCurrentSession()
+                    val refreshedUser = supabaseClient.auth.currentUserOrNull()
+                    if (refreshedUser != null) {
+                        val userId = refreshedUser.id.toString()
+                        saveSessionLocally(userId)
+                        if (_authState.value !is AuthState.Authenticated) {
+                            _authState.value = AuthState.Authenticated(userId)
+                        }
+                        Timber.d("Session refreshed proactively: User ID = $userId")
+                        return true
+                    }
+                } catch (e: Exception) {
+                    // Refresh failed - might be expired refresh token
+                    Timber.w(e, "Failed to refresh session - refresh token may be expired")
+                    return false
+                }
+            }
+            
+            // No user - try to refresh from stored session
+            val localUserId = dataStore.data.first()[USER_ID_KEY]
+            if (localUserId != null) {
+                try {
+                    supabaseClient.auth.refreshCurrentSession()
+                    val refreshedUser = supabaseClient.auth.currentUserOrNull()
+                    if (refreshedUser != null) {
+                        val userId = refreshedUser.id.toString()
+                        saveSessionLocally(userId)
+                        _authState.value = AuthState.Authenticated(userId)
+                        Timber.d("Session refreshed from stored session: User ID = $userId")
+                        return true
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to refresh stored session")
+                    return false
+                }
+            }
+            
+            false
+        } catch (e: Exception) {
+            Timber.e(e, "Error refreshing session")
+            false
         }
     }
     

@@ -201,7 +201,8 @@ fun ExportsScreen(
                             amountWithoutVatEur = invoice.amount_without_vat_eur,
                             vatAmountEur = invoice.vat_amount_eur,
                             vatNumber = invoice.vat_number,
-                            companyNumber = invoice.company_number
+                            companyNumber = invoice.company_number,
+                            invoiceType = invoice.invoice_type
                         )
                     }
                     val allInvoiceRecords = viewModel.getAllInvoicesForYear(selectedYear)
@@ -237,7 +238,8 @@ fun ExportsScreen(
                                     amountWithoutVatEur = invoice.amount_without_vat_eur,
                                     vatAmountEur = invoice.vat_amount_eur,
                                     vatNumber = invoice.vat_number,
-                                    companyNumber = invoice.company_number
+                                    companyNumber = invoice.company_number,
+                                    invoiceType = invoice.invoice_type
                                 )
                             }
                             exportDialogState = ExportDialogState(
