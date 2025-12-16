@@ -149,6 +149,7 @@ fun ReviewScreen(
     // Get own company details to exclude from extraction
     var ownCompanyNumber by remember { mutableStateOf<String?>(null) }
     var ownCompanyVatNumber by remember { mutableStateOf<String?>(null) }
+    var ownCompanyName by remember { mutableStateOf<String?>(null) }
     
     // Get repo from MainActivityViewModel to access company data
     val mainActivityViewModel: com.vitol.inv3.MainActivityViewModel = hiltViewModel()
@@ -160,11 +161,13 @@ fun ReviewScreen(
                 val ownCompany = repo.getCompanyById(activeCompanyId!!)
                 ownCompanyNumber = ownCompany?.company_number
                 ownCompanyVatNumber = ownCompany?.vat_number
-                Timber.d("Own company details - CompanyNumber: $ownCompanyNumber, VatNumber: $ownCompanyVatNumber")
+                ownCompanyName = ownCompany?.company_name
+                Timber.d("Own company details - CompanyNumber: $ownCompanyNumber, VatNumber: $ownCompanyVatNumber, CompanyName: $ownCompanyName")
             }
         } else {
             ownCompanyNumber = null
             ownCompanyVatNumber = null
+            ownCompanyName = null
         }
     }
     
@@ -289,6 +292,7 @@ fun ReviewScreen(
                             excludeCompanyId = activeCompanyId,
                             excludeOwnCompanyNumber = ownCompanyNumber, // Can be null, that's OK
                             excludeOwnVatNumber = ownCompanyVatNumber, // Can be null, that's OK
+                            excludeOwnCompanyName = ownCompanyName, // Can be null, that's OK
                             invoiceType = invoiceType, // Pass invoice type to OCR service
                             onDone = onDone,
                             onMethodUsed = { },
@@ -399,6 +403,7 @@ fun ReviewScreen(
             excludeCompanyId = activeCompanyId,
             excludeOwnCompanyNumber = ownCompanyNumber,
             excludeOwnVatNumber = ownCompanyVatNumber,
+            excludeOwnCompanyName = ownCompanyName,
             invoiceType = invoiceType, // Pass invoice type to OCR service
             onDone = { result ->
                 result.onSuccess { parsed ->
@@ -467,9 +472,16 @@ fun ReviewScreen(
                                     "Company_number" -> {
                                         val ownCompanyNum = ownCompanyNumber
                                         val trimmedValue = value.trim()
-                                        if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
-                                            newFields["Company_number"] = trimmedValue
-                                            Timber.d("processPageWithAzure - Setting Company_number: '$trimmedValue'")
+                                        // CRITICAL: Only set if value is not blank - don't overwrite with empty string
+                                        if (trimmedValue.isNotBlank()) {
+                                            if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
+                                                newFields["Company_number"] = trimmedValue
+                                                Timber.d("processPageWithAzure - Setting Company_number: '$trimmedValue'")
+                                            } else {
+                                                Timber.d("processPageWithAzure - Skipped own company number: '$trimmedValue'")
+                                            }
+                                        } else {
+                                            Timber.d("processPageWithAzure - Company_number value is blank, preserving existing value: '${newFields["Company_number"]}'")
                                         }
                                     }
                                 }
@@ -513,7 +525,15 @@ fun ReviewScreen(
     }
     
     // Process all pages when URIs change (handles both single and multi-page)
-    LaunchedEffect(allImageUris) {
+    LaunchedEffect(allImageUris, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId) {
+        // CRITICAL: If activeCompanyId is set, wait for ownCompanyNumber to be loaded before starting OCR
+        // This ensures the parser can properly exclude own company number
+        // If activeCompanyId is null, proceed immediately (no own company to exclude)
+        if (activeCompanyId != null && ownCompanyNumber == null) {
+            Timber.d("ReviewScreen (multi-page): Waiting for ownCompanyNumber to load before starting OCR (activeCompanyId: $activeCompanyId)")
+            return@LaunchedEffect
+        }
+        
         // Process any new URIs that haven't been processed yet
         val newUris = allImageUris.filter { it !in processedUris }
         if (newUris.isNotEmpty() && !isReanalyzing && !ocrTriggeredForUri) {
@@ -599,16 +619,23 @@ fun ReviewScreen(
     }
     
     // Start Azure Document Intelligence immediately (skip unreliable first local OCR pass)
-    // Only depend on imageUri - ownCompanyNumber/VatNumber can be null initially, we'll use current values when calling
+    // Wait for ownCompanyNumber to be loaded if activeCompanyId is set, so parser can exclude own company number
     // This LaunchedEffect handles single-page invoices for backward compatibility
-    LaunchedEffect(imageUri) {
+    LaunchedEffect(imageUri, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId) {
         // Skip if already processed by multi-page logic or if we have multiple pages
         if (allImageUris.size > 1 || imageUri in processedUris) {
             return@LaunchedEffect
         }
         
-        // Trigger OCR once when image is available
-        // Note: ownCompanyNumber and ownCompanyVatNumber may be null initially, but that's OK - we'll pass current values to exclude
+        // CRITICAL: If activeCompanyId is set, wait for ownCompanyNumber to be loaded before starting OCR
+        // This ensures the parser can properly exclude own company number
+        // If activeCompanyId is null, proceed immediately (no own company to exclude)
+        if (activeCompanyId != null && ownCompanyNumber == null) {
+            Timber.d("ReviewScreen: Waiting for ownCompanyNumber to load before starting OCR (activeCompanyId: $activeCompanyId)")
+            return@LaunchedEffect
+        }
+        
+        // Trigger OCR once when image is available and ownCompanyNumber is loaded (if needed)
         Timber.d("ReviewScreen LaunchedEffect triggered - imageUri: $imageUri, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, ocrTriggeredForUri: $ocrTriggeredForUri, isReanalyzing: $isReanalyzing")
         
         // Check if we have a cached result
@@ -728,6 +755,7 @@ fun ReviewScreen(
                 excludeCompanyId = activeCompanyId,
                 excludeOwnCompanyNumber = ownCompanyNumber,
                 excludeOwnVatNumber = ownCompanyVatNumber,
+                excludeOwnCompanyName = ownCompanyName,
                 invoiceType = invoiceType, // Pass invoice type to OCR service
                 onDone = { result ->
                     result.onSuccess { parsed ->
@@ -815,11 +843,16 @@ fun ReviewScreen(
                                         // Azure results have database lookup applied - ALWAYS use them (they ensure VAT/company number match)
                                         val ownCompanyNum = ownCompanyNumber // Store in local variable for smart cast
                                         val trimmedValue = value.trim()
-                                        if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
-                                            newFields["Company_number"] = trimmedValue
-                                            Timber.d("Azure - Setting Company_number from database: '$trimmedValue'")
+                                        // CRITICAL: Only set if value is not blank - don't overwrite with empty string
+                                        if (trimmedValue.isNotBlank()) {
+                                            if (ownCompanyNum == null || trimmedValue != ownCompanyNum.trim()) {
+                                                newFields["Company_number"] = trimmedValue
+                                                Timber.d("Azure - Setting Company_number from result: '$trimmedValue'")
+                                            } else {
+                                                Timber.d("Azure - Skipped own company number from result: $trimmedValue")
+                                            }
                                         } else {
-                                            Timber.d("Skipped own company number from Azure result: $trimmedValue")
+                                            Timber.d("Azure - Company_number value is blank, preserving existing value: '${newFields["Company_number"]}'")
                                         }
                                     }
                                 }
@@ -850,6 +883,7 @@ fun ReviewScreen(
                             excludeCompanyId = activeCompanyId,
                             excludeOwnCompanyNumber = ownCompanyNumber,
                             excludeOwnVatNumber = ownCompanyVatNumber,
+                            excludeOwnCompanyName = ownCompanyName,
                             onDone = { localResult ->
                                 localResult.onSuccess { parsed ->
                                 // Parse the text to populate all fields
@@ -1511,6 +1545,7 @@ fun ReviewScreen(
                                             excludeCompanyId = activeCompanyId,
                                             excludeOwnCompanyNumber = ownCompanyNumber,
                                             excludeOwnVatNumber = ownCompanyVatNumber,
+                                            excludeOwnCompanyName = ownCompanyName,
                                             invoiceType = invoiceType, // Pass invoice type to OCR service
                                             onDone = { result ->
                                                 result.onSuccess { parsed ->
@@ -1538,6 +1573,7 @@ fun ReviewScreen(
                                         excludeCompanyId = activeCompanyId,
                                         excludeOwnCompanyNumber = ownCompanyNumber,
                                         excludeOwnVatNumber = ownCompanyVatNumber,
+                                        excludeOwnCompanyName = ownCompanyName,
                                         invoiceType = invoiceType, // Pass invoice type to OCR service
                                         onDone = { result ->
                                             result.onSuccess { parsed ->
@@ -1942,8 +1978,9 @@ class ReviewViewModel @Inject constructor(
      * Second pass: Re-analyze with template knowledge after company is confirmed
      * @param excludeOwnCompanyNumber Own company number to exclude (partner's company only)
      * @param excludeOwnVatNumber Own company VAT number to exclude (partner's company only)
+     * @param invoiceType Invoice type: "S" for sales, "P" for purchase
      */
-    fun runOcrSecondPass(uri: Uri, lookupKey: String, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, onDone: (Result<String>) -> Unit) {
+    fun runOcrSecondPass(uri: Uri, lookupKey: String, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, invoiceType: String? = null, onDone: (Result<String>) -> Unit) {
         viewModelScope.launch {
             val result = recognizer.recognize(uri)
                 .map { blocks ->
@@ -1986,7 +2023,7 @@ class ReviewViewModel @Inject constructor(
                         } else {
                             Timber.d("Using keyword matching (no image size available)")
                         }
-                        InvoiceParser.parse(blocks.map { it.text }, excludeOwnCompanyNumber, excludeOwnVatNumber)
+                        InvoiceParser.parse(blocks.map { it.text }, excludeOwnCompanyNumber, excludeOwnVatNumber, invoiceType)
                     }
                     
                     parsed
@@ -2004,7 +2041,7 @@ class ReviewViewModel @Inject constructor(
         }
     }
     
-    fun runOcr(uri: Uri, excludeCompanyId: String? = null, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, onDone: (Result<String>) -> Unit) {
+    fun runOcr(uri: Uri, excludeCompanyId: String? = null, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, excludeOwnCompanyName: String? = null, invoiceType: String? = null, onDone: (Result<String>) -> Unit) {
         viewModelScope.launch {
             val result = recognizer.recognize(uri)
                 .map { blocks ->
@@ -2064,8 +2101,8 @@ class ReviewViewModel @Inject constructor(
                         } else {
                             Timber.d("Using keyword matching (no image size available)")
                         }
-                        Timber.d("Parsing ${lines.size} lines with InvoiceParser.parse")
-                        val parsedResult = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
+                        Timber.d("Parsing ${lines.size} lines with InvoiceParser.parse (invoice type: $invoiceType)")
+                        val parsedResult = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber, invoiceType)
                         Timber.d("Parsed result - InvoiceID: '${parsedResult.invoiceId}', Date: '${parsedResult.date}', " +
                                 "Company: '${parsedResult.companyName}', AmountNoVat: '${parsedResult.amountWithoutVatEur}', " +
                                 "VatAmount: '${parsedResult.vatAmountEur}', VatNumber: '${parsedResult.vatNumber}', " +
@@ -2076,51 +2113,100 @@ class ReviewViewModel @Inject constructor(
                     // Normalize VAT numbers (remove spaces) for consistent comparison
                     val normalizedParsedVat = parsed.vatNumber?.replace(" ", "")?.uppercase()
                     
+                    // CRITICAL: Filter own company name BEFORE database lookup using context-aware logic
+                    // This ensures we don't use own company name even if database lookup fails
+                    Timber.d("Local OCR - Before filtering - ExtractedName: '${parsed.companyName}', ExcludeOwnCompanyName: '$excludeOwnCompanyName', PartnerCompanyNumber: '${parsed.companyNumber}', PartnerVatNumber: '${parsed.vatNumber}'")
+                    val filteredCompanyName = filterCompanyNameSafely(
+                        extractedName = parsed.companyName,
+                        ownCompanyName = excludeOwnCompanyName,
+                        partnerCompanyNumber = parsed.companyNumber,
+                        partnerVatNumber = parsed.vatNumber,
+                        lines = lines
+                    )
+                    Timber.d("Local OCR - After filtering - FilteredCompanyName: '$filteredCompanyName'")
+                    val parsedWithFilteredName = parsed.copy(companyName = filteredCompanyName)
+                    
                     // ALWAYS look up company from database when VAT or company number is found
                     // This ensures we get the correct company name and validates VAT/company number match
                     // VAT number is more reliable - if we have VAT, ONLY use VAT for lookup (don't pass company number)
                     val lookupVatNumber = normalizedParsedVat?.takeIf { it.isNotBlank() }
                     val lookupCompanyNumber = if (lookupVatNumber == null) {
-                        parsed.companyNumber?.takeIf { it.isNotBlank() }
+                        parsedWithFilteredName.companyNumber?.takeIf { it.isNotBlank() }
                     } else {
                         null // Don't pass company number if we have VAT - VAT is more reliable
                     }
                     
                     val finalParsed = if (lookupCompanyNumber != null || lookupVatNumber != null) {
                         try {
-                            Timber.d("Local OCR - Looking up company in database - CompanyName: '${parsed.companyName}', CompanyNumber: '${parsed.companyNumber}', VatNumber: '${parsed.vatNumber}', NormalizedVatNumber: '$normalizedParsedVat', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber', ExcludingOwnCompany: '$excludeCompanyId'")
+                            Timber.d("Local OCR - Looking up company in database - CompanyName: '${parsedWithFilteredName.companyName}', CompanyNumber: '${parsedWithFilteredName.companyNumber}', VatNumber: '${parsedWithFilteredName.vatNumber}', NormalizedVatNumber: '$normalizedParsedVat', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber', ExcludingOwnCompany: '$excludeCompanyId'")
                             val companyFromDb = repo.findCompanyByNumberOrVat(lookupCompanyNumber, lookupVatNumber, excludeCompanyId = excludeCompanyId)
                             if (companyFromDb != null) {
                                 Timber.d("Local OCR - Found company in database: '${companyFromDb.company_name}', CompanyNumber: '${companyFromDb.company_number}', VatNumber: '${companyFromDb.vat_number}'")
-                                // CRITICAL: Always use BOTH VAT and company number from database to ensure they match
-                                // Never mix extracted values with database values - they must be a pair
                                 val dbVatNumber = companyFromDb.vat_number?.replace(" ", "")?.uppercase()
-                                val dbCompanyNumber = companyFromDb.company_number
-                                parsed.copy(
-                                    companyName = companyFromDb.company_name ?: parsed.companyName,
-                                    companyNumber = dbCompanyNumber, // Always use DB value
-                                    vatNumber = dbVatNumber // Always use DB value
-                                )
-                            } else {
-                                Timber.d("Local OCR - No company found in database for CompanyNumber: '$lookupCompanyNumber', VatNumber: '$lookupVatNumber'")
-                                // If company name is invalid and not found in DB, set to null so it can be filled manually
-                                if (isInvalidCompanyName(parsed.companyName)) {
-                                    Timber.d("Local OCR - Company name '${parsed.companyName}' is invalid, setting to null")
-                                    parsed.copy(
-                                        companyName = null,
-                                        vatNumber = normalizedParsedVat
+                                val dbCompanyNumber = companyFromDb.company_number?.takeIf { it.isNotBlank() }
+                                
+                                // CRITICAL: Verify this is NOT the own company by comparing VAT/company numbers
+                                val normalizedOwnVat = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
+                                val normalizedOwnCompanyNumber = excludeOwnCompanyNumber?.trim()
+                                val isOwnCompany = (normalizedOwnVat != null && dbVatNumber != null && dbVatNumber.equals(normalizedOwnVat, ignoreCase = true)) ||
+                                                   (normalizedOwnCompanyNumber != null && dbCompanyNumber != null && dbCompanyNumber == normalizedOwnCompanyNumber)
+                                
+                                if (isOwnCompany) {
+                                    Timber.w("Local OCR - Database lookup found own company! Skipping database values and preserving extracted values. DB VAT: '$dbVatNumber', Own VAT: '$normalizedOwnVat', DB CompanyNumber: '$dbCompanyNumber', Own CompanyNumber: '$normalizedOwnCompanyNumber'")
+                                    // Preserve extracted values - don't use own company's database values
+                                    // Company name already filtered above, so use filtered version
+                                    val preservedCompanyNumber = parsedWithFilteredName.companyNumber?.takeIf { it.isNotBlank() }
+                                    val preservedVatNumber = normalizedParsedVat?.takeIf { it.isNotBlank() }
+                                    parsedWithFilteredName.copy(
+                                        companyNumber = preservedCompanyNumber, // Keep extracted number
+                                        vatNumber = preservedVatNumber // Keep extracted VAT
                                     )
                                 } else {
-                                    parsed.copy(vatNumber = normalizedParsedVat)
+                                    // CRITICAL: Always use BOTH VAT and company number from database to ensure they match
+                                    // Never mix extracted values with database values - they must be a pair
+                                    // BUT: Only use DB values if they're not null/empty, otherwise preserve extracted values
+                                    // CRITICAL: Filter DB company name too (in case DB has own company name somehow)
+                                    val dbCompanyNameFiltered = filterCompanyNameSafely(
+                                        extractedName = companyFromDb.company_name,
+                                        ownCompanyName = excludeOwnCompanyName,
+                                        partnerCompanyNumber = dbCompanyNumber,
+                                        partnerVatNumber = dbVatNumber,
+                                        lines = lines
+                                    )
+                                    parsedWithFilteredName.copy(
+                                        companyName = dbCompanyNameFiltered ?: parsedWithFilteredName.companyName,
+                                        companyNumber = dbCompanyNumber ?: parsedWithFilteredName.companyNumber, // Use DB value if available, otherwise preserve extracted
+                                        vatNumber = dbVatNumber ?: parsedWithFilteredName.vatNumber // Use DB value if available, otherwise preserve extracted
+                                    )
+                                }
+                            } else {
+                                Timber.d("Local OCR - No company found in database for CompanyNumber: '$lookupCompanyNumber', VatNumber: '$lookupVatNumber'")
+                                // CRITICAL: Preserve extracted company number even if not in database
+                                // The company number was extracted from invoice and should be kept
+                                // Company name already filtered above
+                                val preservedCompanyNumber = parsedWithFilteredName.companyNumber?.takeIf { it.isNotBlank() }
+                                // If company name is invalid and not found in DB, set to null so it can be filled manually
+                                if (isInvalidCompanyName(parsedWithFilteredName.companyName)) {
+                                    Timber.d("Local OCR - Company name '${parsedWithFilteredName.companyName}' is invalid, setting to null")
+                                    parsedWithFilteredName.copy(
+                                        companyName = null,
+                                        vatNumber = normalizedParsedVat,
+                                        companyNumber = preservedCompanyNumber // Preserve extracted company number
+                                    )
+                                } else {
+                                    parsedWithFilteredName.copy(
+                                        vatNumber = normalizedParsedVat,
+                                        companyNumber = preservedCompanyNumber // Preserve extracted company number
+                                    )
                                 }
                             }
                         } catch (e: Exception) {
                             Timber.e(e, "Failed to look up company from database")
-                            parsed.copy(vatNumber = normalizedParsedVat)
+                            parsedWithFilteredName.copy(vatNumber = normalizedParsedVat)
                         }
                     } else {
                         Timber.d("Local OCR - No VAT or company number found, skipping database lookup")
-                        parsed
+                        parsedWithFilteredName
                     }
                     
                     // Format the result string
@@ -2150,6 +2236,7 @@ class ReviewViewModel @Inject constructor(
         excludeCompanyId: String? = null,
         excludeOwnCompanyNumber: String? = null,
         excludeOwnVatNumber: String? = null,
+        excludeOwnCompanyName: String? = null,
         invoiceType: String? = null, // P = Purchase, S = Sales
         onDone: (Result<String>) -> Unit, 
         onMethodUsed: ((String) -> Unit)? = null,
@@ -2188,6 +2275,19 @@ class ReviewViewModel @Inject constructor(
                     val normalizedFirstPassVat = firstPassVatNumber?.replace(" ", "")?.uppercase()
                     val normalizedParsedVat = parsed.vatNumber?.replace(" ", "")?.uppercase()
                     
+                    // CRITICAL: Filter own company name BEFORE database lookup using context-aware logic
+                    // This ensures we don't use own company name even if database lookup fails
+                    Timber.d("Azure - Before filtering - ExtractedName: '${parsed.companyName}', ExcludeOwnCompanyName: '$excludeOwnCompanyName', PartnerCompanyNumber: '${parsed.companyNumber}', PartnerVatNumber: '${parsed.vatNumber}'")
+                    val filteredCompanyName = filterCompanyNameSafely(
+                        extractedName = parsed.companyName,
+                        ownCompanyName = excludeOwnCompanyName,
+                        partnerCompanyNumber = parsed.companyNumber,
+                        partnerVatNumber = parsed.vatNumber,
+                        lines = parsed.lines
+                    )
+                    Timber.d("Azure - After filtering - FilteredCompanyName: '$filteredCompanyName'")
+                    val parsedWithFilteredName = parsed.copy(companyName = filteredCompanyName)
+                    
                     // VAT number is more reliable - prioritize it for lookup
                     // Use first pass values if available (more reliable), otherwise use Azure extracted values
                     // CRITICAL: If we have VAT number, ONLY use VAT for lookup (don't pass company number)
@@ -2197,7 +2297,7 @@ class ReviewViewModel @Inject constructor(
                     // Only use company number for lookup if we DON'T have VAT number
                     val lookupCompanyNumber = if (lookupVatNumber == null) {
                         firstPassCompanyNumber?.takeIf { it.isNotBlank() } 
-                            ?: parsed.companyNumber?.takeIf { it.isNotBlank() }
+                            ?: parsedWithFilteredName.companyNumber?.takeIf { it.isNotBlank() }
                     } else {
                         null // Don't pass company number if we have VAT - VAT is more reliable
                     }
@@ -2206,7 +2306,7 @@ class ReviewViewModel @Inject constructor(
                     // This ensures we get the correct company name and validates VAT/company number match
                     val finalParsed = if (lookupCompanyNumber != null || lookupVatNumber != null) {
                         try {
-                            Timber.d("Azure - Looking up company in database - FirstPassCompanyNumber: '$firstPassCompanyNumber', FirstPassVatNumber: '$firstPassVatNumber', ParsedCompanyNumber: '${parsed.companyNumber}', ParsedVatNumber: '${parsed.vatNumber}', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber', ExcludingOwnCompany: '$excludeCompanyId'")
+                            Timber.d("Azure - Looking up company in database - FirstPassCompanyNumber: '$firstPassCompanyNumber', FirstPassVatNumber: '$firstPassVatNumber', ParsedCompanyNumber: '${parsedWithFilteredName.companyNumber}', ParsedVatNumber: '${parsedWithFilteredName.vatNumber}', LookupCompanyNumber: '$lookupCompanyNumber', LookupVatNumber: '$lookupVatNumber', ExcludingOwnCompany: '$excludeCompanyId'")
                             val companyFromDb = repo.findCompanyByNumberOrVat(
                                 lookupCompanyNumber, 
                                 lookupVatNumber,
@@ -2214,15 +2314,44 @@ class ReviewViewModel @Inject constructor(
                             )
                             if (companyFromDb != null) {
                                 Timber.d("Azure - Found company in database: '${companyFromDb.company_name}', CompanyNumber: '${companyFromDb.company_number}', VatNumber: '${companyFromDb.vat_number}'")
-                                // CRITICAL: Always use BOTH VAT and company number from database to ensure they match
-                                // Never mix extracted values with database values - they must be a pair
                                 val dbVatNumber = companyFromDb.vat_number?.replace(" ", "")?.uppercase()
-                                val dbCompanyNumber = companyFromDb.company_number
-                                parsed.copy(
-                                    companyName = companyFromDb.company_name ?: parsed.companyName,
-                                    companyNumber = dbCompanyNumber, // Always use DB value
-                                    vatNumber = dbVatNumber // Always use DB value
-                                )
+                                val dbCompanyNumber = companyFromDb.company_number?.takeIf { it.isNotBlank() }
+                                Timber.d("Azure - DB company number: '$dbCompanyNumber', extracted company number: '${parsedWithFilteredName.companyNumber}'")
+                                
+                                // CRITICAL: Verify this is NOT the own company by comparing VAT/company numbers
+                                val normalizedOwnVat = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
+                                val normalizedOwnCompanyNumber = excludeOwnCompanyNumber?.trim()
+                                val isOwnCompany = (normalizedOwnVat != null && dbVatNumber != null && dbVatNumber.equals(normalizedOwnVat, ignoreCase = true)) ||
+                                                   (normalizedOwnCompanyNumber != null && dbCompanyNumber != null && dbCompanyNumber == normalizedOwnCompanyNumber)
+                                
+                                if (isOwnCompany) {
+                                    Timber.w("Azure - Database lookup found own company! Skipping database values and preserving extracted values. DB VAT: '$dbVatNumber', Own VAT: '$normalizedOwnVat', DB CompanyNumber: '$dbCompanyNumber', Own CompanyNumber: '$normalizedOwnCompanyNumber'")
+                                    // Preserve extracted values - don't use own company's database values
+                                    // Company name already filtered above, so use filtered version
+                                    val preservedCompanyNumber = parsedWithFilteredName.companyNumber?.takeIf { it.isNotBlank() }
+                                    val preservedVatNumber = normalizedParsedVat?.takeIf { it.isNotBlank() }
+                                    parsedWithFilteredName.copy(
+                                        companyNumber = preservedCompanyNumber, // Keep extracted number
+                                        vatNumber = preservedVatNumber // Keep extracted VAT
+                                    )
+                                } else {
+                                    // CRITICAL: Always use BOTH VAT and company number from database to ensure they match
+                                    // Never mix extracted values with database values - they must be a pair
+                                    // BUT: Only use DB values if they're not null/empty, otherwise preserve extracted values
+                                    // CRITICAL: Filter DB company name too (in case DB has own company name somehow)
+                                    val dbCompanyNameFiltered = filterCompanyNameSafely(
+                                        extractedName = companyFromDb.company_name,
+                                        ownCompanyName = excludeOwnCompanyName,
+                                        partnerCompanyNumber = dbCompanyNumber,
+                                        partnerVatNumber = dbVatNumber,
+                                        lines = parsed.lines
+                                    )
+                                    parsedWithFilteredName.copy(
+                                        companyName = dbCompanyNameFiltered ?: parsedWithFilteredName.companyName,
+                                        companyNumber = dbCompanyNumber ?: parsedWithFilteredName.companyNumber, // Use DB value if available, otherwise preserve extracted
+                                        vatNumber = dbVatNumber ?: parsedWithFilteredName.vatNumber // Use DB value if available, otherwise preserve extracted
+                                    )
+                                }
                             } else {
                                 Timber.d("Azure - No company found in database for CompanyNumber: '$lookupCompanyNumber', VatNumber: '$lookupVatNumber'")
                                 // If both VAT and company number are found but don't match any company, 
@@ -2230,25 +2359,34 @@ class ReviewViewModel @Inject constructor(
                                 // Keep the extracted company name if it's valid (contains UAB, MB, IĮ, AB, etc.)
                                 // Only set to null if it's invalid (like "SASKAITA", "PARDAVEJAS", etc.)
                                 val normalizedVat = lookupVatNumber ?: normalizedParsedVat
-                                if (isInvalidCompanyName(parsed.companyName)) {
-                                    Timber.d("Azure - Company name '${parsed.companyName}' is invalid, setting to null")
-                                    parsed.copy(
+                                // CRITICAL: Preserve extracted company number even if not in database
+                                // The company number was extracted from invoice and should be kept
+                                // Company name already filtered above
+                                val preservedCompanyNumber = parsedWithFilteredName.companyNumber?.takeIf { it.isNotBlank() }
+                                Timber.d("Azure - Preserving extracted company number: '$preservedCompanyNumber'")
+                                if (isInvalidCompanyName(parsedWithFilteredName.companyName)) {
+                                    Timber.d("Azure - Company name '${parsedWithFilteredName.companyName}' is invalid, setting to null")
+                                    parsedWithFilteredName.copy(
                                         companyName = null,
-                                        vatNumber = normalizedVat
+                                        vatNumber = normalizedVat,
+                                        companyNumber = preservedCompanyNumber // Preserve extracted company number
                                     )
                                 } else {
-                                    // Keep the extracted company name even if not in database
-                                    Timber.d("Azure - Keeping extracted company name '${parsed.companyName}' (not in database but valid)")
-                                    parsed.copy(vatNumber = normalizedVat)
+                                    // Keep the extracted company name even if not in database (already filtered above)
+                                    Timber.d("Azure - Keeping extracted company name '${parsedWithFilteredName.companyName}' (not in database but valid)")
+                                    parsedWithFilteredName.copy(
+                                        vatNumber = normalizedVat,
+                                        companyNumber = preservedCompanyNumber // Preserve extracted company number
+                                    )
                                 }
                             }
                         } catch (e: Exception) {
                             Timber.e(e, "Failed to look up company from database")
-                            parsed
+                            parsedWithFilteredName
                         }
                     } else {
                         Timber.d("Azure - No VAT or company number found, skipping database lookup")
-                        parsed
+                        parsedWithFilteredName
                     }
                     
                     // Format result
@@ -2269,7 +2407,7 @@ class ReviewViewModel @Inject constructor(
                     Timber.w("Azure Document Intelligence processing returned null, falling back to local OCR")
                     onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                     // Fallback to local OCR
-                    runOcr(uri, excludeCompanyId, excludeOwnCompanyNumber, excludeOwnVatNumber) { localResult ->
+                    runOcr(uri, excludeCompanyId, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType) { localResult ->
                         localResult.onSuccess { _ ->
                             Timber.d("Local OCR fallback successful, extracted fields")
                         }.onFailure { error ->
@@ -2283,7 +2421,7 @@ class ReviewViewModel @Inject constructor(
                 Timber.e(e, "Azure Document Intelligence processing failed with exception, falling back to local OCR")
                 onMethodUsed?.invoke("Local") // Notify that local OCR is being used
                 // Fallback to local OCR on error
-                runOcr(uri, excludeCompanyId, excludeOwnCompanyNumber, excludeOwnVatNumber) { localResult ->
+                runOcr(uri, excludeCompanyId, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType) { localResult ->
                     localResult.onSuccess { _ ->
                         Timber.d("Local OCR fallback successful after exception, extracted fields")
                     }.onFailure { error ->
@@ -2324,6 +2462,109 @@ class ReviewViewModel @Inject constructor(
                             lower.contains("sp") || lower.contains("oy")
         
         return !hasCompanyType
+    }
+    
+    /**
+     * Safely filter out own company name from extracted company name.
+     * Uses context-aware logic to avoid filtering partner's company name.
+     * 
+     * @param extractedName The company name extracted from invoice
+     * @param ownCompanyName The own company name to exclude
+     * @param partnerCompanyNumber Partner's company number (if found)
+     * @param partnerVatNumber Partner's VAT number (if found)
+     * @param lines All invoice text lines for context checking
+     * @return Filtered company name (null if it's own company name, otherwise original or filtered)
+     */
+    private fun filterCompanyNameSafely(
+        extractedName: String?,
+        ownCompanyName: String?,
+        partnerCompanyNumber: String?,
+        partnerVatNumber: String?,
+        lines: List<String>
+    ): String? {
+        Timber.d("filterCompanyNameSafely: Called with extractedName='$extractedName', ownCompanyName='$ownCompanyName', partnerCompanyNumber='$partnerCompanyNumber', partnerVatNumber='$partnerVatNumber'")
+        if (extractedName == null) {
+            Timber.d("filterCompanyNameSafely: extractedName is null, returning null")
+            return null
+        }
+        if (ownCompanyName == null) {
+            Timber.d("filterCompanyNameSafely: ownCompanyName is null, returning extractedName without filtering")
+            return extractedName // No own company to exclude
+        }
+        
+        // Normalize both names for comparison (remove quotes, normalize whitespace, case-insensitive)
+        val normalizedExtracted = extractedName.replace(Regex("[\"\"'']"), "").trim().lowercase()
+        val normalizedOwn = ownCompanyName.replace(Regex("[\"\"'']"), "").trim().lowercase()
+        val isExactMatch = normalizedExtracted == normalizedOwn
+        Timber.d("filterCompanyNameSafely: Comparing normalized names - extracted: '$normalizedExtracted' vs own: '$normalizedOwn' - isExactMatch: $isExactMatch")
+        if (isExactMatch) {
+            // Check if this name is near partner's numbers (might be partner's name that matches own)
+            if (partnerCompanyNumber != null || partnerVatNumber != null) {
+                val isNearPartnerNumbers = isCompanyNameNearPartnerNumbers(
+                    extractedName,
+                    partnerCompanyNumber,
+                    partnerVatNumber,
+                    lines
+                )
+                if (isNearPartnerNumbers) {
+                    // It's near partner's numbers, so it's likely partner's name (even if matches own)
+                    Timber.d("filterCompanyNameSafely: Keeping '$extractedName' - exact match with own company but near partner's numbers")
+                    return extractedName
+                }
+            }
+            // Exact match and not near partner numbers = own company name
+            Timber.d("filterCompanyNameSafely: Filtering out '$extractedName' - exact match with own company name and not near partner numbers")
+            return null
+        }
+        
+        // Not an exact match = partner's name (or different company)
+        Timber.d("filterCompanyNameSafely: Keeping '$extractedName' - not an exact match with own company name")
+        return extractedName
+    }
+    
+    /**
+     * Check if company name appears near partner's company number or VAT number.
+     * This helps distinguish between own company name (usually in header/footer) 
+     * and partner's company name (usually near partner's numbers).
+     */
+    private fun isCompanyNameNearPartnerNumbers(
+        companyName: String,
+        partnerCompanyNumber: String?,
+        partnerVatNumber: String?,
+        lines: List<String>
+    ): Boolean {
+        // Find line index of company name
+        var nameLineIndex: Int? = null
+        for (i in lines.indices) {
+            if (lines[i].contains(companyName, ignoreCase = true)) {
+                nameLineIndex = i
+                break
+            }
+        }
+        if (nameLineIndex == null) {
+            Timber.d("isCompanyNameNearPartnerNumbers: Company name '$companyName' not found in lines")
+            return false
+        }
+        
+        // Check if partner's numbers are within 5 lines (above or below)
+        val searchRange = maxOf(0, nameLineIndex - 5)..minOf(lines.size - 1, nameLineIndex + 5)
+        for (i in searchRange) {
+            val line = lines[i].lowercase()
+            if (partnerCompanyNumber != null && line.contains(partnerCompanyNumber)) {
+                Timber.d("isCompanyNameNearPartnerNumbers: Company name '$companyName' is near partner company number '$partnerCompanyNumber' (name on line $nameLineIndex, number on line $i)")
+                return true
+            }
+            if (partnerVatNumber != null) {
+                val normalizedVat = partnerVatNumber.replace(" ", "").lowercase()
+                if (line.contains(normalizedVat)) {
+                    Timber.d("isCompanyNameNearPartnerNumbers: Company name '$companyName' is near partner VAT number '$partnerVatNumber' (name on line $nameLineIndex, VAT on line $i)")
+                    return true
+                }
+            }
+        }
+        
+        Timber.d("isCompanyNameNearPartnerNumbers: Company name '$companyName' is NOT near partner numbers")
+        return false
     }
     
     /**

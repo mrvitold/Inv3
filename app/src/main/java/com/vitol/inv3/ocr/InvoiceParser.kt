@@ -75,8 +75,10 @@ object InvoiceParser {
      * Parse invoice using keyword matching (original method).
      * @param excludeOwnCompanyNumber Own company number to exclude (partner's company only)
      * @param excludeOwnVatNumber Own company VAT number to exclude (partner's company only)
+     * @param invoiceType Invoice type: "S" for sales, "P" for purchase. Used to prioritize buyer vs seller sections.
      */
-    fun parse(lines: List<String>, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null): ParsedInvoice {
+    fun parse(lines: List<String>, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, invoiceType: String? = null): ParsedInvoice {
+        Timber.d("InvoiceParser.parse starting with ${lines.size} lines, excludeOwnCompanyNumber: $excludeOwnCompanyNumber, excludeOwnVatNumber: $excludeOwnVatNumber")
         if (lines.isEmpty()) {
             Timber.w("InvoiceParser.parse called with empty lines list")
             return ParsedInvoice(lines = lines)
@@ -95,6 +97,274 @@ object InvoiceParser {
         var vatAmount: String? = null
         var vatNumber: String? = null
         var companyNumber: String? = null
+
+        // PRE-PASS 1: Extract VAT number FIRST (company numbers are usually near VAT numbers)
+        Timber.d("InvoiceParser: Pre-pass 1 - searching for VAT number")
+        var vatNumberLineIndex: Int? = null
+        for (i in lines.indices) {
+            val line = lines[i]
+            val extracted = FieldExtractors.tryExtractVatNumber(line, excludeOwnVatNumber)
+            if (extracted != null && !isIban(extracted)) {
+                if (excludeOwnVatNumber == null || !extracted.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                    vatNumber = extracted
+                    vatNumberLineIndex = i
+                    Timber.d("InvoiceParser: Pre-pass 1 found VAT number '$vatNumber' on line $i: $line")
+                    break
+                }
+            }
+        }
+        // Also try key-value extraction for VAT
+        if (vatNumber == null) {
+            for (i in lines.indices) {
+                val line = lines[i]
+                val key = KeywordMapping.normalizeKey(line)
+                if (key == "VAT_number") {
+                    val keyValue = takeKeyValue(line)
+                    if (keyValue != null && keyValue.uppercase().startsWith("LT")) {
+                        val normalizedVat = keyValue.uppercase()
+                        if (excludeOwnVatNumber == null || !normalizedVat.equals(excludeOwnVatNumber, ignoreCase = true)) {
+                            vatNumber = normalizedVat
+                            vatNumberLineIndex = i
+                            Timber.d("InvoiceParser: Pre-pass 1 found VAT number '$vatNumber' from key-value on line $i")
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        // PRE-PASS 2: Extract company number, PRIORITIZING ones right after "Įmonės kodas" text
+        // Company code usually goes just after "Įmonės kodas" text - this is the key insight!
+        Timber.d("InvoiceParser: Pre-pass 2 - searching for company number after 'Įmonės kodas' text")
+        val allCompanyNumbers = mutableListOf<Pair<String, Int>>() // (number, lineIndex)
+        val companyCodeKeywords = listOf("įmonės kodas", "imones kodas", "im. kodas", "company code", "company number", "company_number")
+        val buyerKeywords = listOf("pirkėjo", "pirkėjas", "buyer", "pirkėjo pavadinimas", "buyer name")
+        val sellerKeywords = listOf("pardavėjo", "pardavėjas", "seller", "pardavėjo pavadinimas", "seller name")
+        
+        // PRIORITY 0: Company number RIGHT AFTER "Įmonės kodas" text (highest priority!)
+        // Collect ALL company numbers found after "Įmonės kodas" with their section info
+        data class CompanyNumberWithSection(val number: String, val lineIndex: Int, val isBuyer: Boolean, val isSeller: Boolean)
+        val companyNumbersAfterKeyword = mutableListOf<CompanyNumberWithSection>()
+        
+        for (i in lines.indices) {
+            val line = lines[i]
+            val lineLower = line.lowercase()
+            
+            // Check if this line contains "Įmonės kodas" keyword
+            val hasCompanyCodeKeyword = companyCodeKeywords.any { keyword -> lineLower.contains(keyword) }
+            
+            if (hasCompanyCodeKeyword) {
+                // Extract company number from this line (right after the keyword)
+                val extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
+                if (extracted != null) {
+                    // Check if this is in buyer or seller section
+                    val searchRange = max(0, i - 10)..min(lines.size - 1, i + 2)
+                    val isInBuyerSection = searchRange.any { lineIdx ->
+                        val searchLineLower = lines[lineIdx].lowercase()
+                        buyerKeywords.any { keyword -> searchLineLower.contains(keyword) }
+                    }
+                    val isInSellerSection = searchRange.any { lineIdx ->
+                        val searchLineLower = lines[lineIdx].lowercase()
+                        sellerKeywords.any { keyword -> searchLineLower.contains(keyword) }
+                    }
+                    
+                    companyNumbersAfterKeyword.add(
+                        CompanyNumberWithSection(extracted, i, isInBuyerSection, isInSellerSection)
+                    )
+                    val section = when {
+                        isInBuyerSection && !isInSellerSection -> "buyer"
+                        isInSellerSection && !isInBuyerSection -> "seller"
+                        else -> "unknown"
+                    }
+                    Timber.d("InvoiceParser: Pre-pass 2 found $section company number '$extracted' right after 'Įmonės kodas' on line $i")
+                }
+            }
+        }
+        
+        // Determine priority based on invoice type:
+        // - Sales (S): prioritize buyer section (we want buyer's company number)
+        // - Purchase (P): prioritize seller section (we want seller's company number)
+        val isSalesInvoice = invoiceType?.uppercase() == "S"
+        val isPurchaseInvoice = invoiceType?.uppercase() == "P"
+        
+        // Select the best company number from those found after "Įmonės kodas"
+        var companyNumberAfterKeyword: Pair<String, Int>? = null
+        var isBuyerSection = false
+        
+        if (companyNumbersAfterKeyword.isNotEmpty()) {
+            // Filter out own company number - we want the OTHER company's number (partner's)
+            // It doesn't matter if it's buyer or seller - we just need the partner's company number
+            val partnerCompanyNumbers = companyNumbersAfterKeyword.filter { 
+                excludeOwnCompanyNumber == null || it.number != excludeOwnCompanyNumber.trim() 
+            }
+            
+            val selected = if (excludeOwnCompanyNumber == null && companyNumbersAfterKeyword.size >= 2) {
+                // CRITICAL: If excludeOwnCompanyNumber is null but we have 2+ company numbers,
+                // we need to select the OTHER one (not own). Since we can't know which is own,
+                // use heuristic: prefer the one that appears LATER (buyer usually comes after seller)
+                // This ensures we get the partner's company number even when own company number isn't loaded yet
+                Timber.d("InvoiceParser: excludeOwnCompanyNumber is null but found ${companyNumbersAfterKeyword.size} company numbers, selecting the LATER one (partner's)")
+                companyNumbersAfterKeyword.maxByOrNull { it.lineIndex }
+            } else if (partnerCompanyNumbers.isNotEmpty()) {
+                // We have partner company numbers (after filtering) - select one (prefer known sections, but any partner number is fine)
+                partnerCompanyNumbers.firstOrNull { it.isBuyer && !it.isSeller }
+                    ?: partnerCompanyNumbers.firstOrNull { it.isSeller && !it.isBuyer }
+                    ?: partnerCompanyNumbers.firstOrNull { it.isBuyer || it.isSeller }
+                    ?: partnerCompanyNumbers.first() // Just take the first partner company number
+            } else {
+                // All are own company numbers - this shouldn't happen, but fallback to first
+                Timber.w("InvoiceParser: All company numbers after 'Įmonės kodas' match own company number!")
+                companyNumbersAfterKeyword.first()
+            }
+            
+            if (selected != null) {
+                companyNumberAfterKeyword = Pair(selected.number, selected.lineIndex)
+                isBuyerSection = selected.isBuyer
+                val sectionDesc = when {
+                    selected.isBuyer && !selected.isSeller -> "buyer"
+                    selected.isSeller && !selected.isBuyer -> "seller"
+                    else -> "unknown"
+                }
+                val isOwnCompany = excludeOwnCompanyNumber != null && selected.number == excludeOwnCompanyNumber.trim()
+                Timber.d("InvoiceParser: Pre-pass 2 selected $sectionDesc company number '${selected.number}' from 'Įmonės kodas' on line ${selected.lineIndex} (invoice type: ${invoiceType ?: "unknown"}, isOwn: $isOwnCompany)")
+            }
+        }
+        
+        // Also collect all company numbers for fallback
+        for (i in lines.indices) {
+            val line = lines[i]
+            val extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
+            if (extracted != null) {
+                allCompanyNumbers.add(Pair(extracted, i))
+                Timber.d("InvoiceParser: Pre-pass 2 found company number candidate '$extracted' on line $i: $line")
+            }
+        }
+        
+        if (allCompanyNumbers.isNotEmpty() || companyNumberAfterKeyword != null) {
+            // Filter out own company number
+            val filteredCandidates = allCompanyNumbers.filter { (num, _) ->
+                if (excludeOwnCompanyNumber != null && num == excludeOwnCompanyNumber.trim()) {
+                    Timber.d("InvoiceParser: Pre-pass 2 excluding own company number '$num'")
+                    false
+                } else {
+                    true
+                }
+            }
+            
+            val candidatesToUse = if (filteredCandidates.isEmpty()) {
+                Timber.d("InvoiceParser: All candidates were own company number, using original list")
+                allCompanyNumbers
+            } else {
+                filteredCandidates
+            }
+            
+            // Determine priority based on invoice type:
+            // - Sales (S): prioritize buyer section (we want buyer's company number)
+            // - Purchase (P): prioritize seller section (we want seller's company number)
+            val isSalesInvoice = invoiceType?.uppercase() == "S"
+            val isPurchaseInvoice = invoiceType?.uppercase() == "P"
+            
+            // PRIORITY 1: Company number right after "Įmonės kodas" based on invoice type
+            if (companyNumberAfterKeyword != null) {
+                val (num, idx) = companyNumberAfterKeyword
+                val shouldUse = when {
+                    isSalesInvoice && isBuyerSection -> true // Sales: want buyer's company number
+                    isPurchaseInvoice && !isBuyerSection -> true // Purchase: want seller's company number
+                    !isSalesInvoice && !isPurchaseInvoice -> isBuyerSection // Unknown type: prefer buyer (default)
+                    else -> false
+                }
+                
+                if (shouldUse && (excludeOwnCompanyNumber == null || num != excludeOwnCompanyNumber.trim())) {
+                    companyNumber = num
+                    val section = if (isBuyerSection) "buyer" else "seller"
+                    Timber.d("InvoiceParser: Pre-pass 2 selected $section company number '$num' from 'Įmonės kodas' on line $idx (invoice type: ${invoiceType ?: "unknown"})")
+                }
+            }
+            
+            // PRIORITY 2: Company number right after "Įmonės kodas" in opposite section (fallback)
+            if (companyNumber == null && companyNumberAfterKeyword != null) {
+                val (num, idx) = companyNumberAfterKeyword
+                val shouldUse = when {
+                    isSalesInvoice && !isBuyerSection -> false // Sales: don't use seller's
+                    isPurchaseInvoice && isBuyerSection -> false // Purchase: don't use buyer's
+                    else -> true // Unknown type or opposite section: use as fallback
+                }
+                
+                if (shouldUse && (excludeOwnCompanyNumber == null || num != excludeOwnCompanyNumber.trim())) {
+                    companyNumber = num
+                    val section = if (isBuyerSection) "buyer" else "seller"
+                    Timber.d("InvoiceParser: Pre-pass 2 selected $section company number '$num' from 'Įmonės kodas' on line $idx (fallback, invoice type: ${invoiceType ?: "unknown"})")
+                }
+            }
+            
+            // PRIORITY 3: Company number near buyer/seller keywords based on invoice type
+            if (companyNumber == null) {
+                val prioritized = if (isSalesInvoice) {
+                    // Sales: prioritize buyer keywords
+                    candidatesToUse.firstOrNull { (num, idx) ->
+                        val searchRange = max(0, idx - 5)..min(lines.size - 1, idx + 2)
+                        searchRange.any { lineIdx ->
+                            val lineLower = lines[lineIdx].lowercase()
+                            buyerKeywords.any { keyword -> lineLower.contains(keyword) }
+                        }
+                    } ?: candidatesToUse.firstOrNull { (num, idx) ->
+                        val searchRange = max(0, idx - 5)..min(lines.size - 1, idx + 2)
+                        searchRange.any { lineIdx ->
+                            val lineLower = lines[lineIdx].lowercase()
+                            sellerKeywords.any { keyword -> lineLower.contains(keyword) }
+                        }
+                    }
+                } else if (isPurchaseInvoice) {
+                    // Purchase: prioritize seller keywords
+                    candidatesToUse.firstOrNull { (num, idx) ->
+                        val searchRange = max(0, idx - 5)..min(lines.size - 1, idx + 2)
+                        searchRange.any { lineIdx ->
+                            val lineLower = lines[lineIdx].lowercase()
+                            sellerKeywords.any { keyword -> lineLower.contains(keyword) }
+                        }
+                    } ?: candidatesToUse.firstOrNull { (num, idx) ->
+                        val searchRange = max(0, idx - 5)..min(lines.size - 1, idx + 2)
+                        searchRange.any { lineIdx ->
+                            val lineLower = lines[lineIdx].lowercase()
+                            buyerKeywords.any { keyword -> lineLower.contains(keyword) }
+                        }
+                    }
+                } else {
+                    // Unknown type: prioritize buyer keywords
+                    candidatesToUse.firstOrNull { (num, idx) ->
+                        val searchRange = max(0, idx - 5)..min(lines.size - 1, idx + 2)
+                        searchRange.any { lineIdx ->
+                            val lineLower = lines[lineIdx].lowercase()
+                            buyerKeywords.any { keyword -> lineLower.contains(keyword) }
+                        }
+                    } ?: candidatesToUse.firstOrNull { (num, idx) ->
+                        val searchRange = max(0, idx - 5)..min(lines.size - 1, idx + 2)
+                        searchRange.any { lineIdx ->
+                            val lineLower = lines[lineIdx].lowercase()
+                            sellerKeywords.any { keyword -> lineLower.contains(keyword) }
+                        }
+                    }
+                }
+                companyNumber = prioritized?.first
+                if (companyNumber != null) {
+                    Timber.d("InvoiceParser: Pre-pass 2 selected company number '$companyNumber' near keywords (invoice type: ${invoiceType ?: "unknown"})")
+                }
+            }
+            
+            // PRIORITY 5: First valid company number (excluding own company number)
+            if (companyNumber == null) {
+                companyNumber = candidatesToUse.firstOrNull { (num, _) -> 
+                    excludeOwnCompanyNumber == null || num != excludeOwnCompanyNumber.trim() 
+                }?.first
+                ?: candidatesToUse.firstOrNull()?.first // Fallback to first if all are own company
+                
+                if (companyNumber != null) {
+                    Timber.d("InvoiceParser: Pre-pass 2 selected first valid company number '$companyNumber'")
+                }
+            }
+            
+            Timber.d("InvoiceParser: Pre-pass 2 final selection: '$companyNumber' from ${allCompanyNumbers.size} candidates")
+        }
 
         // First pass: keyword matching
         lines.forEachIndexed { index, rawLine ->
@@ -173,9 +443,48 @@ object InvoiceParser {
                         }
                     }
                 }
-                "Company_number" -> if (companyNumber == null) {
-                    // Pass VAT number and own company number to exclude them from company number extraction
-                    companyNumber = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
+                "Company_number" -> {
+                    // Always try to extract, even if we found one in pre-pass (keyword match might be more accurate)
+                    val extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
+                    if (extracted != null) {
+                        companyNumber = extracted
+                        Timber.d("InvoiceParser: First pass found company number '$extracted' from keyword match on line: $line")
+                    }
+                }
+            }
+        }
+        
+        // POST-PASS: If VAT number was found in first pass but company number is still null,
+        // search for company numbers near the VAT number location
+        val currentVatNumber = vatNumber // Store in local val for smart cast
+        if (currentVatNumber != null && companyNumber == null) {
+            Timber.d("InvoiceParser: Post-pass - VAT number found but company number is null, searching near VAT location")
+            // Find VAT number location in lines
+            var vatLocation: Int? = null
+            for (i in lines.indices) {
+                val line = lines[i]
+                if (line.contains(currentVatNumber, ignoreCase = true)) {
+                    vatLocation = i
+                    Timber.d("InvoiceParser: Found VAT number '$currentVatNumber' on line $i")
+                    break
+                }
+            }
+            
+            // Search for company numbers within 5 lines of VAT number
+            if (vatLocation != null) {
+                val searchStart = max(0, vatLocation - 5)
+                val searchEnd = min(lines.size - 1, vatLocation + 5)
+                Timber.d("InvoiceParser: Searching for company number near VAT (lines $searchStart-$searchEnd)")
+                
+                for (i in searchStart..searchEnd) {
+                    val line = lines[i]
+                    val extracted = FieldExtractors.tryExtractCompanyNumber(line, currentVatNumber, excludeOwnCompanyNumber)
+                    if (extracted != null) {
+                        companyNumber = extracted
+                        val distance = kotlin.math.abs(i - vatLocation)
+                        Timber.d("InvoiceParser: Post-pass found company number '$extracted' on line $i (distance from VAT: $distance lines)")
+                        break
+                    }
                 }
             }
         }
@@ -256,19 +565,166 @@ object InvoiceParser {
         }
         
         // Second pass: Company number - ensure it's different from VAT number and own company number
-        if (companyNumber == null || companyNumber == vatNumber?.removePrefix("LT")?.removePrefix("lt")) {
+        // Always try to extract company number in second pass, even if we found something in first pass
+        // (first pass might have found own company number)
+        if (companyNumber == null || companyNumber == vatNumber?.removePrefix("LT")?.removePrefix("lt") || companyNumber == excludeOwnCompanyNumber) {
             // Look for company number that's different from VAT number and own company number
+            // Priority 1: Direct context with Lithuanian keywords
+            val companyCodeKeywords = listOf(
+                "imones kodas", "imoneskodas", "imones kodas:", "imoneskodas:",
+                "im. kodas", "im.kodas", "im. kodas:", "im.kodas:",
+                "registracijos kodas", "registracijoskodas", "registracijos kodas:",
+                "registracijos numeris", "registracijosnumeris", "registracijos numeris:",
+                "imonenes registracijos numeris", "imonenesregistracijosnumeris",
+                "pirkėjo", "pardavėjo", "buyer", "seller", "customer", "vendor" // Also check buyer/seller sections
+            )
+            
             for (i in lines.indices) {
                 val line = lines[i]
                 val l = line.lowercase()
-                val hasCompanyContext = l.contains("imones kodas") || l.contains("imoneskodas") || 
-                                       l.contains("registracijos kodas") || l.contains("registracijos numeris")
+                val hasCompanyContext = companyCodeKeywords.any { keyword -> l.contains(keyword) }
+                
                 if (hasCompanyContext) {
+                    // Try to extract from same line
+                    var extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
+                    if (extracted != null) {
+                        companyNumber = extracted
+                        Timber.d("Found company number with context on same line: $extracted")
+                        break
+                    }
+                    
+                    // Try next 3 lines (company code often appears after label, sometimes with spacing)
+                    for (offset in 1..3) {
+                        if (i + offset < lines.size) {
+                            val nextLine = lines[i + offset]
+                            extracted = FieldExtractors.tryExtractCompanyNumber(nextLine, vatNumber, excludeOwnCompanyNumber)
+                            if (extracted != null) {
+                                companyNumber = extracted
+                                Timber.d("Found company number with context on line ${i + offset}: $extracted")
+                                break
+                            }
+                        }
+                    }
+                    if (companyNumber != null) break
+                }
+            }
+            
+            // Priority 2: If still not found, try key-value extraction (e.g., "Įmonės kodas: 303309250")
+            if (companyNumber == null) {
+                for (i in lines.indices) {
+                    val line = lines[i]
+                    val l = line.lowercase()
+                    if (companyCodeKeywords.any { keyword -> l.contains(keyword) }) {
+                        val colonIdx = line.indexOf(':')
+                        if (colonIdx > 0 && colonIdx + 1 < line.length) {
+                            val value = line.substring(colonIdx + 1).trim()
+                            val extracted = FieldExtractors.tryExtractCompanyNumber(value, vatNumber, excludeOwnCompanyNumber)
+                            if (extracted != null) {
+                                companyNumber = extracted
+                                Timber.d("Found company number from key-value: $extracted")
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Priority 3: Fallback - search all lines for company numbers (without keyword requirement)
+            // This helps when company number is not near keywords or keywords are misspelled
+            // Use less strict filtering for fallback since we're searching more broadly
+            if (companyNumber == null) {
+                Timber.d("Company number still null, trying fallback extraction from all lines")
+                for (i in lines.indices) {
+                    val line = lines[i]
+                    // Skip lines that are clearly not relevant (too short, just labels, etc.)
+                    val l = line.lowercase().trim()
+                    if (l.length < 5 || l.matches(Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer)$", RegexOption.IGNORE_CASE))) {
+                        continue
+                    }
+                    
+                    // Try extraction with less strict filtering
                     val extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
                     if (extracted != null) {
                         companyNumber = extracted
-                        Timber.d("Found company number with context: $extracted")
+                        Timber.d("Found company number in fallback search on line $i: $extracted")
                         break
+                    }
+                }
+            }
+            
+            // Priority 4: Last resort - extract from any line that contains a valid pattern
+            // Even more permissive - only exclude obvious false positives
+            if (companyNumber == null) {
+                Timber.d("Company number still null, trying last resort extraction")
+                val allMatches = mutableListOf<Pair<String, String>>() // (number, line)
+                
+                for (i in lines.indices) {
+                    val line = lines[i]
+                    // Find all potential company numbers in the line
+                    val matches = Regex("\\b((?:[1-3][0-9]{8})|(?:[0-9]{6}))\\b").findAll(line)
+                    for (match in matches) {
+                        val candidate = match.groupValues.getOrNull(1) ?: continue
+                        
+                        // Basic validation - must match strict pattern
+                        if (!candidate.matches(Regex("^(([1-3][0-9]{8})|([0-9]{6}))$"))) {
+                            continue
+                        }
+                        
+                        // Exclude if it's the VAT number digits
+                        val vatDigits = vatNumber?.removePrefix("LT")?.removePrefix("lt")
+                        if (vatDigits != null && candidate == vatDigits) {
+                            continue
+                        }
+                        
+                        // Exclude if it's own company number
+                        if (excludeOwnCompanyNumber != null && candidate == excludeOwnCompanyNumber.trim()) {
+                            continue
+                        }
+                        
+                        // Exclude if it's clearly part of IBAN (starts with LT and candidate follows)
+                        if (line.contains("LT$candidate", ignoreCase = true)) {
+                            continue
+                        }
+                        
+                        // Exclude if it's clearly an invoice number (near "nr", "serija", etc.)
+                        val lineLower = line.lowercase()
+                        val matchStart = match.range.first
+                        val contextBefore = if (matchStart > 0) lineLower.substring(maxOf(0, matchStart - 15), matchStart) else ""
+                        if (contextBefore.contains(Regex("(?:nr|numeris|serija)\\s*$"))) {
+                            continue
+                        }
+                        
+                        // Exclude if it's clearly an amount (has decimal point nearby)
+                        val contextAfter = if (match.range.last < line.length - 1) line.substring(match.range.last + 1, minOf(line.length, match.range.last + 3)) else ""
+                        if (contextAfter.startsWith(",") || contextAfter.startsWith(".")) {
+                            continue
+                        }
+                        
+                        // This looks like a valid company number
+                        allMatches.add(Pair(candidate, line))
+                    }
+                }
+                
+                // If we found matches, prefer ones that are near company-related keywords
+                if (allMatches.isNotEmpty()) {
+                    val companyKeywords = listOf("imones", "kodas", "registracijos", "pirkėjo", "pardavėjo", "buyer", "seller", "customer", "vendor")
+                    
+                    // First try to find one near company keywords
+                    var found = false
+                    for ((number, line) in allMatches) {
+                        val lineLower = line.lowercase()
+                        if (companyKeywords.any { keyword -> lineLower.contains(keyword) }) {
+                            companyNumber = number
+                            Timber.d("Found company number in last resort search (near keywords): $number")
+                            found = true
+                            break
+                        }
+                    }
+                    
+                    // If none found near keywords, use the first one (better than nothing)
+                    if (!found && allMatches.isNotEmpty()) {
+                        companyNumber = allMatches.first().first
+                        Timber.d("Found company number in last resort search (first match): $companyNumber")
                     }
                 }
             }
@@ -497,6 +953,8 @@ object InvoiceParser {
             }
         }
 
+        Timber.d("InvoiceParser.parse completed - InvoiceID: '$invoiceId', Date: '$date', CompanyName: '$finalCompanyName', " +
+                "AmountNoVat: '$amountNoVat', VatAmount: '$vatAmount', VatNumber: '$vatNumber', CompanyNumber: '$companyNumber'")
         return ParsedInvoice(
             invoiceId = invoiceId,
             date = date,
@@ -949,37 +1407,73 @@ object InvoiceParser {
     }
     
     fun extractCompanyNameAdvanced(lines: List<String>, companyNumber: String?, vatNumber: String?): String? {
-        // Strategy 1: Use VAT/company number to find company name (look backwards)
+        // Strategy 1: Use VAT/company number to find company name ABOVE it (highest priority!)
+        // Company name usually appears ABOVE company number and VAT number
         if (companyNumber != null || vatNumber != null) {
             val searchNumber = companyNumber ?: vatNumber
+            var numberLineIndex: Int? = null
+            
+            // Find the line index where company number or VAT number appears
             for (i in lines.indices) {
                 val line = lines[i]
                 val l = line.lowercase().trim()
                 if (searchNumber != null && l.contains(searchNumber)) {
-                    val isInSellerSection = i < lines.size / 2 || 
-                                           (i > 0 && (lines[i-1].lowercase().contains("pardavejas") ||
-                                                     (i > 1 && lines[i-2].lowercase().contains("pardavejas"))))
-                    if (isInSellerSection) {
-                        for (j in 1..10) {
-                            if (i - j >= 0) {
-                                val candidateLine = lines[i - j].trim()
-                                val candidateLower = candidateLine.lowercase()
-                                if (candidateLower == "pardavejas" || candidateLower.contains("pardavejas")) {
-                                    for (k in 1..3) {
-                                        if (i - j + k < lines.size && i - j + k != i) {
-                                            val nameLine = lines[i - j + k].trim()
-                                            val nameLower = nameLine.lowercase()
-                                            if (isValidCompanyNameLine(nameLine, nameLower)) {
-                                                val cleaned = cleanCompanyName(nameLine)
-                                                if (cleaned != null) return cleaned
-                                            }
-                                        }
-                                    }
-                                }
-                                if (isValidCompanyNameLine(candidateLine, candidateLower)) {
-                                    val cleaned = cleanCompanyName(candidateLine)
-                                    if (cleaned != null) return cleaned
-                                }
+                    numberLineIndex = i
+                    Timber.d("extractCompanyNameAdvanced: Found company/VAT number '$searchNumber' on line $i, searching ABOVE for company name")
+                    break
+                }
+            }
+            
+            // If found, look backwards (upwards) for company name
+            if (numberLineIndex != null) {
+                // Search up to 8 lines above the company/VAT number
+                // Prioritize lines closer to the number (company name is usually 1-3 lines above)
+                for (offset in 1..8) {
+                    val candidateIndex = numberLineIndex!! - offset
+                    if (candidateIndex >= 0) {
+                        val candidateLine = lines[candidateIndex].trim()
+                        val candidateLower = candidateLine.lowercase()
+                        
+                        // Skip labels
+                        val labelPattern = Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier|imone|kompanija|bendrove|company)$", RegexOption.IGNORE_CASE)
+                        if (candidateLower.matches(labelPattern)) {
+                            continue
+                        }
+                        
+                        // Check if this line has a company type prefix (UAB, MB, AB, etc.)
+                        val hasCompanyPrefix = candidateLower.contains("uab") || candidateLower.contains("ab") || 
+                                             candidateLower.contains("mb") || candidateLower.contains("iį") ||
+                                             candidateLower.contains("ltd") || candidateLower.contains("oy") || 
+                                             candidateLower.contains("as") || candidateLower.contains("sp")
+                        
+                        if (hasCompanyPrefix && isValidCompanyNameLine(candidateLine, candidateLower)) {
+                            val cleaned = cleanCompanyName(candidateLine)
+                            if (cleaned != null) {
+                                Timber.d("extractCompanyNameAdvanced: Found company name '$cleaned' $offset line(s) ABOVE company/VAT number")
+                                return cleaned
+                            }
+                        }
+                    }
+                }
+                
+                // Fallback: Look for any valid company name above (even without explicit prefix check)
+                for (offset in 1..8) {
+                    val candidateIndex = numberLineIndex!! - offset
+                    if (candidateIndex >= 0) {
+                        val candidateLine = lines[candidateIndex].trim()
+                        val candidateLower = candidateLine.lowercase()
+                        
+                        // Skip labels
+                        val labelPattern = Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier|imone|kompanija|bendrove|company)$", RegexOption.IGNORE_CASE)
+                        if (candidateLower.matches(labelPattern)) {
+                            continue
+                        }
+                        
+                        if (isValidCompanyNameLine(candidateLine, candidateLower)) {
+                            val cleaned = cleanCompanyName(candidateLine)
+                            if (cleaned != null) {
+                                Timber.d("extractCompanyNameAdvanced: Found company name '$cleaned' $offset line(s) ABOVE company/VAT number (fallback)")
+                                return cleaned
                             }
                         }
                     }
@@ -987,9 +1481,62 @@ object InvoiceParser {
             }
         }
         
-        // Strategy 2: Find "PARDAVEJAS" (Seller) or "PIRKĖJAS" (Buyer) section
-        // For purchase invoices: look for seller/vendor (exclude own company)
-        // For sales invoices: look for buyer/customer (exclude own company)
+        // Strategy 2: Find company name ABOVE both company number AND VAT number (if both found)
+        // This is more reliable - company name appears above both identifiers
+        if (companyNumber != null && vatNumber != null) {
+            var companyNumberLineIndex: Int? = null
+            var vatNumberLineIndex: Int? = null
+            
+            // Find line indices for both
+            for (i in lines.indices) {
+                val line = lines[i]
+                val l = line.lowercase().trim()
+                if (l.contains(companyNumber) && companyNumberLineIndex == null) {
+                    companyNumberLineIndex = i
+                }
+                if (l.contains(vatNumber) && vatNumberLineIndex == null) {
+                    vatNumberLineIndex = i
+                }
+            }
+            
+            // If both found, look for company name above the EARLIER one (closer to top)
+            if (companyNumberLineIndex != null && vatNumberLineIndex != null) {
+                val earlierIndex = minOf(companyNumberLineIndex, vatNumberLineIndex)
+                Timber.d("extractCompanyNameAdvanced: Found both company number (line $companyNumberLineIndex) and VAT number (line $vatNumberLineIndex), searching ABOVE line $earlierIndex")
+                
+                // Search up to 8 lines above
+                for (offset in 1..8) {
+                    val candidateIndex = earlierIndex - offset
+                    if (candidateIndex >= 0) {
+                        val candidateLine = lines[candidateIndex].trim()
+                        val candidateLower = candidateLine.lowercase()
+                        
+                        // Skip labels
+                        val labelPattern = Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier|imone|kompanija|bendrove|company)$", RegexOption.IGNORE_CASE)
+                        if (candidateLower.matches(labelPattern)) {
+                            continue
+                        }
+                        
+                        // Prioritize lines with company type prefix
+                        val hasCompanyPrefix = candidateLower.contains("uab") || candidateLower.contains("ab") || 
+                                             candidateLower.contains("mb") || candidateLower.contains("iį") ||
+                                             candidateLower.contains("ltd") || candidateLower.contains("oy") || 
+                                             candidateLower.contains("as") || candidateLower.contains("sp")
+                        
+                        if (hasCompanyPrefix && isValidCompanyNameLine(candidateLine, candidateLower)) {
+                            val cleaned = cleanCompanyName(candidateLine)
+                            if (cleaned != null) {
+                                Timber.d("extractCompanyNameAdvanced: Found company name '$cleaned' $offset line(s) ABOVE both company/VAT numbers")
+                                return cleaned
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Strategy 3: Find "PARDAVEJAS" (Seller) or "PIRKĖJAS" (Buyer) section
+        // Look for company name AFTER the label, but prioritize if it appears BEFORE company/VAT number
         val labelKeywords = listOf("pardavejas", "tiekejas", "gavejas", "pirkėjas", "pirkėjo")
         for (i in lines.indices) {
             val line = lines[i]
@@ -999,7 +1546,17 @@ object InvoiceParser {
                 l == keyword || (l.contains(keyword) && l.length < 20)
             }
             if (isLabel) {
-                // Look for company name in next lines
+                // Check if company/VAT number appears after this label
+                val hasNumberAfter = if (companyNumber != null || vatNumber != null) {
+                    val searchNumber = companyNumber ?: vatNumber
+                    (i + 1 until min(i + 15, lines.size)).any { j ->
+                        lines[j].lowercase().contains(searchNumber ?: "")
+                    }
+                } else {
+                    false
+                }
+                
+                // Look for company name in next lines (prioritize if number appears after)
                 for (j in 1..8) {
                     if (i + j < lines.size) {
                         val nextLine = lines[i + j].trim()
@@ -1008,10 +1565,17 @@ object InvoiceParser {
                         if (labelKeywords.any { keyword -> nextLower == keyword || (nextLower.contains(keyword) && nextLower.length < 20) }) {
                             continue
                         }
+                        // Skip if this line contains company/VAT number (name should be BEFORE number)
+                        if (companyNumber != null && nextLower.contains(companyNumber)) {
+                            continue
+                        }
+                        if (vatNumber != null && nextLower.contains(vatNumber)) {
+                            continue
+                        }
                         if (isValidCompanyNameLine(nextLine, nextLower)) {
                             val cleaned = cleanCompanyName(nextLine)
                             if (cleaned != null) {
-                                Timber.d("Extracted company name after label '$l': $cleaned")
+                                Timber.d("Extracted company name after label '$l': $cleaned (hasNumberAfter: $hasNumberAfter)")
                                 return cleaned
                             }
                         }

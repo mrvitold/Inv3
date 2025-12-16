@@ -1,5 +1,7 @@
 package com.vitol.inv3.ocr
 
+import timber.log.Timber
+
 object KeywordMapping {
     private val map: Map<String, List<String>> = mapOf(
         "Invoice_ID" to listOf(
@@ -57,7 +59,16 @@ object FieldExtractors {
     // If there's no "LT" prefix, it's NOT a VAT number
     private val vatNumberRegex = Regex("\\b(LT[0-9A-Z]{8,12})\\b", RegexOption.IGNORE_CASE)
     // Lithuanian company number: 9 digits starting with 1, 2, 3, or 4
-    private val companyNumberRegex = Regex("\\b([1-4][0-9]{8})\\b")
+    // Lithuanian company number: 9 digits starting with 1, 2, or 3, OR 6 digits (any starting digit)
+    // No spaces or dashes allowed
+    private val companyNumberRegex = Regex("\\b((?:[1-3][0-9]{8})|(?:[0-9]{6}))\\b")
+    // Strict validation: 9 digits starting with 1-3 OR 6 digits
+    private val strictCompanyNumberRegex = Regex("^(([1-3][0-9]{8})|([0-9]{6}))$")
+    // Patterns to exclude (false positives) - check context around the match
+    private val amountKeywordsNearby = Regex("(?:suma|kaina|price|amount|total|€|eur)\\s*(?:[1-3][0-9]{8}|[0-9]{6})|(?:[1-3][0-9]{8}|[0-9]{6})\\s*(?:eur|€|lt|pv|m|vnt|v\\.|v\\.n\\.t\\.)", RegexOption.IGNORE_CASE)
+    private val decimalNumberPattern = Regex("\\b(?:[1-3][0-9]{8}|[0-9]{6})[.,][0-9]")
+    private val ibanVatPattern = Regex("\\bLT[0-9]*(?:[1-3][0-9]{8}|[0-9]{6})", RegexOption.IGNORE_CASE)
+    private val invoiceNumberPattern = Regex("(?:nr\\.?|numeris|serija)\\s*(?:[1-3][0-9]{8}|[0-9]{6})", RegexOption.IGNORE_CASE)
 
     fun tryExtractDate(line: String): String? {
         // Try with context first (date/data keyword)
@@ -125,33 +136,139 @@ object FieldExtractors {
     }
     
     /**
-     * Extract company number (9 digits starting with 1, 2, 3, or 4).
+     * Extract company number (9 digits starting with 1, 2, or 3, OR 6 digits).
      * Ensures it's different from VAT number and own company number.
+     * Filters out false positives (amounts, dates, IBANs, invoice numbers).
      * @param excludeVatNumber VAT number to exclude (to avoid duplicates)
      * @param excludeOwnCompanyNumber Own company number to exclude
      */
     fun tryExtractCompanyNumber(line: String, excludeVatNumber: String? = null, excludeOwnCompanyNumber: String? = null): String? {
-        val match = companyNumberRegex.find(line)
-        if (match != null) {
-            val candidate = match.groupValues.getOrNull(1)
-            if (candidate != null) {
-                // Ensure it's different from VAT number (if provided)
-                if (excludeVatNumber != null) {
-                    // Normalize VAT number: remove spaces, remove "LT" prefix
-                    val normalizedVat = excludeVatNumber.replace(" ", "").uppercase()
-                    val vatDigits = normalizedVat.removePrefix("LT")
-                    if (candidate == vatDigits) {
-                        return null // Same as VAT number, skip it
-                    }
-                }
-                // Exclude own company number (normalize for comparison)
-                val normalizedOwn = excludeOwnCompanyNumber?.trim()
-                if (normalizedOwn != null && candidate == normalizedOwn) {
-                    return null // This is own company number, skip it
-                }
-                return candidate
+        // First try with word boundaries (standard extraction)
+        val matches = companyNumberRegex.findAll(line)
+        for (match in matches) {
+            val candidate = match.groupValues.getOrNull(1) ?: continue
+            
+            // Validate strict pattern
+            if (!strictCompanyNumberRegex.matches(candidate)) {
+                continue
             }
+            
+            // Get context around the match for false positive filtering
+            val matchStart = match.range.first
+            val matchEnd = match.range.last
+            val contextBefore = if (matchStart > 0) line.substring(maxOf(0, matchStart - 20), matchStart).lowercase() else ""
+            val contextAfter = if (matchEnd < line.length - 1) line.substring(matchEnd + 1, minOf(line.length, matchEnd + 20)).lowercase() else ""
+            val fullContext = (contextBefore + " " + candidate + " " + contextAfter).lowercase()
+            
+            // Check if adjacent characters are digits (part of larger number)
+            val charBefore = if (matchStart > 0) line[matchStart - 1] else ' '
+            val charAfter = if (matchEnd < line.length - 1) line[matchEnd + 1] else ' '
+            if (charBefore.isDigit() || charAfter.isDigit()) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - adjacent digits detected")
+                continue // Part of larger number, skip
+            }
+            
+            // Exclude if it's part of IBAN/VAT pattern
+            if (ibanVatPattern.containsMatchIn(fullContext)) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - IBAN/VAT pattern")
+                continue
+            }
+            
+            // Exclude if it's a decimal number (has decimal point after)
+            if (decimalNumberPattern.containsMatchIn(line.substring(maxOf(0, matchStart), minOf(line.length, matchEnd + 5)))) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - decimal number pattern")
+                continue
+            }
+            
+            // Exclude if it's an invoice number (but be more specific - must be right after "nr" or "serija")
+            // Only exclude if the number immediately follows invoice keywords
+            val beforeMatch = if (matchStart > 0) line.substring(maxOf(0, matchStart - 10), matchStart).lowercase() else ""
+            val isInvoiceNumber = beforeMatch.matches(Regex(".*(?:nr\\.?|numeris|serija)\\s*$"))
+            if (isInvoiceNumber) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - invoice number pattern (immediately after nr/serija)")
+                continue
+            }
+            
+            // Exclude if it's near amount keywords (but only if very close - within 5 chars)
+            val amountContext = if (matchStart > 0 && matchEnd < line.length - 1) {
+                line.substring(maxOf(0, matchStart - 5), minOf(line.length, matchEnd + 5)).lowercase()
+            } else {
+                fullContext
+            }
+            if (amountContext.matches(Regex(".*(?:suma|kaina|price|amount|total|€|eur)\\s*$candidate|$candidate\\s*(?:eur|€|lt|pv|m|vnt).*", RegexOption.IGNORE_CASE))) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - amount keywords very close")
+                continue
+            }
+            
+            // Ensure it's different from VAT number (if provided)
+            if (excludeVatNumber != null) {
+                val normalizedVat = excludeVatNumber.replace(" ", "").uppercase()
+                val vatDigits = normalizedVat.removePrefix("LT")
+                if (candidate == vatDigits) {
+                    Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - same as VAT number")
+                    continue // Same as VAT number, skip it
+                }
+            }
+            
+            // Exclude own company number (normalize for comparison)
+            val normalizedOwn = excludeOwnCompanyNumber?.trim()
+            if (normalizedOwn != null && candidate == normalizedOwn) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - same as own company number")
+                continue // This is own company number, skip it
+            }
+            
+            Timber.d("tryExtractCompanyNumber: Found valid company number '$candidate' in line: $line")
+            return candidate
         }
+        
+        // Fallback: Try without word boundaries if standard extraction failed
+        // This handles cases where company number might be adjacent to punctuation or other characters
+        val fallbackPattern = Regex("((?:[1-3][0-9]{8})|(?:[0-9]{6}))")
+        val fallbackMatches = fallbackPattern.findAll(line)
+        for (match in fallbackMatches) {
+            val candidate = match.groupValues.getOrNull(1) ?: continue
+            
+            // Validate strict pattern
+            if (!strictCompanyNumberRegex.matches(candidate)) {
+                continue
+            }
+            
+            // Check boundaries more carefully
+            val matchStart = match.range.first
+            val matchEnd = match.range.last
+            val charBefore = if (matchStart > 0) line[matchStart - 1] else ' '
+            val charAfter = if (matchEnd < line.length - 1) line[matchEnd + 1] else ' '
+            
+            // Must be separated by non-digit characters (allow spaces, punctuation, but not digits)
+            if (charBefore.isDigit() || charAfter.isDigit()) {
+                continue
+            }
+            
+            // Must not be part of IBAN/VAT
+            val context = line.lowercase()
+            if (context.contains("lt$candidate", ignoreCase = true)) {
+                continue
+            }
+            
+            // Exclude if same as VAT number
+            if (excludeVatNumber != null) {
+                val normalizedVat = excludeVatNumber.replace(" ", "").uppercase()
+                val vatDigits = normalizedVat.removePrefix("LT")
+                if (candidate == vatDigits) {
+                    continue
+                }
+            }
+            
+            // Exclude own company number
+            val normalizedOwn = excludeOwnCompanyNumber?.trim()
+            if (normalizedOwn != null && candidate == normalizedOwn) {
+                continue
+            }
+            
+            Timber.d("tryExtractCompanyNumber: Found company number '$candidate' in fallback extraction from line: $line")
+            return candidate
+        }
+        
         return null
     }
 

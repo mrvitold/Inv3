@@ -456,7 +456,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         
         // Always try to extract from text using local parser for missing fields or to improve accuracy
         // This is especially important for sales invoices where we need to extract buyer info
-        val parsedFromText = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber)
+        // Pass invoice type so parser can prioritize buyer vs seller sections correctly
+        val parsedFromText = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber, invoiceType)
         
         // Extract amounts if not found
         if (amountNoVat == null && parsedFromText.amountWithoutVatEur != null) {
@@ -481,16 +482,25 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         
         // Always try to extract company number from text if not found
         // This is critical for sales invoices where Azure might not extract buyer's company number
-        if (companyNumber == null && parsedFromText.companyNumber != null) {
-            val extractedCompanyNo = parsedFromText.companyNumber
+        // IMPORTANT: Extract company number even if we already have one, to ensure we get the partner's number
+        val extractedCompanyNo = parsedFromText.companyNumber
+        if (extractedCompanyNo != null) {
             val vatDigits = vatNumber?.removePrefix("LT")?.removePrefix("lt")
             // Only use if different from VAT number and own company number
             if (extractedCompanyNo != vatDigits && (excludeOwnCompanyNumber == null || extractedCompanyNo != excludeOwnCompanyNumber)) {
+                // Always update company number if extracted one is valid (even if we had one before)
+                // This ensures we get the partner's company number, not our own
                 companyNumber = extractedCompanyNo
                 Timber.d("Azure: Extracted company number from text: $companyNumber")
             } else {
-                Timber.d("Azure: Skipped company number '$extractedCompanyNo' (same as VAT number or own company number)")
+                Timber.d("Azure: Skipped company number '$extractedCompanyNo' (same as VAT number '$vatDigits' or own company number '$excludeOwnCompanyNumber')")
+                // If we skipped it but don't have a company number yet, keep trying
+                if (companyNumber == null) {
+                    Timber.d("Azure: Company number is null, but extracted '$extractedCompanyNo' was skipped. This might be an issue.")
+                }
             }
+        } else {
+            Timber.d("Azure: No company number extracted from text parsing. Parsed result companyNumber: ${parsedFromText.companyNumber}")
         }
         
         // Also extract VAT number from text if not found and exclude own company VAT
