@@ -20,9 +20,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.MergeType
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.TextButton
@@ -86,6 +87,9 @@ fun ExportsScreen(
     var exportDialogState by remember { mutableStateOf<ExportDialogState?>(null) }
     var invoiceToDelete by remember { mutableStateOf<com.vitol.inv3.data.remote.InvoiceRecord?>(null) }
     var monthToDelete by remember { mutableStateOf<String?>(null) }
+    var invoiceWithErrorsToShow by remember { mutableStateOf<com.vitol.inv3.data.remote.InvoiceRecord?>(null) }
+    var monthToRemoveDuplicates by remember { mutableStateOf<String?>(null) }
+    var duplicateCountToRemove by remember { mutableStateOf(0) }
     
     // Auto-refresh when screen is resumed (after returning from EditInvoice)
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -140,6 +144,83 @@ fun ExportsScreen(
         )
     }
     
+    // Show validation errors dialog
+    invoiceWithErrorsToShow?.let { invoice ->
+        val errors = viewModel.getInvoiceErrors(invoice)
+        val errorDialogDarkRed = Color(0xFF8B0000)
+        AlertDialog(
+            onDismissRequest = { invoiceWithErrorsToShow = null },
+            title = {
+                Column {
+                    Text(
+                        text = "Validation Errors",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Invoice: ${invoice.invoice_id ?: "Unknown"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (errors.isEmpty()) {
+                        Text("No errors found")
+                    } else {
+                        errors.forEachIndexed { index, error ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "${index + 1}.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = errorDialogDarkRed
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = error.message,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "Field: ${error.fieldName}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { invoiceWithErrorsToShow = null }
+                ) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+    
     // Show delete confirmation dialog for month
     monthToDelete?.let { month ->
         val monthInvoices = viewModel.getInvoicesForMonth(month)
@@ -165,6 +246,55 @@ fun ExportsScreen(
             dismissButton = {
                 OutlinedButton(
                     onClick = { monthToDelete = null }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Show remove duplicates confirmation dialog
+    monthToRemoveDuplicates?.let { month ->
+        AlertDialog(
+            onDismissRequest = { 
+                monthToRemoveDuplicates = null
+                duplicateCountToRemove = 0
+            },
+            title = { Text("Remove Duplicates") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Found $duplicateCountToRemove duplicate invoice(s) in $month.")
+                    Text(
+                        text = "This will keep the most recent invoice for each duplicate group and remove the rest. This action cannot be undone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val monthToProcess = month
+                        monthToRemoveDuplicates = null
+                        duplicateCountToRemove = 0
+                        viewModel.removeDuplicatesForMonth(monthToProcess) { removedCount ->
+                            if (removedCount > 0) {
+                                Toast.makeText(context, "Removed $removedCount duplicate(s)", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "No duplicates found", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text("Remove Duplicates")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { 
+                        monthToRemoveDuplicates = null
+                        duplicateCountToRemove = 0
+                    }
                 ) {
                     Text("Cancel")
                 }
@@ -248,6 +378,7 @@ fun ExportsScreen(
                                 month = summary.month
                             )
                         },
+                        onShowInvoiceErrors = { invoice -> invoiceWithErrorsToShow = invoice },
                         salesPurchaseSummaries = if (expandedMonths.contains(summary.month)) {
                             viewModel.getSalesPurchaseSummariesForMonth(summary.month)
                         } else {
@@ -259,7 +390,25 @@ fun ExportsScreen(
                         expandedCompanies = expandedCompanies,
                         expandedSalesPurchase = expandedSalesPurchase,
                         onDeleteInvoice = { invoice -> invoiceToDelete = invoice },
-                        onDeleteMonth = { month -> monthToDelete = month }
+                        onDeleteMonth = { month -> monthToDelete = month },
+                        onRemoveDuplicates = { month ->
+                            // Count duplicates first
+                            val invoices = viewModel.getInvoicesForMonth(month)
+                            val invoicesByInvoiceId = mutableMapOf<String, MutableList<com.vitol.inv3.data.remote.InvoiceRecord>>()
+                            invoices.forEach { invoice ->
+                                val invoiceId = invoice.invoice_id
+                                if (!invoiceId.isNullOrBlank()) {
+                                    invoicesByInvoiceId.getOrPut(invoiceId) { mutableListOf() }.add(invoice)
+                                }
+                            }
+                            val duplicateCount = invoicesByInvoiceId.values.sumOf { if (it.size > 1) it.size - 1 else 0 }
+                            if (duplicateCount > 0) {
+                                duplicateCountToRemove = duplicateCount
+                                monthToRemoveDuplicates = month
+                            } else {
+                                Toast.makeText(context, "No duplicates found", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     )
                 }
             }
@@ -315,6 +464,7 @@ fun MonthlySummaryCard(
     isExpanded: Boolean,
     onExpandClick: () -> Unit,
     onExportClick: () -> Unit,
+    onShowInvoiceErrors: (com.vitol.inv3.data.remote.InvoiceRecord) -> Unit,
     salesPurchaseSummaries: List<SalesPurchaseSummary>,
     viewModel: ExportsViewModel,
     navController: androidx.navigation.NavController?,
@@ -322,7 +472,8 @@ fun MonthlySummaryCard(
     expandedCompanies: Set<String>,
     expandedSalesPurchase: Set<String>,
     onDeleteInvoice: (com.vitol.inv3.data.remote.InvoiceRecord) -> Unit,
-    onDeleteMonth: (String) -> Unit
+    onDeleteMonth: (String) -> Unit,
+    onRemoveDuplicates: (String) -> Unit
 ) {
     val numberFormat = NumberFormat.getNumberInstance(Locale.US).apply {
         minimumFractionDigits = 2
@@ -363,11 +514,18 @@ fun MonthlySummaryCard(
                         contentDescription = if (isExpanded) "Collapse" else "Expand"
                     )
                 }
-                IconButton(onClick = onExpandClick) {
-                    Icon(
-                        imageVector = Icons.Default.Visibility,
-                        contentDescription = "Check companies"
-                    )
+                // Only show remove duplicates button if duplicates exist
+                if (viewModel.hasDuplicatesForMonth(month)) {
+                    IconButton(
+                        onClick = { onRemoveDuplicates(month) },
+                        modifier = Modifier
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MergeType,
+                            contentDescription = "Remove duplicates",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
                 IconButton(onClick = onExportClick) {
                     Icon(
@@ -593,6 +751,20 @@ fun MonthlySummaryCard(
                                                                     style = MaterialTheme.typography.bodySmall,
                                                                     color = textColor
                                                                 )
+                                                            }
+                                                            // Info button for invoices with errors
+                                                            if (hasErrors) {
+                                                                IconButton(
+                                                                    onClick = {
+                                                                        onShowInvoiceErrors(invoice)
+                                                                    }
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.Info,
+                                                                        contentDescription = "Show validation errors",
+                                                                        tint = darkRed
+                                                                    )
+                                                                }
                                                             }
                                                             IconButton(
                                                                 onClick = {

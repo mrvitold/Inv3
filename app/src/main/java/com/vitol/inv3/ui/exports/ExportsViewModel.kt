@@ -374,5 +374,112 @@ class ExportsViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * Check if there are duplicate invoices (same invoice_id) for a given month.
+     * Returns true if duplicates are found, false otherwise.
+     */
+    fun hasDuplicatesForMonth(month: String): Boolean {
+        val monthInvoices = getInvoicesForMonth(month)
+        
+        // Group invoices by invoice_id
+        val invoicesByInvoiceId = mutableMapOf<String, MutableList<InvoiceRecord>>()
+        monthInvoices.forEach { invoice ->
+            val invoiceId = invoice.invoice_id
+            if (!invoiceId.isNullOrBlank()) {
+                invoicesByInvoiceId.getOrPut(invoiceId) { mutableListOf() }.add(invoice)
+            }
+        }
+        
+        // Check if any group has more than 1 invoice (duplicates)
+        return invoicesByInvoiceId.values.any { it.size > 1 }
+    }
+
+    /**
+     * Find and remove duplicate invoices (same invoice_id) for a given month.
+     * Keeps the most recent invoice (by date, then by created_at if available).
+     * Returns the count of duplicates removed.
+     */
+    fun removeDuplicatesForMonth(month: String, onComplete: (Int) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                val monthInvoices = getInvoicesForMonth(month)
+                
+                // Group invoices by invoice_id
+                val invoicesByInvoiceId = mutableMapOf<String, MutableList<InvoiceRecord>>()
+                monthInvoices.forEach { invoice ->
+                    val invoiceId = invoice.invoice_id
+                    if (!invoiceId.isNullOrBlank()) {
+                        invoicesByInvoiceId.getOrPut(invoiceId) { mutableListOf() }.add(invoice)
+                    }
+                }
+                
+                // Find duplicates (groups with more than 1 invoice)
+                var duplicatesRemoved = 0
+                invoicesByInvoiceId.values.forEach { group ->
+                    if (group.size > 1) {
+                        // Sort by date (most recent first), then by id (as a tiebreaker)
+                        val sorted = group.sortedWith(compareByDescending<InvoiceRecord> { invoice ->
+                            // Parse date for comparison
+                            val dateStr = invoice.date
+                            when {
+                                dateStr.isNullOrBlank() -> 0L
+                                dateStr.contains("-") -> {
+                                    // YYYY-MM-DD format
+                                    try {
+                                        dateStr.replace("-", "").toLongOrNull() ?: 0L
+                                    } catch (e: Exception) {
+                                        0L
+                                    }
+                                }
+                                dateStr.contains(".") -> {
+                                    // DD.MM.YYYY format
+                                    try {
+                                        val parts = dateStr.split(".")
+                                        if (parts.size == 3) {
+                                            val year = parts[2].trim()
+                                            val monthPart = parts[1].trim().padStart(2, '0')
+                                            val day = parts[0].trim().padStart(2, '0')
+                                            "$year$monthPart$day".toLongOrNull() ?: 0L
+                                        } else {
+                                            0L
+                                        }
+                                    } catch (e: Exception) {
+                                        0L
+                                    }
+                                }
+                                else -> 0L
+                            }
+                        }.thenByDescending { it.id ?: "" })
+                        
+                        // Keep the first (most recent), delete the rest
+                        val toKeep = sorted.first()
+                        val toDelete = sorted.drop(1)
+                        
+                        toDelete.forEach { duplicate ->
+                            try {
+                                repo.deleteInvoice(duplicate)
+                                duplicatesRemoved++
+                                Timber.d("Deleted duplicate invoice: ${duplicate.invoice_id} (id: ${duplicate.id}), kept: ${toKeep.id}")
+                            } catch (e: Exception) {
+                                Timber.e(e, "Failed to delete duplicate invoice: ${duplicate.invoice_id}")
+                            }
+                        }
+                    }
+                }
+                
+                if (duplicatesRemoved > 0) {
+                    Timber.d("Removed $duplicatesRemoved duplicate invoice(s) for month $month")
+                    // Reload invoices to refresh the UI
+                    loadInvoices()
+                }
+                
+                onComplete(duplicatesRemoved)
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to remove duplicates for month: $month")
+                onComplete(0)
+            }
+        }
+    }
 }
 
