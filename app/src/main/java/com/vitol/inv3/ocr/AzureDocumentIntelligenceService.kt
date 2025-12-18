@@ -516,7 +516,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         
         // Final fallback: try advanced company name extraction from text if still not found
         if ((companyName == null || !hasCompanyTypeSuffix(companyName)) && lines.isNotEmpty()) {
-            val extractedCompanyName = InvoiceParser.extractCompanyNameAdvanced(lines, companyNumber, vatNumber)
+            val extractedCompanyName = InvoiceParser.extractCompanyNameAdvanced(lines, companyNumber, vatNumber, excludeOwnCompanyNumber, invoiceType)
             if (extractedCompanyName != null && hasCompanyTypeSuffix(extractedCompanyName)) {
                 companyName = extractedCompanyName
                 Timber.d("Azure: Extracted company name using advanced extraction: $companyName")

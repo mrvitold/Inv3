@@ -200,17 +200,54 @@ object InvoiceParser {
             
             val selected = if (excludeOwnCompanyNumber == null && companyNumbersAfterKeyword.size >= 2) {
                 // CRITICAL: If excludeOwnCompanyNumber is null but we have 2+ company numbers,
-                // we need to select the OTHER one (not own). Since we can't know which is own,
-                // use heuristic: prefer the one that appears LATER (buyer usually comes after seller)
-                // This ensures we get the partner's company number even when own company number isn't loaded yet
-                Timber.d("InvoiceParser: excludeOwnCompanyNumber is null but found ${companyNumbersAfterKeyword.size} company numbers, selecting the LATER one (partner's)")
-                companyNumbersAfterKeyword.maxByOrNull { it.lineIndex }
+                // we need to select the OTHER one (not own). Use invoice type to determine:
+                // - Purchase (P): buyer is own company, seller is partner -> select EARLIER (seller's)
+                // - Sales (S): seller is own company, buyer is partner -> select LATER (buyer's)
+                // - Unknown: prefer seller (earlier) as default
+                val selection = when {
+                    isPurchaseInvoice -> {
+                        // Purchase: select seller's company number (earlier, appears first)
+                        Timber.d("InvoiceParser: excludeOwnCompanyNumber is null but found ${companyNumbersAfterKeyword.size} company numbers, selecting EARLIER one (seller's) for purchase invoice")
+                        companyNumbersAfterKeyword.minByOrNull { it.lineIndex }
+                    }
+                    isSalesInvoice -> {
+                        // Sales: select buyer's company number (later, appears after seller)
+                        Timber.d("InvoiceParser: excludeOwnCompanyNumber is null but found ${companyNumbersAfterKeyword.size} company numbers, selecting LATER one (buyer's) for sales invoice")
+                        companyNumbersAfterKeyword.maxByOrNull { it.lineIndex }
+                    }
+                    else -> {
+                        // Unknown type: prefer seller (earlier) as default
+                        Timber.d("InvoiceParser: excludeOwnCompanyNumber is null but found ${companyNumbersAfterKeyword.size} company numbers, selecting EARLIER one (seller's) as default")
+                        companyNumbersAfterKeyword.minByOrNull { it.lineIndex }
+                    }
+                }
+                selection
             } else if (partnerCompanyNumbers.isNotEmpty()) {
-                // We have partner company numbers (after filtering) - select one (prefer known sections, but any partner number is fine)
-                partnerCompanyNumbers.firstOrNull { it.isBuyer && !it.isSeller }
-                    ?: partnerCompanyNumbers.firstOrNull { it.isSeller && !it.isBuyer }
-                    ?: partnerCompanyNumbers.firstOrNull { it.isBuyer || it.isSeller }
-                    ?: partnerCompanyNumbers.first() // Just take the first partner company number
+                // We have partner company numbers (after filtering) - select based on invoice type:
+                // - Purchase (P): prefer seller's company number (partner is seller)
+                // - Sales (S): prefer buyer's company number (partner is buyer)
+                val prioritized = when {
+                    isPurchaseInvoice -> {
+                        // Purchase: prefer seller's company number
+                        partnerCompanyNumbers.firstOrNull { it.isSeller && !it.isBuyer }
+                            ?: partnerCompanyNumbers.firstOrNull { it.isSeller || it.isBuyer }
+                            ?: partnerCompanyNumbers.first()
+                    }
+                    isSalesInvoice -> {
+                        // Sales: prefer buyer's company number
+                        partnerCompanyNumbers.firstOrNull { it.isBuyer && !it.isSeller }
+                            ?: partnerCompanyNumbers.firstOrNull { it.isBuyer || it.isSeller }
+                            ?: partnerCompanyNumbers.first()
+                    }
+                    else -> {
+                        // Unknown type: prefer buyer's company number as default
+                        partnerCompanyNumbers.firstOrNull { it.isBuyer && !it.isSeller }
+                            ?: partnerCompanyNumbers.firstOrNull { it.isSeller && !it.isBuyer }
+                            ?: partnerCompanyNumbers.firstOrNull { it.isBuyer || it.isSeller }
+                            ?: partnerCompanyNumbers.first()
+                    }
+                }
+                prioritized
             } else {
                 // All are own company numbers - this shouldn't happen, but fallback to first
                 Timber.w("InvoiceParser: All company numbers after 'Įmonės kodas' match own company number!")
@@ -523,7 +560,7 @@ object InvoiceParser {
         // Second pass: company name extraction with multiple strategies
         if (companyName == null || isInvalidCompanyName(companyName)) {
             Timber.d("Company name is null or invalid, starting second pass extraction")
-            companyName = extractCompanyNameAdvanced(lines, companyNumber, vatNumber)
+            companyName = extractCompanyNameAdvanced(lines, companyNumber, vatNumber, excludeOwnCompanyNumber, invoiceType)
         }
         
         // Second pass: VAT number with context
@@ -1406,18 +1443,35 @@ object InvoiceParser {
         return null
     }
     
-    fun extractCompanyNameAdvanced(lines: List<String>, companyNumber: String?, vatNumber: String?): String? {
+    fun extractCompanyNameAdvanced(lines: List<String>, companyNumber: String?, vatNumber: String?, excludeOwnCompanyNumber: String? = null, invoiceType: String? = null): String? {
         // Strategy 1: Use VAT/company number to find company name ABOVE it (highest priority!)
         // Company name usually appears ABOVE company number and VAT number
-        if (companyNumber != null || vatNumber != null) {
-            val searchNumber = companyNumber ?: vatNumber
+        // CRITICAL: Prioritize VAT number over company number because:
+        // 1. VAT number is more reliable for identifying partner company
+        // 2. Company number might be own company (especially for purchase invoices)
+        // 3. If company number matches own company, definitely use VAT number instead
+        val isPurchaseInvoice = invoiceType?.uppercase() == "P"
+        val companyNumberIsOwn = excludeOwnCompanyNumber != null && companyNumber != null && companyNumber.trim() == excludeOwnCompanyNumber.trim()
+        
+        // Determine which identifier to use for searching
+        val searchNumber = when {
+            // If company number is own company, use VAT number
+            companyNumberIsOwn -> vatNumber
+            // For purchase invoices, prefer VAT number (seller's VAT is more reliable)
+            isPurchaseInvoice && vatNumber != null -> vatNumber
+            // Otherwise, prefer company number if available, fallback to VAT
+            else -> companyNumber ?: vatNumber
+        }
+        
+        // Strategy 1: Use VAT/company number to find company name ABOVE it (highest priority!)
+        if (searchNumber != null) {
             var numberLineIndex: Int? = null
             
             // Find the line index where company number or VAT number appears
             for (i in lines.indices) {
                 val line = lines[i]
                 val l = line.lowercase().trim()
-                if (searchNumber != null && l.contains(searchNumber)) {
+                if (l.contains(searchNumber)) {
                     numberLineIndex = i
                     Timber.d("extractCompanyNameAdvanced: Found company/VAT number '$searchNumber' on line $i, searching ABOVE for company name")
                     break
