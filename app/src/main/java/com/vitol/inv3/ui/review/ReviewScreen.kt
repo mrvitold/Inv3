@@ -2164,7 +2164,7 @@ class ReviewViewModel @Inject constructor(
                                         vatNumber = preservedVatNumber // Keep extracted VAT
                                     )
                                 } else if (!extractedNumberMatchesDb && extractedCompanyNumber != null) {
-                                    Timber.w("Local OCR - Database lookup found company with mismatched company number! Extracted: '$extractedCompanyNumber', DB: '$dbCompanyNumber'. VAT lookup is more reliable, using DB company number.")
+                                    Timber.w("Local OCR - Database lookup found company with mismatched company number! Extracted: '$extractedCompanyNumber', DB: '$dbCompanyNumber'. VAT lookup is more reliable, using DB company number and name.")
                                     // DB company number doesn't match extracted - VAT lookup found a company
                                     // CRITICAL: VAT lookup is more reliable than company number extraction
                                     // If we found a company by VAT and it has a company number, use it
@@ -2176,8 +2176,18 @@ class ReviewViewModel @Inject constructor(
                                         // Fallback to extracted if DB doesn't have company number
                                         parsedWithFilteredName.companyNumber?.takeIf { it.isNotBlank() }
                                     }
+                                    // CRITICAL: Also use DB company name since VAT lookup is authoritative
+                                    // Filter DB company name too (in case DB has own company name somehow)
+                                    val dbCompanyNameFiltered = filterCompanyNameSafely(
+                                        extractedName = companyFromDb.company_name,
+                                        ownCompanyName = excludeOwnCompanyName,
+                                        partnerCompanyNumber = finalCompanyNumber,
+                                        partnerVatNumber = dbVatNumber,
+                                        lines = lines
+                                    )
                                     val preservedVatNumber = normalizedParsedVat?.takeIf { it.isNotBlank() }
                                     parsedWithFilteredName.copy(
+                                        companyName = dbCompanyNameFiltered ?: parsedWithFilteredName.companyName, // Use DB name since VAT lookup is reliable
                                         companyNumber = finalCompanyNumber, // Use DB number if available (VAT lookup is reliable)
                                         vatNumber = preservedVatNumber // Keep extracted VAT
                                     )
@@ -2355,7 +2365,7 @@ class ReviewViewModel @Inject constructor(
                                         vatNumber = preservedVatNumber // Keep extracted VAT
                                     )
                                 } else if (!extractedNumberMatchesDb && extractedCompanyNumber != null) {
-                                    Timber.w("Azure - Database lookup found company with mismatched company number! Extracted: '$extractedCompanyNumber', DB: '$dbCompanyNumber'. VAT lookup is more reliable, using DB company number.")
+                                    Timber.w("Azure - Database lookup found company with mismatched company number! Extracted: '$extractedCompanyNumber', DB: '$dbCompanyNumber'. VAT lookup is more reliable, using DB company number and name.")
                                     // DB company number doesn't match extracted - VAT lookup found a company
                                     // CRITICAL: VAT lookup is more reliable than company number extraction
                                     // If we found a company by VAT and it has a company number, use it
@@ -2367,8 +2377,18 @@ class ReviewViewModel @Inject constructor(
                                         // Fallback to extracted if DB doesn't have company number
                                         parsedWithFilteredName.companyNumber?.takeIf { it.isNotBlank() }
                                     }
+                                    // CRITICAL: Also use DB company name since VAT lookup is authoritative
+                                    // Filter DB company name too (in case DB has own company name somehow)
+                                    val dbCompanyNameFiltered = filterCompanyNameSafely(
+                                        extractedName = companyFromDb.company_name,
+                                        ownCompanyName = excludeOwnCompanyName,
+                                        partnerCompanyNumber = finalCompanyNumber,
+                                        partnerVatNumber = dbVatNumber,
+                                        lines = parsed.lines
+                                    )
                                     val preservedVatNumber = normalizedParsedVat?.takeIf { it.isNotBlank() }
                                     parsedWithFilteredName.copy(
+                                        companyName = dbCompanyNameFiltered ?: parsedWithFilteredName.companyName, // Use DB name since VAT lookup is reliable
                                         companyNumber = finalCompanyNumber, // Use DB number if available (VAT lookup is reliable)
                                         vatNumber = preservedVatNumber // Keep extracted VAT
                                     )
