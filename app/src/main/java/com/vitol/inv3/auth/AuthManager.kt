@@ -7,9 +7,11 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.vitol.inv3.BuildConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.gotrue.providers.builtin.IDToken
+import io.github.jan.supabase.gotrue.providers.Google
 import io.github.jan.supabase.functions.functions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -219,30 +221,98 @@ class AuthManager(
     
     suspend fun signInWithGoogle(idToken: String): Result<Unit> {
         return try {
+            Timber.d("Starting Google Sign-In with Supabase")
+            
             if (supabaseClient == null) {
+                Timber.e("Supabase client is null, cannot sign in with Google")
                 return Result.failure(Exception("Supabase client not initialized"))
             }
             
             _authState.value = AuthState.Loading
-            supabaseClient.auth.signInWith(IDToken) {
-                this.idToken = idToken
+            Timber.d("Attempting to sign in with Google ID token (length: ${idToken.length})")
+            
+            try {
+                // Sign in with Google ID token
+                // The IDToken provider requires either provider name or client_id + issuer
+                // Based on Supabase Kotlin client 2.5.0 API
+                val googleClientId = BuildConfig.GOOGLE_OAUTH_CLIENT_ID
+                Timber.d("Using Google Client ID: ${googleClientId.take(30)}...")
+                
+                // Store idToken in a local variable to avoid shadowing in lambda
+                val token = idToken
+                supabaseClient.auth.signInWith(IDToken) {
+                    this.idToken = token
+                    this.provider = Google
+                }
+                Timber.d("Supabase signInWith(IDToken) completed successfully")
+            } catch (e: Exception) {
+                Timber.e(e, "Supabase signInWith(IDToken) failed: ${e.javaClass.simpleName}")
+                _authState.value = AuthState.Unauthenticated
+                
+                // Provide more specific error messages based on exception type
+                val errorMessage = when {
+                    e.message?.contains("provider or client_id and issuer required", ignoreCase = true) == true -> {
+                        "Google sign in failed: Provider configuration error. " +
+                        "Please verify that Google provider is enabled in Supabase dashboard."
+                    }
+                    e.message?.contains("invalid_grant", ignoreCase = true) == true -> {
+                        "Google sign in failed: Invalid token. Please try signing in again."
+                    }
+                    e.message?.contains("invalid_token", ignoreCase = true) == true -> {
+                        "Google sign in failed: Invalid token. Please check your Google OAuth configuration."
+                    }
+                    e.message?.contains("provider_disabled", ignoreCase = true) == true -> {
+                        "Google sign in failed: Google provider is not enabled in Supabase. " +
+                        "Please enable it in your Supabase dashboard."
+                    }
+                    e.message?.contains("network", ignoreCase = true) == true -> {
+                        "Google sign in failed: Network error. Please check your internet connection."
+                    }
+                    else -> {
+                        "Google sign in failed: ${e.message ?: "Unknown error"}"
+                    }
+                }
+                
+                return Result.failure(Exception(errorMessage))
             }
             
             val user = supabaseClient.auth.currentUserOrNull()
             if (user != null) {
                 val userId = user.id.toString()
+                val userEmail = user.email ?: "unknown"
+                Timber.d("Google Sign-In successful: User ID = $userId, Email = $userEmail")
+
                 saveSessionLocally(userId)
                 _authState.value = AuthState.Authenticated(userId)
-                Timber.d("Signed in with Google: User ID = $userId")
+                Timber.d("Session saved locally and auth state updated")
+
                 Result.success(Unit)
             } else {
+                Timber.e("Google sign in completed but no user was returned from Supabase")
                 _authState.value = AuthState.Unauthenticated
-                Result.failure(Exception("Google sign in failed: No user returned"))
+                Result.failure(Exception(
+                    "Google sign in failed: No user returned from Supabase. " +
+                    "Please check your Supabase configuration and ensure Google provider is enabled."
+                ))
             }
         } catch (e: Exception) {
-            Timber.e(e, "Google sign in error")
+            Timber.e(e, "Google sign in error: ${e.javaClass.simpleName}")
+            Timber.e("Error message: ${e.message}")
+            Timber.e("Stack trace:", e)
+            
             _authState.value = AuthState.Unauthenticated
-            Result.failure(e)
+            
+            // Provide user-friendly error message
+            val errorMessage = when {
+                e.message?.contains("network", ignoreCase = true) == true -> {
+                    "Google sign in failed: Network error. Please check your internet connection and try again."
+                }
+                else -> {
+                    "Google sign in failed: ${e.message ?: "Unknown error"}. Please try again."
+                }
+            }
+            
+            Result.failure(Exception(errorMessage))
         }
     }
     

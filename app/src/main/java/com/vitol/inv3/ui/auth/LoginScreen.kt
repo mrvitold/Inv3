@@ -44,10 +44,17 @@ fun LoginScreen(
     var confirmPasswordVisible by remember { mutableStateOf(false) }
     var showResetPassword by remember { mutableStateOf(false) }
     var resetEmail by remember { mutableStateOf("") }
+    var isGoogleSignInInProgress by remember { mutableStateOf(false) }
+
+    // Check if Google Sign-In is configured
+    val isGoogleSignInConfigured = remember {
+        BuildConfig.GOOGLE_OAUTH_CLIENT_ID.isNotBlank()
+    }
 
     // Navigate to home when authenticated
     LaunchedEffect(uiState.isAuthenticated) {
         if (uiState.isAuthenticated) {
+            isGoogleSignInInProgress = false
             onNavigateToHome()
         }
     }
@@ -56,46 +63,87 @@ fun LoginScreen(
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isGoogleSignInInProgress = false
         if (result.resultCode == Activity.RESULT_OK) {
             val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
             try {
                 val account = task.getResult(ApiException::class.java)
                 account?.idToken?.let { idToken ->
+                    Timber.d("Google Sign-In successful, ID token received")
                     viewModel.handleGoogleSignInResult(idToken)
                 } ?: run {
-                    viewModel.setError("Failed to get ID token from Google")
+                    Timber.e("Failed to get ID token from Google account")
+                    viewModel.setError("Failed to get ID token from Google. Please try again.")
                 }
             } catch (e: ApiException) {
-                Timber.e(e, "Google sign in failed")
-                when (e.statusCode) {
-                    12501 -> viewModel.setError("Google sign in was cancelled")
-                    10 -> viewModel.setError("Google sign in failed: Developer error. Please check configuration.")
-                    else -> viewModel.setError("Google sign in failed: ${e.message}")
+                Timber.e(e, "Google sign in failed with ApiException: statusCode=${e.statusCode}")
+                val errorMessage = when (e.statusCode) {
+                    12501 -> "Google sign in was cancelled"
+                    10 -> {
+                        "Google sign in configuration error. " +
+                        "Please verify:\n" +
+                        "1. GOOGLE_OAUTH_CLIENT_ID is set correctly in gradle.properties\n" +
+                        "2. SHA-1 fingerprint is registered in Google Cloud Console\n" +
+                        "3. Client ID is the Web Client ID (not Android Client ID)"
+                    }
+                    7 -> "Network error. Please check your internet connection and try again."
+                    8 -> "Internal error. Please try again later."
+                    else -> "Google sign in failed: ${e.message ?: "Unknown error (code: ${e.statusCode})"}"
                 }
+                viewModel.setError(errorMessage)
             } catch (e: Exception) {
-                Timber.e(e, "Google sign in error")
-                viewModel.setError("Google sign in failed: ${e.message}")
+                Timber.e(e, "Google sign in error: ${e.javaClass.simpleName}")
+                viewModel.setError("Google sign in failed: ${e.message ?: "Unknown error"}")
             }
         } else {
             Timber.d("Google sign in cancelled or failed: resultCode = ${result.resultCode}")
+            if (result.resultCode != Activity.RESULT_CANCELED) {
+                viewModel.setError("Google sign in was cancelled")
+            }
         }
     }
 
     fun startGoogleSignIn() {
         val googleClientId = BuildConfig.GOOGLE_OAUTH_CLIENT_ID
         if (googleClientId.isBlank()) {
-            viewModel.setError("Google Sign-In is not configured. Please set GOOGLE_OAUTH_CLIENT_ID.")
+            Timber.w("Google Sign-In attempted but GOOGLE_OAUTH_CLIENT_ID is not configured")
+            viewModel.setError(
+                "Google Sign-In is not configured.\n\n" +
+                "Please set GOOGLE_OAUTH_CLIENT_ID in gradle.properties.\n" +
+                "See GOOGLE_SIGNIN_SETUP.md for setup instructions."
+            )
             return
         }
 
-        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-            .requestIdToken(googleClientId)
-            .requestEmail()
-            .build()
+        // Validate client ID format (should be Web Client ID ending with .apps.googleusercontent.com)
+        if (!googleClientId.endsWith(".apps.googleusercontent.com")) {
+            Timber.w("Google Client ID format may be incorrect: $googleClientId")
+            viewModel.setError(
+                "Invalid Google Client ID format.\n\n" +
+                "The Client ID must be a Web Client ID (ending with .apps.googleusercontent.com), " +
+                "not an Android Client ID.\n" +
+                "See GOOGLE_SIGNIN_SETUP.md for details."
+            )
+            return
+        }
 
-        val googleSignInClient = GoogleSignIn.getClient(context, gso)
-        val signInIntent = googleSignInClient.signInIntent
-        googleSignInLauncher.launch(signInIntent)
+        try {
+            isGoogleSignInInProgress = true
+            Timber.d("Starting Google Sign-In with client ID: ${googleClientId.take(20)}...")
+            
+            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestIdToken(googleClientId)
+                .requestEmail()
+                .build()
+
+            val googleSignInClient = GoogleSignIn.getClient(context, gso)
+            val signInIntent = googleSignInClient.signInIntent
+            googleSignInLauncher.launch(signInIntent)
+        } catch (e: Exception) {
+            isGoogleSignInInProgress = false
+            Timber.e(e, "Error launching Google Sign-In intent")
+            viewModel.setError("Failed to start Google Sign-In: ${e.message ?: "Unknown error"}")
+        }
     }
 
     Column(
@@ -264,9 +312,15 @@ fun LoginScreen(
         OutlinedButton(
             onClick = { startGoogleSignIn() },
             modifier = Modifier.fillMaxWidth(),
-            enabled = !uiState.isLoading
+            enabled = !uiState.isLoading && !isGoogleSignInInProgress && isGoogleSignInConfigured
         ) {
-            Text("Sign in with Google")
+            if (isGoogleSignInInProgress) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            Text(if (isGoogleSignInInProgress) "Signing in..." else "Sign in with Google")
         }
 
         Spacer(modifier = Modifier.height(16.dp))
