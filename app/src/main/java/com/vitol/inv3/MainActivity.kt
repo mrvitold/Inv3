@@ -316,12 +316,43 @@ fun HomeScreen(
     // Load active company name
     var activeCompanyName by remember { mutableStateOf<String?>(null) }
     
-    LaunchedEffect(activeCompanyId) {
+    // Load own companies to check for auto-selection
+    LaunchedEffect(Unit) {
+        ownCompanyViewModel.loadOwnCompanies()
+    }
+    
+    val ownCompanies by ownCompanyViewModel.ownCompanies.collectAsState()
+    val isLoadingCompanies by ownCompanyViewModel.isLoading.collectAsState()
+    
+    // Validate activeCompanyId belongs to current user and load company name
+    // Also auto-select if there's only one company and none is selected
+    LaunchedEffect(activeCompanyId, ownCompanies, isLoadingCompanies) {
         if (activeCompanyId != null) {
-            val company = repo.getCompanyById(activeCompanyId!!)
-            activeCompanyName = company?.company_name
+            // Try to find company in loaded list first (faster)
+            val company = ownCompanies.find { it.id == activeCompanyId }
+            if (company != null) {
+                activeCompanyName = company.company_name
+            } else {
+                // Not in loaded list, fetch from database
+                val fetchedCompany = repo.getCompanyById(activeCompanyId!!)
+                if (fetchedCompany != null) {
+                    activeCompanyName = fetchedCompany.company_name
+                } else {
+                    // Company doesn't belong to current user or doesn't exist, clear it
+                    context.setActiveOwnCompanyId(null)
+                    activeCompanyName = null
+                }
+            }
         } else {
             activeCompanyName = null
+            // Auto-select if there's only one company and none is selected
+            if (ownCompanies.size == 1 && !isLoadingCompanies) {
+                val singleCompany = ownCompanies.first()
+                scope.launch {
+                    context.setActiveOwnCompanyId(singleCompany.id)
+                    activeCompanyName = singleCompany.company_name
+                }
+            }
         }
     }
 
@@ -693,8 +724,15 @@ fun HomeScreen(
                 onCompanySelected = { newCompanyId ->
                     scope.launch {
                         if (newCompanyId != null) {
-                            val company = repo.getCompanyById(newCompanyId)
-                            activeCompanyName = company?.company_name
+                            // Try to find company in loaded list first (faster)
+                            val company = ownCompanies.find { it.id == newCompanyId }
+                            if (company != null) {
+                                activeCompanyName = company.company_name
+                            } else {
+                                // Not in loaded list, fetch from database
+                                val fetchedCompany = repo.getCompanyById(newCompanyId)
+                                activeCompanyName = fetchedCompany?.company_name
+                            }
                         } else {
                             activeCompanyName = null
                         }

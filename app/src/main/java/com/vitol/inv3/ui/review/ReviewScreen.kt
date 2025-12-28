@@ -1416,7 +1416,8 @@ fun ReviewScreen(
                         CompanyRecord(
                             company_number = fields["Company_number"],
                             company_name = fields["Company_name"],
-                            vat_number = fields["VAT_number"]
+                            vat_number = fields["VAT_number"],
+                            is_own_company = false // Partner company discovered from invoice
                         )
                     ) { success ->
                         isSaving = false

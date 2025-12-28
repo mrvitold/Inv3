@@ -80,44 +80,95 @@ class SupabaseRepository(
                 return@withContext updated
             }
             
-            // Check if company already exists before inserting
-            // This handles the case where user wants to mark an existing company as "own"
-            val existingCompany = findExistingCompany(normalizedCompany)
-            if (existingCompany != null && !existingCompany.id.isNullOrBlank()) {
-                val existingId = existingCompany.id
+            // Check if current user already has this company (by company_number/VAT)
+            // This prevents duplicate companies for the same user
+            val existingCompanyForUser = findExistingCompanyForCurrentUser(normalizedCompany)
+            if (existingCompanyForUser != null && !existingCompanyForUser.id.isNullOrBlank()) {
+                val existingId = existingCompanyForUser.id
+                
+                // Current user already has this company, update it
                 // If marking as own company, find and delete duplicate records (same company_number/VAT but not marked as own)
                 if (normalizedCompany.is_own_company == true) {
                     deleteDuplicateCompanies(normalizedCompany, existingId)
                 }
                 
-                // Company exists, update it with new data (including is_own_company flag)
-                val updated = client.from("companies").update(normalizedCompany.copy(id = existingId)) {
+                // Update the company (it belongs to current user, so RLS will allow it)
+                val updateData = normalizedCompany.copy(
+                    id = existingId,
+                    user_id = userId  // Ensure user_id is set to current user
+                )
+                
+                val updated = client.from("companies").update(updateData) {
                     filter {
                         eq("id", existingId)
+                        eq("user_id", userId)  // Only update if it belongs to current user
                     }
                     select()
                 }.decodeSingle<CompanyRecord>()
-                Timber.d("Company updated (marked as own): ${updated.company_name}")
+                Timber.d("Company updated for current user: ${updated.company_name}")
                 return@withContext updated
             }
             
-            // Company doesn't exist, insert it
-            // But first, if marking as own company, check for and delete any duplicates
+            // Current user doesn't have this company yet
+            // Check if any company exists (for reference/verification), but we'll still create a new record for current user
+            val anyExistingCompany = findExistingCompany(normalizedCompany)
+            if (anyExistingCompany != null) {
+                Timber.d("Company ${anyExistingCompany.company_name} exists for other user(s), creating new record for current user")
+            }
+            
+            // Company doesn't exist for current user, insert it
+            // But first, if marking as own company, check for and delete any duplicates belonging to current user
             if (normalizedCompany.is_own_company == true) {
-                // Find duplicates before inserting
-                val duplicates = findDuplicateCompanies(normalizedCompany)
-                // Delete duplicates that are NOT marked as own
-                duplicates.filter { it.is_own_company != true && !it.id.isNullOrBlank() }
-                    .forEach { duplicate ->
-                        try {
-                            client.from("companies").delete {
-                                filter { eq("id", duplicate.id!!) }
+                // Find duplicates belonging to current user before inserting
+                val userId = getCurrentUserId()
+                if (userId != null) {
+                    val duplicates = mutableListOf<CompanyRecord>()
+                    
+                    if (!normalizedCompany.company_number.isNullOrBlank()) {
+                        val byNumber = client.from("companies")
+                            .select {
+                                filter {
+                                    eq("company_number", normalizedCompany.company_number)
+                                    eq("user_id", userId) // Only find duplicates belonging to current user
+                                }
                             }
-                            Timber.d("Deleted duplicate company before insert: ${duplicate.company_name}")
-                        } catch (e: Exception) {
-                            Timber.w(e, "Failed to delete duplicate before insert: ${duplicate.id}")
+                            .decodeList<CompanyRecord>()
+                        duplicates.addAll(byNumber)
+                    }
+                    
+                    if (!normalizedCompany.vat_number.isNullOrBlank()) {
+                        val normalizedVat = normalizeVatNumber(normalizedCompany.vat_number)
+                        if (!normalizedVat.isNullOrBlank()) {
+                            val byVat = client.from("companies")
+                                .select {
+                                    filter {
+                                        eq("vat_number", normalizedVat)
+                                        eq("user_id", userId) // Only find duplicates belonging to current user
+                                    }
+                                }
+                                .decodeList<CompanyRecord>()
+                            duplicates.addAll(byVat.filter { dup -> 
+                                !duplicates.any { it.id == dup.id }
+                            })
                         }
                     }
+                    
+                    // Delete duplicates that are NOT marked as own and belong to current user
+                    duplicates.filter { it.is_own_company != true && !it.id.isNullOrBlank() }
+                        .forEach { duplicate ->
+                            try {
+                                client.from("companies").delete {
+                                    filter { 
+                                        eq("id", duplicate.id!!)
+                                        eq("user_id", userId) // Only delete if belongs to current user
+                                    }
+                                }
+                                Timber.d("Deleted duplicate company before insert: ${duplicate.company_name}")
+                            } catch (e: Exception) {
+                                Timber.w(e, "Failed to delete duplicate before insert: ${duplicate.id}")
+                            }
+                        }
+                }
             }
             
             val inserted = client.from("companies").insert(normalizedCompany) {
@@ -132,17 +183,27 @@ class SupabaseRepository(
             
             if (isDuplicateError) {
                 try {
-                    val existingCompany = findExistingCompany(normalizedCompany)
-                    if (existingCompany != null && !existingCompany.id.isNullOrBlank()) {
-                        val existingId = existingCompany.id
+                    // Check if current user already has this company
+                    val existingCompanyForUser = findExistingCompanyForCurrentUser(normalizedCompany)
+                    if (existingCompanyForUser != null && !existingCompanyForUser.id.isNullOrBlank()) {
+                        val existingId = existingCompanyForUser.id
+                        
+                        // Company exists and belongs to current user, update it
                         // If marking as own company, delete duplicates first
                         if (normalizedCompany.is_own_company == true) {
                             deleteDuplicateCompanies(normalizedCompany, existingId)
                         }
                         
-                        val updated = client.from("companies").update(normalizedCompany.copy(id = existingId)) {
+                        // Update the company (it belongs to current user, so RLS will allow it)
+                        val updateData = normalizedCompany.copy(
+                            id = existingId,
+                            user_id = userId  // Ensure user_id is set to current user
+                        )
+                        
+                        val updated = client.from("companies").update(updateData) {
                             filter {
                                 eq("id", existingId)
+                                eq("user_id", userId)  // Only update if it belongs to current user
                             }
                             select()
                         }.decodeSingle<CompanyRecord>()
@@ -150,21 +211,36 @@ class SupabaseRepository(
                         return@withContext updated
                     }
                     
-                    // Fallback: try to update by company_number or company_name
+                    // Current user doesn't have this company, but duplicate error occurred
+                    // This might be due to a race condition or other issue
+                    // Try to create a new record anyway (with a slight delay to avoid race conditions)
+                    Timber.d("Duplicate error but current user doesn't have company, retrying insert")
+                    kotlinx.coroutines.delay(100) // Small delay to avoid race condition
+                    val newCompany = normalizedCompany.copy(id = null) // Clear ID to force insert
+                    val inserted = client.from("companies").insert(newCompany) {
+                        select()
+                    }.decodeSingle<CompanyRecord>()
+                    Timber.d("Company inserted for current user after retry: ${inserted.company_name}")
+                    return@withContext inserted
+                    
+                    // Fallback: try to update by company_number or company_name (only if belongs to current user)
+                    // Note: RLS will enforce this, but we add explicit filter for clarity
                     val updated = if (!normalizedCompany.company_number.isNullOrBlank()) {
                         client.from("companies").update(normalizedCompany) {
                             filter {
                                 eq("company_number", normalizedCompany.company_number)
+                                eq("user_id", userId)  // Only update if belongs to current user
                             }
                             select()
-                        }.decodeSingle<CompanyRecord>()
+                        }.decodeSingleOrNull<CompanyRecord>()
                     } else if (!normalizedCompany.company_name.isNullOrBlank()) {
                         client.from("companies").update(normalizedCompany) {
                             filter {
                                 eq("company_name", normalizedCompany.company_name)
+                                eq("user_id", userId)  // Only update if belongs to current user
                             }
                             select()
-                        }.decodeSingle<CompanyRecord>()
+                        }.decodeSingleOrNull<CompanyRecord>()
                     } else {
                         null
                     }
@@ -173,8 +249,20 @@ class SupabaseRepository(
                         Timber.d("Company updated successfully: ${updated.company_name}")
                         return@withContext updated
                     } else {
-                        Timber.e(e, "Cannot update company without company_number or company_name")
-                        return@withContext null
+                        // Update failed - likely company doesn't belong to current user
+                        // Create a new record instead
+                        Timber.d("Fallback update failed (likely ownership issue), creating new record for current user")
+                        val newCompany = normalizedCompany.copy(id = null) // Clear ID to force insert
+                        try {
+                            val inserted = client.from("companies").insert(newCompany) {
+                                select()
+                            }.decodeSingle<CompanyRecord>()
+                            Timber.d("Company inserted for current user: ${inserted.company_name}")
+                            return@withContext inserted
+                        } catch (insertException: Exception) {
+                            Timber.e(insertException, "Failed to insert company after update failure: ${company.company_name}")
+                            return@withContext null
+                        }
                     }
                 } catch (updateException: Exception) {
                     Timber.e(updateException, "Failed to update company: ${company.company_name}")
@@ -187,20 +275,78 @@ class SupabaseRepository(
         }
     }
     
+    /**
+     * Find if the current user already has a company with the same company_number/VAT.
+     * This is used to prevent duplicate companies for the same user.
+     */
+    private suspend fun findExistingCompanyForCurrentUser(company: CompanyRecord): CompanyRecord? {
+        if (client == null) return null
+        val userId = getCurrentUserId()
+        if (userId == null) return null
+        
+        return try {
+            // Try to find by company_number first (most reliable)
+            if (!company.company_number.isNullOrBlank()) {
+                val results = client.from("companies")
+                    .select {
+                        filter {
+                            eq("company_number", company.company_number)
+                            eq("user_id", userId)
+                        }
+                    }
+                    .decodeList<CompanyRecord>()
+                if (results.isNotEmpty()) {
+                    val result = results.first()
+                    Timber.d("Found existing company for current user by company_number: ${result.company_name}")
+                    return result
+                }
+            }
+            
+            // Try to find by VAT number (normalize for query)
+            val normalizedVat = normalizeVatNumber(company.vat_number)
+            if (!normalizedVat.isNullOrBlank()) {
+                val results = client.from("companies")
+                    .select {
+                        filter {
+                            eq("vat_number", normalizedVat)
+                            eq("user_id", userId)
+                        }
+                    }
+                    .decodeList<CompanyRecord>()
+                if (results.isNotEmpty()) {
+                    val result = results.first()
+                    Timber.d("Found existing company for current user by vat_number: ${result.company_name}")
+                    return result
+                }
+            }
+            
+            null
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to find existing company for current user")
+            null
+        }
+    }
+    
+    /**
+     * Find any company with the same company_number/VAT (for shared verification database).
+     * This searches across all users and is used for invoice scanning/verification.
+     */
     private suspend fun findExistingCompany(company: CompanyRecord): CompanyRecord? {
         if (client == null) return null
         
         return try {
-            // Try to find by company_number first (most reliable - unique constraint)
+            // Try to find by company_number first (most reliable)
             if (!company.company_number.isNullOrBlank()) {
-                val result = client.from("companies")
+                val results = client.from("companies")
                     .select {
                         filter {
                             eq("company_number", company.company_number)
                         }
                     }
-                    .decodeSingleOrNull<CompanyRecord>()
-                if (result != null) {
+                    .decodeList<CompanyRecord>()
+                if (results.isNotEmpty()) {
+                    // Return the first one found (for verification purposes)
+                    val result = results.first()
                     Timber.d("Found existing company by company_number: ${result.company_name}")
                     return result
                 }
@@ -209,14 +355,16 @@ class SupabaseRepository(
             // Try to find by VAT number (normalize for query)
             val normalizedVat = normalizeVatNumber(company.vat_number)
             if (!normalizedVat.isNullOrBlank()) {
-                val result = client.from("companies")
+                val results = client.from("companies")
                     .select {
                         filter {
                             eq("vat_number", normalizedVat)
                         }
                     }
-                    .decodeSingleOrNull<CompanyRecord>()
-                if (result != null) {
+                    .decodeList<CompanyRecord>()
+                if (results.isNotEmpty()) {
+                    // Return the first one found (for verification purposes)
+                    val result = results.first()
                     Timber.d("Found existing company by vat_number: ${result.company_name}")
                     return result
                 }
@@ -224,14 +372,16 @@ class SupabaseRepository(
             
             // Try to find by company name (less reliable, but useful if number/VAT not provided)
             if (!company.company_name.isNullOrBlank()) {
-                val result = client.from("companies")
+                val results = client.from("companies")
                     .select {
                         filter {
                             eq("company_name", company.company_name)
                         }
                     }
-                    .decodeSingleOrNull<CompanyRecord>()
-                if (result != null) {
+                    .decodeList<CompanyRecord>()
+                if (results.isNotEmpty()) {
+                    // Return the first one found (for verification purposes)
+                    val result = results.first()
                     Timber.d("Found existing company by company_name: ${result.company_name}")
                     return result
                 }
@@ -285,14 +435,17 @@ class SupabaseRepository(
     }
 
     /**
-     * Delete duplicate company records that have the same company_number or VAT number
+     * Delete duplicate company records that belong to the current user and have the same company_number or VAT number
      * but are NOT marked as own company. This prevents duplicates when marking a company as "own".
+     * Note: Only deletes duplicates belonging to the current user - other users can have the same company.
      */
     private suspend fun deleteDuplicateCompanies(company: CompanyRecord, keepId: String) = withContext(Dispatchers.IO) {
         if (client == null) return@withContext
+        val userId = getCurrentUserId()
+        if (userId == null) return@withContext
         
         try {
-            // Find all companies with the same company_number or VAT number
+            // Find all companies with the same company_number or VAT number that belong to the current user
             val duplicates = mutableListOf<CompanyRecord>()
             
             if (!company.company_number.isNullOrBlank()) {
@@ -300,6 +453,7 @@ class SupabaseRepository(
                     .select {
                         filter {
                             eq("company_number", company.company_number)
+                            eq("user_id", userId) // Only find duplicates belonging to current user
                             neq("id", keepId) // Exclude the one we're keeping
                         }
                     }
@@ -308,18 +462,22 @@ class SupabaseRepository(
             }
             
             if (!company.vat_number.isNullOrBlank()) {
-                val byVat = client.from("companies")
-                    .select {
-                        filter {
-                            eq("vat_number", company.vat_number)
-                            neq("id", keepId) // Exclude the one we're keeping
+                val normalizedVat = normalizeVatNumber(company.vat_number)
+                if (!normalizedVat.isNullOrBlank()) {
+                    val byVat = client.from("companies")
+                        .select {
+                            filter {
+                                eq("vat_number", normalizedVat)
+                                eq("user_id", userId) // Only find duplicates belonging to current user
+                                neq("id", keepId) // Exclude the one we're keeping
+                            }
                         }
-                    }
-                    .decodeList<CompanyRecord>()
-                // Add only if not already in duplicates list
-                duplicates.addAll(byVat.filter { dup -> 
-                    !duplicates.any { it.id == dup.id }
-                })
+                        .decodeList<CompanyRecord>()
+                    // Add only if not already in duplicates list
+                    duplicates.addAll(byVat.filter { dup -> 
+                        !duplicates.any { it.id == dup.id }
+                    })
+                }
             }
             
             // Delete all duplicates that are NOT marked as own company
@@ -330,9 +488,10 @@ class SupabaseRepository(
                         client.from("companies").delete {
                             filter {
                                 eq("id", duplicateId)
+                                eq("user_id", userId) // Only delete if belongs to current user (RLS will enforce this)
                             }
                         }
-                        Timber.d("Deleted duplicate company: ${duplicate.company_name} (id: ${duplicate.id})")
+                        Timber.d("Deleted duplicate company for current user: ${duplicate.company_name} (id: ${duplicate.id})")
                     } catch (e: Exception) {
                         Timber.w(e, "Failed to delete duplicate company: ${duplicate.id}")
                     }
@@ -340,7 +499,7 @@ class SupabaseRepository(
             }
             
             if (duplicates.isNotEmpty()) {
-                Timber.d("Cleaned up ${duplicates.size} duplicate company records")
+                Timber.d("Cleaned up ${duplicates.size} duplicate company records for current user")
             }
         } catch (e: Exception) {
             Timber.e(e, "Failed to delete duplicate companies")
@@ -599,11 +758,20 @@ class SupabaseRepository(
             Timber.w("Supabase client is null, cannot fetch invoices")
             return@withContext emptyList()
         }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot fetch invoices")
+            return@withContext emptyList()
+        }
         try {
             val invoices = client.from("invoices")
-                .select()
+                .select {
+                    filter {
+                        eq("user_id", userId)
+                    }
+                }
                 .decodeList<InvoiceRecord>()
-            Timber.d("Fetched ${invoices.size} invoices from Supabase")
+            Timber.d("Fetched ${invoices.size} invoices from Supabase for user $userId")
             invoices
         } catch (e: Exception) {
             Timber.e(e, "Failed to fetch invoices from Supabase")
@@ -616,18 +784,24 @@ class SupabaseRepository(
             Timber.w("Supabase client is null, cannot fetch invoices")
             return@withContext emptyList()
         }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot fetch invoices")
+            return@withContext emptyList()
+        }
         try {
             // Format month as YYYY-MM for filtering
             val monthStr = String.format("%04d-%02d", year, month)
             val invoices = client.from("invoices")
                 .select {
                     filter {
-                        // Filter by date starting with YYYY-MM
+                        // Filter by user_id AND date starting with YYYY-MM
+                        eq("user_id", userId)
                         like("date", "$monthStr%")
                     }
                 }
                 .decodeList<InvoiceRecord>()
-            Timber.d("Fetched ${invoices.size} invoices for $monthStr from Supabase")
+            Timber.d("Fetched ${invoices.size} invoices for $monthStr from Supabase for user $userId")
             invoices
         } catch (e: Exception) {
             Timber.e(e, "Failed to fetch invoices by month from Supabase")
@@ -690,15 +864,21 @@ class SupabaseRepository(
             Timber.w("Supabase client is null, cannot get own companies")
             return@withContext emptyList()
         }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot get own companies")
+            return@withContext emptyList()
+        }
         try {
             val companies = client.from("companies")
                 .select {
                     filter {
+                        eq("user_id", userId)
                         eq("is_own_company", true)
                     }
                 }
                 .decodeList<CompanyRecord>()
-            Timber.d("Fetched ${companies.size} own companies from Supabase")
+            Timber.d("Fetched ${companies.size} own companies from Supabase for user $userId")
             companies
         } catch (e: Exception) {
             Timber.e(e, "Failed to fetch own companies from Supabase")
@@ -711,15 +891,22 @@ class SupabaseRepository(
             Timber.w("Supabase client is null, cannot get company by id")
             return@withContext null
         }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot get company by id")
+            return@withContext null
+        }
         try {
+            // Only fetch company if it belongs to the current user
             val company = client.from("companies")
                 .select {
                     filter {
                         eq("id", companyId)
+                        eq("user_id", userId)
                     }
                 }
                 .decodeSingleOrNull<CompanyRecord>()
-            Timber.d("Fetched company by id: ${company?.company_name}")
+            Timber.d("Fetched company by id: ${company?.company_name} (user: $userId)")
             company
         } catch (e: Exception) {
             Timber.e(e, "Failed to fetch company by id: $companyId")
@@ -762,6 +949,38 @@ class SupabaseRepository(
         } catch (e: Exception) {
             Timber.e(e, "Failed to unmark company as own: $companyId")
             throw e
+        }
+    }
+
+    /**
+     * Get partner companies for the current user.
+     * Partner companies are companies that belong to the user but are not marked as own companies.
+     * These are typically companies discovered from invoices or explicitly added as partners.
+     */
+    suspend fun getPartnerCompanies(): List<CompanyRecord> = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot get partner companies")
+            return@withContext emptyList()
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot get partner companies")
+            return@withContext emptyList()
+        }
+        try {
+            val companies = client.from("companies")
+                .select {
+                    filter {
+                        eq("user_id", userId)
+                        eq("is_own_company", false)
+                    }
+                }
+                .decodeList<CompanyRecord>()
+            Timber.d("Fetched ${companies.size} partner companies from Supabase for user $userId")
+            companies
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to fetch partner companies from Supabase")
+            emptyList()
         }
     }
 }

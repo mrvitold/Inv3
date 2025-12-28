@@ -19,6 +19,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
+import com.vitol.inv3.data.local.setActiveOwnCompanyId
 import com.vitol.inv3.ui.auth.AuthViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -29,6 +30,8 @@ fun SettingsScreen(
     authViewModel: AuthViewModel = hiltViewModel()
 ) {
     val uiState by authViewModel.uiState.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
 
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
@@ -125,7 +128,11 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(enabled = !uiState.isLoading) {
-                    authViewModel.signOut()
+                    scope.launch {
+                        // Clear active company ID when signing out
+                        context.setActiveOwnCompanyId(null)
+                        authViewModel.signOut()
+                    }
                 },
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant

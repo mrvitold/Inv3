@@ -46,7 +46,7 @@ class AuthViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     showEmailConfirmation = true,
-                    successMessage = "Please check your email to confirm your account."
+                    successMessage = null
                 )
             } else {
                 _uiState.value = _uiState.value.copy(
@@ -141,6 +141,8 @@ class AuthViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(errorMessage = message)
     }
 }
+
+
 
 
 

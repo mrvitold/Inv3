@@ -57,10 +57,9 @@ fun CompaniesScreen(
     var name by remember { mutableStateOf("") }
     var number by remember { mutableStateOf("") }
     var vat by remember { mutableStateOf("") }
-    // Observe companies from ViewModel using StateFlow
-    val allCompanies by viewModel.items.collectAsState()
-    // Filter out own companies - show only regular companies
-    val companies = allCompanies.filter { !it.is_own_company }
+    // Observe partner companies from ViewModel using StateFlow
+    // CompaniesViewModel.load() already filters to partner companies (user-specific, is_own_company = false)
+    val companies by viewModel.items.collectAsState()
     var companyToDelete by remember { mutableStateOf<CompanyRecord?>(null) }
 
     LaunchedEffect(Unit) { viewModel.load() }
@@ -173,13 +172,13 @@ class CompaniesViewModel @Inject constructor(
     fun load() {
         viewModelScope.launch {
             try {
-                // select() without parameters selects all columns including id
-                val list = client?.from("companies")?.select()?.decodeList<CompanyRecord>() ?: emptyList()
-                Timber.d("Loaded ${list.size} companies from Supabase")
+                // Load partner companies (user-specific, not own companies)
+                val list = repo.getPartnerCompanies()
+                Timber.d("Loaded ${list.size} partner companies from Supabase")
                 _items.value = list
-                Timber.d("Updated items list, now contains ${_items.value.size} companies")
+                Timber.d("Updated items list, now contains ${_items.value.size} partner companies")
             } catch (e: Exception) {
-                Timber.e(e, "Failed to load companies from Supabase")
+                Timber.e(e, "Failed to load partner companies from Supabase")
             }
         }
     }

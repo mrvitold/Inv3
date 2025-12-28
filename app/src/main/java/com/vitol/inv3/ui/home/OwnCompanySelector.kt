@@ -41,6 +41,40 @@ fun OwnCompanySelector(
         viewModel.loadOwnCompanies()
     }
     
+    // Auto-select company when app loads:
+    // 1. If there's a stored activeCompanyId, ensure it's selected and name is loaded
+    // 2. If no active company but only one company exists, auto-select it
+    LaunchedEffect(ownCompanies, activeCompanyId, activeCompanyName, isLoading) {
+        if (!isLoading && ownCompanies.isNotEmpty()) {
+            // Case 1: There's a stored activeCompanyId but activeCompanyName is null
+            // This means the company needs to be loaded/selected
+            if (activeCompanyId != null && activeCompanyName == null) {
+                val company = ownCompanies.find { it.id == activeCompanyId }
+                if (company != null) {
+                    // Company found in loaded list, trigger selection to ensure name is set
+                    scope.launch {
+                        context.setActiveOwnCompanyId(company.id)
+                        onCompanySelected(company.id)
+                    }
+                } else {
+                    // Stored company ID doesn't exist in loaded list, clear it
+                    scope.launch {
+                        context.setActiveOwnCompanyId(null)
+                        onCompanySelected(null)
+                    }
+                }
+            }
+            // Case 2: No active company but only one company exists - auto-select it
+            else if (activeCompanyId == null && ownCompanies.size == 1) {
+                val singleCompany = ownCompanies.first()
+                scope.launch {
+                    context.setActiveOwnCompanyId(singleCompany.id)
+                    onCompanySelected(singleCompany.id)
+                }
+            }
+        }
+    }
+    
     // Your Company section
     Card(
         modifier = Modifier
