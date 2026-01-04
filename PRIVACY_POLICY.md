@@ -93,7 +93,7 @@ We use the following third-party services that may collect or process your data:
 ### 3. Google Sign-In
 
 - **Purpose**: Authentication service to allow you to sign in with your Google account
-- **Data Processed**: Email address, name, and profile picture (if available)
+- **Data Processed**: Email address and name
 - **Privacy Policy**: [https://policies.google.com/privacy](https://policies.google.com/privacy)
 - **Location**: Data is processed by Google's authentication services
 
