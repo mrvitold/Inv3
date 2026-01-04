@@ -69,6 +69,10 @@ app/src/main/assets/documentai-credentials.json
 app/src/main/assets/*credentials*.json
 app/src/main/assets/*azure*.json
 
+# Firebase configuration (contains API keys)
+app/google-services.json
+google-services.json
+
 # Support files (PDFs, documentation)
 support/
 *.pdf
