@@ -1,9 +1,20 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.dagger.hilt.android")
     kotlin("kapt")
     kotlin("plugin.serialization") version "1.9.25"
+}
+
+// Load keystore properties if keystore.properties exists
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
 android {
@@ -26,6 +37,23 @@ android {
         buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"${project.findProperty("GOOGLE_OAUTH_CLIENT_ID") ?: ""}\"")
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                val storeFileStr = keystoreProperties["storeFile"] as String? ?: ""
+                // Resolve path relative to project root, not app module
+                storeFile = if (storeFileStr.isNotEmpty()) {
+                    rootProject.file(storeFileStr)
+                } else {
+                    null
+                }
+                storePassword = keystoreProperties["storePassword"] as String? ?: ""
+                keyAlias = keystoreProperties["keyAlias"] as String? ?: ""
+                keyPassword = keystoreProperties["keyPassword"] as String? ?: ""
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -33,6 +61,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Only apply signing config if keystore.properties exists
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             isMinifyEnabled = false
