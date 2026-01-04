@@ -18,15 +18,13 @@ When you create an account or sign in, we collect:
 - **Password**: Encrypted and stored securely (for email/password authentication)
 - **Display Name**: Optional, provided by you or derived from your email
 - **Full Name**: Optional, provided during account setup or via Google Sign-In
-- **Avatar URL**: Optional, if you choose to upload a profile picture
-- **Phone Number**: Optional, if you choose to provide it
 - **User Preferences**: Settings and preferences you configure within the App
 
 ### 2. Authentication Data
 
 - **Session Tokens**: Stored locally on your device to maintain your login session
 - **User ID**: Unique identifier associated with your account
-- **Google Account Information**: If you choose to sign in with Google, we receive your email address and basic profile information (name, profile picture) from Google
+- **Google Account Information**: If you choose to sign in with Google, we receive your email address and name from Google
 
 ### 3. Invoice Data
 
