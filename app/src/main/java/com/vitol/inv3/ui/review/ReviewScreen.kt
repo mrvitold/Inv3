@@ -551,18 +551,69 @@ fun ReviewScreen(
     
     // Process all pages when URIs change (handles both single and multi-page)
     // NOTE: subscriptionStatus is NOT in the key list to prevent re-triggering when usage updates
-    LaunchedEffect(allImageUris, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId) {
+    // CRITICAL: Include isConfirmed in keys to ensure LaunchedEffect re-evaluates when confirmation state changes
+    LaunchedEffect(allImageUris, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId, isConfirmed) {
         // CRITICAL: Stop all processing if invoice has been confirmed
         if (isConfirmed) {
-            Timber.d("ReviewScreen: Skipping processing - invoice already confirmed")
+            Timber.d("ReviewScreen: LaunchedEffect triggered but skipping processing - invoice already confirmed (allImageUris: ${allImageUris.size}, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, activeCompanyId: $activeCompanyId)")
             return@LaunchedEffect
         }
         
+        // CRITICAL: Early exit check - if ALL URIs are already processed, triggered, or being processed, skip immediately
+        // This prevents duplicate Azure calls when LaunchedEffect re-triggers due to state changes (e.g., ownCompanyNumber loading)
+        val allUrisAlreadyHandled = allImageUris.all { uri ->
+            uri in processedUris || uri in processingUris || uri in ocrTriggeredUris
+        }
+        if (allUrisAlreadyHandled && allImageUris.isNotEmpty()) {
+            Timber.d("ReviewScreen: All URIs already processed/triggered/processing, skipping LaunchedEffect (processedUris: ${processedUris.size}, processingUris: ${processingUris.size}, ocrTriggeredUris: ${ocrTriggeredUris.size}, allImageUris: ${allImageUris.size})")
+            return@LaunchedEffect
+        }
+        
+        Timber.d("ReviewScreen: LaunchedEffect triggered - allImageUris: ${allImageUris.size}, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, activeCompanyId: $activeCompanyId, isConfirmed: $isConfirmed")
+        
+        // CRITICAL: Mark cached URIs as triggered immediately to prevent duplicate Azure calls
+        // This prevents duplicate calls even if state resets on recomposition
+        // Note: We mark as triggered but NOT as processed, so they'll still be processed from cache
+        allImageUris.forEach { uri ->
+            if (uri !in ocrTriggeredUris && uri !in processedUris) {
+                val cached = fileImportViewModel.getCachedOcrResult(uri)
+                if (cached != null && cached.isSuccess) {
+                    // URI is cached and successful - mark as triggered immediately
+                    // This prevents it from triggering Azure if LaunchedEffect re-triggers
+                    // But it will still be processed from cache in the loop below
+                    ocrTriggeredUris = ocrTriggeredUris + uri
+                    Timber.d("ReviewScreen: URI $uri marked as triggered (cached) - will use cache, prevents duplicate Azure call")
+                }
+            }
+        }
+        
         // Find URIs that need processing (not processed, not processing, not triggered)
-        val urisToProcess = allImageUris.filter { 
-            it !in processedUris && 
-            it !in processingUris && 
-            it !in ocrTriggeredUris 
+        // CRITICAL: Cached URIs are marked as triggered to prevent Azure calls, but they still need to be processed from cache
+        val urisToProcess = allImageUris.filter { uri ->
+            // Skip if already processed
+            if (uri in processedUris) {
+                Timber.d("ReviewScreen: URI $uri filtered out - already processed")
+                return@filter false
+            }
+            
+            // Check if cached - if cached, allow it through even if triggered (will use cache, not Azure)
+            val cached = fileImportViewModel.getCachedOcrResult(uri)
+            val isCached = cached != null && cached.isSuccess
+            
+            // Skip if already processing
+            if (uri in processingUris) {
+                Timber.d("ReviewScreen: URI $uri filtered out - already processing")
+                return@filter false
+            }
+            
+            // Skip if triggered AND not cached (cached URIs marked as triggered should still be processed from cache)
+            if (uri in ocrTriggeredUris && !isCached) {
+                Timber.d("ReviewScreen: URI $uri filtered out - already triggered and not cached")
+                return@filter false
+            }
+            
+            // Allow through if cached (even if triggered) or if not triggered
+            true
         }
         
         // If no URIs to process, exit immediately (already processed or being processed)
@@ -570,6 +621,8 @@ fun ReviewScreen(
             Timber.d("ReviewScreen: All URIs already processed or being processed, skipping (processedUris: ${processedUris.size}, processingUris: ${processingUris.size}, ocrTriggeredUris: ${ocrTriggeredUris.size}, allImageUris: ${allImageUris.size})")
             return@LaunchedEffect
         }
+        
+        Timber.d("ReviewScreen: Found ${urisToProcess.size} URI(s) to process: ${urisToProcess.map { it.toString().takeLast(50) }}")
         
         // CRITICAL: If activeCompanyId is set, wait for ownCompanyNumber OR ownCompanyVatNumber to be loaded before starting OCR
         // This ensures the parser can properly exclude own company number or VAT number
@@ -582,10 +635,22 @@ fun ReviewScreen(
             return@LaunchedEffect
         }
         
-        // Mark as triggered IMMEDIATELY (synchronously) before processing
-        // This ensures that if LaunchedEffect re-triggers, it will see these URIs as already triggered
+        // CRITICAL: Mark URIs as triggered IMMEDIATELY (synchronously) before processing
+        // This ensures that if LaunchedEffect re-triggers due to state changes (e.g., ownCompanyNumber loading),
+        // it will see these URIs as already triggered and skip duplicate Azure calls
         ocrTriggeredUris = ocrTriggeredUris + urisToProcess.toSet()
         processingUris = processingUris + urisToProcess.toSet()
+        Timber.d("ReviewScreen: Marked ${urisToProcess.size} URI(s) as triggered/processing to prevent duplicate calls")
+        
+        // CRITICAL: Double-check isConfirmed after marking URIs (race condition protection)
+        // This check happens after marking URIs as triggered, so if isConfirmed became true,
+        // we need to clean up the state we just set
+        if (isConfirmed) {
+            Timber.d("ReviewScreen: isConfirmed became true after marking URIs, cleaning up and skipping")
+            ocrTriggeredUris = ocrTriggeredUris - urisToProcess.toSet()
+            processingUris = processingUris - urisToProcess.toSet()
+            return@LaunchedEffect
+        }
         
         // Check subscription limit before processing (read current value, don't depend on it)
         val pageCount = allImageUris.size
@@ -607,6 +672,9 @@ fun ReviewScreen(
             
             // Process each new page sequentially or in parallel
             urisToProcess.forEachIndexed { index, uri ->
+                // Note: URI is already marked as triggered/processing at line 603-604, so if LaunchedEffect re-triggers,
+                // it will see this URI as already triggered and skip it
+                
                 val cached = fileImportViewModel.getCachedOcrResult(uri)
                 if (cached != null) {
                     cached.onSuccess { parsed ->
@@ -686,13 +754,14 @@ fun ReviewScreen(
     
     // Start Azure Document Intelligence immediately (skip unreliable first local OCR pass)
     // Wait for ownCompanyNumber to be loaded if activeCompanyId is set, so parser can exclude own company number
-    // This LaunchedEffect handles single-page invoices for backward compatibility
-    // CRITICAL: For single-page invoices (allImageUris.size == 1), the first LaunchedEffect handles processing.
-    // This second LaunchedEffect should ONLY run if the URI is NOT in allImageUris (edge case) or if it's already been processed.
-    LaunchedEffect(imageUri, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId) {
+    // This LaunchedEffect handles edge cases for multi-page invoices only
+    // CRITICAL: For single-page invoices (allImageUris.size == 1), this LaunchedEffect NEVER runs - the first LaunchedEffect handles them.
+    // CRITICAL: Azure can be called second time ONLY if there are more than 1 page in document (multi-page invoice edge case).
+    // CRITICAL: Include isConfirmed and allImageUris.size in keys to ensure LaunchedEffect re-evaluates when confirmation state or URIs change
+    LaunchedEffect(imageUri, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId, isConfirmed, allImageUris.size) {
         // CRITICAL: Stop all processing if invoice has been confirmed
         if (isConfirmed) {
-            Timber.d("ReviewScreen: Skipping second LaunchedEffect - invoice already confirmed")
+            Timber.d("ReviewScreen: Second LaunchedEffect triggered but skipping - invoice already confirmed (imageUri: $imageUri, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, activeCompanyId: $activeCompanyId)")
             return@LaunchedEffect
         }
         
@@ -702,11 +771,23 @@ fun ReviewScreen(
             return@LaunchedEffect
         }
         
-        // CRITICAL: For single-page invoices, ALWAYS skip - the first LaunchedEffect handles them
-        // This prevents duplicate processing when ownCompanyNumber loads
-        // Check this FIRST before any other logic
+        // CRITICAL: Skip if allImageUris is empty (wait for it to be populated)
+        if (allImageUris.isEmpty()) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect - allImageUris is empty, waiting for URIs to be populated")
+            return@LaunchedEffect
+        }
+        
+        // CRITICAL: For single-page invoices, ALWAYS skip - Azure should NEVER be called second time for single-page invoices
+        // The first LaunchedEffect handles single-page invoices completely
         if (allImageUris.size == 1) {
-            Timber.d("ReviewScreen: Skipping second LaunchedEffect for single-page invoice (allImageUris.size=1, handled by first LaunchedEffect)")
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect for single-page invoice (allImageUris.size=1, handled by first LaunchedEffect - Azure will NOT be called second time)")
+            return@LaunchedEffect
+        }
+        
+        // CRITICAL: Skip if imageUri is in allImageUris - the first LaunchedEffect handles it
+        // This check MUST be early to prevent duplicate processing
+        if (imageUri in allImageUris) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect - imageUri is in allImageUris (handled by first LaunchedEffect)")
             return@LaunchedEffect
         }
         
@@ -716,16 +797,16 @@ fun ReviewScreen(
             return@LaunchedEffect
         }
         
-        // Skip if:
-        // 1. We have multiple pages (handled by first LaunchedEffect)
-        // 2. imageUri is in allImageUris (handled by first LaunchedEffect)
-        // 3. URI is currently being processed
-        // 4. URI has OCR triggered
-        if (allImageUris.size > 1 || 
-            imageUri in allImageUris ||
-            imageUri in processingUris || 
-            imageUri in ocrTriggeredUris) {
-            Timber.d("ReviewScreen: Skipping second LaunchedEffect - URI already handled by first LaunchedEffect or already processing/triggered")
+        // Skip if URI is currently being processed or has OCR triggered
+        if (imageUri in processingUris || imageUri in ocrTriggeredUris) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect - URI already processing/triggered")
+            return@LaunchedEffect
+        }
+        
+        // CRITICAL: Only proceed if multi-page invoice (allImageUris.size > 1) AND imageUri is NOT in allImageUris (edge case)
+        // This ensures Azure is only called second time for multi-page invoices in edge cases
+        if (allImageUris.size <= 1) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect - single-page invoice (Azure will NOT be called second time)")
             return@LaunchedEffect
         }
         
@@ -739,7 +820,9 @@ fun ReviewScreen(
         }
         
         // Trigger OCR once when image is available and ownCompanyNumber is loaded (if needed)
-        Timber.d("ReviewScreen LaunchedEffect triggered - imageUri: $imageUri, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, ocrTriggeredUris: $ocrTriggeredUris, isReanalyzing: $isReanalyzing")
+        // NOTE: This should only run for multi-page invoice edge cases where imageUri is NOT in allImageUris
+        // Azure will be called second time ONLY for multi-page invoices (allImageUris.size > 1)
+        Timber.d("ReviewScreen: Second LaunchedEffect triggered for multi-page edge case - imageUri: $imageUri, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, ocrTriggeredUris: $ocrTriggeredUris, isReanalyzing: $isReanalyzing, allImageUris.size: ${allImageUris.size}")
         
         // Check if we have a cached result
         val cached = fileImportViewModel.getCachedOcrResult(imageUri)

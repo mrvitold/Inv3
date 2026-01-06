@@ -3,6 +3,7 @@ package com.vitol.inv3.data.remote
 import com.vitol.inv3.auth.AuthManager
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -33,6 +34,36 @@ data class InvoiceRecord(
     val vat_rate: Double? = null,
     val tax_code: String? = "PVM1",
     val user_id: String? = null
+)
+
+@Serializable
+data class UserSubscriptionUpdate(
+    val subscription_plan: String,
+    val subscription_status: String,
+    val subscription_start_date: String? = null,
+    val subscription_end_date: String? = null,
+    val purchase_token: String? = null
+)
+
+@Serializable
+data class UserUsageUpdate(
+    val pages_used: Int,
+    val usage_reset_date: String? = null
+)
+
+@Serializable
+data class UserUsageRecord(
+    val pages_used: Int? = null,
+    val usage_reset_date: String? = null
+)
+
+@Serializable
+data class UserSubscriptionRecord(
+    val subscription_plan: String? = null,
+    val subscription_status: String? = null,
+    val subscription_start_date: String? = null,
+    val subscription_end_date: String? = null,
+    val purchase_token: String? = null
 )
 
 class SupabaseRepository(
@@ -881,6 +912,10 @@ class SupabaseRepository(
             Timber.d("Fetched ${companies.size} own companies from Supabase for user $userId")
             companies
         } catch (e: Exception) {
+            // Re-throw CancellationException to allow proper coroutine cancellation
+            if (e is CancellationException) {
+                throw e
+            }
             Timber.e(e, "Failed to fetch own companies from Supabase")
             emptyList()
         }
@@ -909,6 +944,10 @@ class SupabaseRepository(
             Timber.d("Fetched company by id: ${company?.company_name} (user: $userId)")
             company
         } catch (e: Exception) {
+            // Re-throw CancellationException to allow proper coroutine cancellation
+            if (e is CancellationException) {
+                throw e
+            }
             Timber.e(e, "Failed to fetch company by id: $companyId")
             null
         }
@@ -1009,19 +1048,13 @@ class SupabaseRepository(
                 null
             }
             
-            val updateData = mutableMapOf<String, Any>(
-                "subscription_plan" to plan,
-                "subscription_status" to if (isActive) "active" else "expired",
-                "subscription_start_date" to java.time.Instant.ofEpochMilli(startDate).toString()
+            val updateData = UserSubscriptionUpdate(
+                subscription_plan = plan,
+                subscription_status = if (isActive) "active" else "expired",
+                subscription_start_date = java.time.Instant.ofEpochMilli(startDate).toString(),
+                subscription_end_date = endDate?.let { java.time.Instant.ofEpochMilli(it).toString() },
+                purchase_token = purchaseToken
             )
-            
-            if (endDate != null) {
-                updateData["subscription_end_date"] = java.time.Instant.ofEpochMilli(endDate).toString()
-            }
-            
-            if (purchaseToken != null) {
-                updateData["purchase_token"] = purchaseToken
-            }
             
             client.from("users").update(updateData) {
                 filter {
@@ -1065,6 +1098,45 @@ class SupabaseRepository(
     }
     
     /**
+     * Get usage count from Supabase.
+     */
+    suspend fun getUsageCount(): Pair<Int, Long?>? = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot get usage count")
+            return@withContext null
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot get usage count")
+            return@withContext null
+        }
+        try {
+            val result = client.from("users")
+                .select {
+                    filter {
+                        eq("id", userId)
+                    }
+                }
+                .decodeSingle<UserUsageRecord>()
+            
+            val pagesUsed = result.pages_used ?: 0
+            val resetDate = result.usage_reset_date?.let {
+                try {
+                    java.time.Instant.parse(it).toEpochMilli()
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            
+            Timber.d("Fetched usage count from Supabase: pagesUsed=$pagesUsed, resetDate=$resetDate")
+            return@withContext Pair(pagesUsed, resetDate)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get usage count from Supabase")
+            null
+        }
+    }
+    
+    /**
      * Update usage count in Supabase.
      */
     suspend fun updateUsageCount(pagesUsed: Int, resetDate: Long? = null) = withContext(Dispatchers.IO) {
@@ -1078,20 +1150,17 @@ class SupabaseRepository(
             return@withContext
         }
         try {
-            val updateData = mutableMapOf<String, Any>(
-                "pages_used" to pagesUsed
+            val updateData = UserUsageUpdate(
+                pages_used = pagesUsed,
+                usage_reset_date = resetDate?.let { java.time.Instant.ofEpochMilli(it).toString() }
             )
-            
-            if (resetDate != null) {
-                updateData["usage_reset_date"] = java.time.Instant.ofEpochMilli(resetDate).toString()
-            }
             
             client.from("users").update(updateData) {
                 filter {
                     eq("id", userId)
                 }
             }
-            Timber.d("Usage count updated in Supabase: pagesUsed=$pagesUsed")
+            Timber.d("Usage count updated in Supabase: pagesUsed=$pagesUsed, resetDate=$resetDate")
         } catch (e: Exception) {
             Timber.e(e, "Failed to update usage count in Supabase")
         }

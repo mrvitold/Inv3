@@ -3,6 +3,7 @@ package com.vitol.inv3.di
 import android.content.Context
 import com.vitol.inv3.billing.BillingManager
 import com.vitol.inv3.billing.UsageTracker
+import com.vitol.inv3.data.remote.SupabaseRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -25,9 +26,10 @@ object BillingModule {
     @Provides
     @Singleton
     fun provideUsageTracker(
-        @ApplicationContext context: Context
+        @ApplicationContext context: Context,
+        supabaseRepository: SupabaseRepository
     ): UsageTracker {
-        return UsageTracker(context)
+        return UsageTracker(context, supabaseRepository)
     }
 }
 

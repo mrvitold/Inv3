@@ -38,13 +38,16 @@ class SubscriptionViewModel @Inject constructor(
     
     init {
         viewModelScope.launch {
+            // Initialize usage tracker from Supabase
+            usageTracker.initialize()
+            
             // Combine billing status with usage tracking
             combine(
                 billingManager.subscriptionStatus,
                 usageTracker.getPagesUsedFlow(),
                 usageTracker.getResetDateFlow(),
                 usageTracker.getSubscriptionStartDateFlow()
-            ) { billingStatus, pagesUsed, resetDate, startDate ->
+            ) { billingStatus, pagesUsed, resetDate, _ ->
                 val plan = billingStatus?.plan ?: SubscriptionPlan.FREE
                 val isActive = billingStatus?.isActive ?: (plan == SubscriptionPlan.FREE)
                 
@@ -60,7 +63,8 @@ class SubscriptionViewModel @Inject constructor(
             }.collect { status ->
                 _subscriptionStatus.value = status
                 
-                // Sync to Supabase when status changes
+                // Sync subscription plan/status to Supabase when it changes
+                // (UsageTracker now handles syncing pages_used and reset_date)
                 syncToSupabase(status)
             }
         }
@@ -98,9 +102,8 @@ class SubscriptionViewModel @Inject constructor(
     
     fun trackPageUsage() {
         viewModelScope.launch {
+            // UsageTracker now handles syncing to Supabase automatically
             usageTracker.trackPageUsage()
-            // Sync usage to Supabase
-            syncUsageToSupabase()
         }
     }
     
@@ -138,15 +141,6 @@ class SubscriptionViewModel @Inject constructor(
             )
         } catch (e: Exception) {
             Timber.e(e, "Failed to sync subscription status to Supabase")
-        }
-    }
-    
-    private suspend fun syncUsageToSupabase() {
-        try {
-            val pagesUsed = usageTracker.getPagesUsed()
-            supabaseRepository.updateUsageCount(pagesUsed)
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to sync usage count to Supabase")
         }
     }
     
