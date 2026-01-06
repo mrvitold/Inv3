@@ -68,6 +68,7 @@ import androidx.lifecycle.viewModelScope
 import android.app.Application
 import androidx.navigation.NavController
 import com.vitol.inv3.Routes
+import com.vitol.inv3.billing.SubscriptionPlan
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.InvoiceRecord
@@ -84,6 +85,8 @@ import com.vitol.inv3.utils.DateFormatter
 import com.vitol.inv3.export.TaxCodeDeterminer
 import android.graphics.BitmapFactory
 import java.io.InputStream
+import com.vitol.inv3.ui.subscription.SubscriptionViewModel
+import com.vitol.inv3.ui.subscription.UpgradeDialog
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.launch
@@ -101,6 +104,7 @@ fun ReviewScreen(
     imageUris: List<Uri>,
     navController: NavController? = null,
     viewModel: ReviewViewModel = hiltViewModel(),
+    subscriptionViewModel: SubscriptionViewModel = hiltViewModel(),
     fileImportViewModel: com.vitol.inv3.ui.scan.FileImportViewModel = run {
         // Get Activity-scoped ViewModel to share state across navigation routes
         // This ensures the same ViewModel instance is used across all screens
@@ -123,6 +127,11 @@ fun ReviewScreen(
     
     // Track all pages for this invoice
     var allImageUris by remember(imageUris) { mutableStateOf(imageUris) }
+    
+    // Subscription status and upgrade dialog
+    val subscriptionViewModel: SubscriptionViewModel = hiltViewModel()
+    val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState()
+    var showUpgradeDialog by remember { mutableStateOf(false) }
     
     // Check if invoice is from camera (FileProvider) or from import
     // Camera photos are saved in "captures" directory with "INV3_" prefix
@@ -228,6 +237,10 @@ fun ReviewScreen(
     var isReanalyzing by remember { mutableStateOf(false) } // Track if re-analysis is in progress
     var ocrMethod by remember { mutableStateOf<String?>(null) } // Track which OCR method was used: "Azure" or "Local"
     
+    // CRITICAL: Track if invoice has been confirmed to prevent re-processing after Confirm button is pressed
+    // Reset flag when imageUri changes (new invoice loaded)
+    var isConfirmed by remember(imageUri) { mutableStateOf(false) }
+    
     // Merge state
     var showMergeDialog by remember { mutableStateOf(false) }
     var isMerging by remember { mutableStateOf(false) }
@@ -305,10 +318,15 @@ fun ReviewScreen(
     }
 
     // Track which URIs have been processed
-    var processedUris by remember(allImageUris) { mutableStateOf<Set<Uri>>(emptySet()) }
+    // Use a stable key based on the URIs themselves to prevent reset on recomposition
+    val urisKey = allImageUris.joinToString(",") { it.toString() }
+    var processedUris by remember(urisKey) { mutableStateOf<Set<Uri>>(emptySet()) }
     
-    // Track if OCR has been triggered (keyed by imageUri to handle multiple images)
-    var ocrTriggeredForUri by remember(imageUri) { mutableStateOf(false) }
+    // Track which URIs are currently being processed (to prevent duplicate processing)
+    var processingUris by remember(urisKey) { mutableStateOf<Set<Uri>>(emptySet()) }
+    
+    // Track which URIs have had OCR triggered (to prevent duplicate triggering)
+    var ocrTriggeredUris by remember(urisKey) { mutableStateOf<Set<Uri>>(emptySet()) }
     
     // Helper function to merge OCR results intelligently
     val mergeOcrResults: (String, Map<String, String>, (Map<String, String>) -> Unit) -> Unit = { newParsed, currentFields, onMerged ->
@@ -491,6 +509,7 @@ fun ReviewScreen(
                         text = parsed
                         fields = newFields.toMap()
                         processedUris = processedUris + uri
+                        processingUris = processingUris - uri // Remove from processing set
                         if (processedUris.size == allImageUris.size) {
                             isReanalyzing = false
                             currentInvoiceProcessingStarted = true
@@ -498,12 +517,17 @@ fun ReviewScreen(
                         Timber.d("processPageWithAzure - Single page processing complete - Company_name: '${newFields["Company_name"]}', Invoice_ID: '${newFields["Invoice_ID"]}', Date: '${newFields["Date"]}'")
                         // Cache the result
                         fileImportViewModel.cacheOcrResult(uri, Result.success(parsed))
+                        // Track page usage for subscription
+                        subscriptionViewModel.trackPageUsage()
                     } else {
                         // Multi-page - merge results
                         mergeOcrResults(parsed, fields) { mergedFields ->
                             fields = mergedFields
                         }
                         processedUris = processedUris + uri
+                        processingUris = processingUris - uri // Remove from processing set
+                        // Track page usage for subscription (each page in multi-page invoice)
+                        subscriptionViewModel.trackPageUsage()
                         if (processedUris.size == allImageUris.size) {
                             isReanalyzing = false
                         }
@@ -511,6 +535,7 @@ fun ReviewScreen(
                 }.onFailure { error ->
                     Timber.e(error, "Failed to process page: $uri")
                     processedUris = processedUris + uri
+                    processingUris = processingUris - uri // Remove from processing set
                     if (processedUris.size == allImageUris.size) {
                         isReanalyzing = false
                     }
@@ -525,25 +550,63 @@ fun ReviewScreen(
     }
     
     // Process all pages when URIs change (handles both single and multi-page)
+    // NOTE: subscriptionStatus is NOT in the key list to prevent re-triggering when usage updates
     LaunchedEffect(allImageUris, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId) {
-        // CRITICAL: If activeCompanyId is set, wait for ownCompanyNumber to be loaded before starting OCR
-        // This ensures the parser can properly exclude own company number
-        // If activeCompanyId is null, proceed immediately (no own company to exclude)
-        if (activeCompanyId != null && ownCompanyNumber == null) {
-            Timber.d("ReviewScreen (multi-page): Waiting for ownCompanyNumber to load before starting OCR (activeCompanyId: $activeCompanyId)")
+        // CRITICAL: Stop all processing if invoice has been confirmed
+        if (isConfirmed) {
+            Timber.d("ReviewScreen: Skipping processing - invoice already confirmed")
             return@LaunchedEffect
         }
         
-        // Process any new URIs that haven't been processed yet
-        val newUris = allImageUris.filter { it !in processedUris }
-        if (newUris.isNotEmpty() && !isReanalyzing && !ocrTriggeredForUri) {
-            Timber.d("Processing ${newUris.size} new page(s) for invoice (total pages: ${allImageUris.size})")
+        // Find URIs that need processing (not processed, not processing, not triggered)
+        val urisToProcess = allImageUris.filter { 
+            it !in processedUris && 
+            it !in processingUris && 
+            it !in ocrTriggeredUris 
+        }
+        
+        // If no URIs to process, exit immediately (already processed or being processed)
+        if (urisToProcess.isEmpty()) {
+            Timber.d("ReviewScreen: All URIs already processed or being processed, skipping (processedUris: ${processedUris.size}, processingUris: ${processingUris.size}, ocrTriggeredUris: ${ocrTriggeredUris.size}, allImageUris: ${allImageUris.size})")
+            return@LaunchedEffect
+        }
+        
+        // CRITICAL: If activeCompanyId is set, wait for ownCompanyNumber OR ownCompanyVatNumber to be loaded before starting OCR
+        // This ensures the parser can properly exclude own company number or VAT number
+        // If activeCompanyId is null, proceed immediately (no own company to exclude)
+        // If ownCompanyVatNumber is available, we can proceed without waiting for ownCompanyNumber
+        if (activeCompanyId != null && ownCompanyNumber == null && ownCompanyVatNumber == null) {
+            Timber.d("ReviewScreen: Waiting for ownCompanyNumber or ownCompanyVatNumber to load before starting OCR (activeCompanyId: $activeCompanyId)")
+            // Don't mark URIs as triggered yet - wait for company data to load
+            // When company data loads, LaunchedEffect will re-trigger and process them
+            return@LaunchedEffect
+        }
+        
+        // Mark as triggered IMMEDIATELY (synchronously) before processing
+        // This ensures that if LaunchedEffect re-triggers, it will see these URIs as already triggered
+        ocrTriggeredUris = ocrTriggeredUris + urisToProcess.toSet()
+        processingUris = processingUris + urisToProcess.toSet()
+        
+        // Check subscription limit before processing (read current value, don't depend on it)
+        val pageCount = allImageUris.size
+        val currentSubscriptionStatus = subscriptionStatus
+        if (currentSubscriptionStatus != null && !subscriptionViewModel.canScanPages(pageCount)) {
+            Timber.w("Cannot scan: insufficient pages remaining. Required: $pageCount, Status: $currentSubscriptionStatus")
+            showUpgradeDialog = true
+            // Remove from processing sets since we can't process
+            ocrTriggeredUris = ocrTriggeredUris - urisToProcess.toSet()
+            processingUris = processingUris - urisToProcess.toSet()
+            return@LaunchedEffect
+        }
+        
+        // Now process the URIs (we've passed all checks)
+        if (urisToProcess.isNotEmpty() && !isReanalyzing) {
+            Timber.d("Processing ${urisToProcess.size} new page(s) for invoice (total pages: ${allImageUris.size})")
             isReanalyzing = true
             isLoading = false
-            ocrTriggeredForUri = true // Mark as triggered to prevent duplicate processing
             
             // Process each new page sequentially or in parallel
-            newUris.forEachIndexed { index, uri ->
+            urisToProcess.forEachIndexed { index, uri ->
                 val cached = fileImportViewModel.getCachedOcrResult(uri)
                 if (cached != null) {
                     cached.onSuccess { parsed ->
@@ -602,6 +665,9 @@ fun ReviewScreen(
                             text = if (text.isBlank()) parsed else "$text\n$parsed"
                         }
                         processedUris = processedUris + uri
+                        processingUris = processingUris - uri // Remove from processing set
+                        // Track page usage for subscription
+                        subscriptionViewModel.trackPageUsage()
                         if (processedUris.size == allImageUris.size) {
                             isReanalyzing = false
                             ocrMethod = "Cached"
@@ -621,28 +687,67 @@ fun ReviewScreen(
     // Start Azure Document Intelligence immediately (skip unreliable first local OCR pass)
     // Wait for ownCompanyNumber to be loaded if activeCompanyId is set, so parser can exclude own company number
     // This LaunchedEffect handles single-page invoices for backward compatibility
+    // CRITICAL: For single-page invoices (allImageUris.size == 1), the first LaunchedEffect handles processing.
+    // This second LaunchedEffect should ONLY run if the URI is NOT in allImageUris (edge case) or if it's already been processed.
     LaunchedEffect(imageUri, ownCompanyNumber, ownCompanyVatNumber, activeCompanyId) {
-        // Skip if already processed by multi-page logic or if we have multiple pages
-        if (allImageUris.size > 1 || imageUri in processedUris) {
+        // CRITICAL: Stop all processing if invoice has been confirmed
+        if (isConfirmed) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect - invoice already confirmed")
             return@LaunchedEffect
         }
         
-        // CRITICAL: If activeCompanyId is set, wait for ownCompanyNumber to be loaded before starting OCR
-        // This ensures the parser can properly exclude own company number
+        // CRITICAL: Skip if imageUri is null
+        if (imageUri == null) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect - imageUri is null")
+            return@LaunchedEffect
+        }
+        
+        // CRITICAL: For single-page invoices, ALWAYS skip - the first LaunchedEffect handles them
+        // This prevents duplicate processing when ownCompanyNumber loads
+        // Check this FIRST before any other logic
+        if (allImageUris.size == 1) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect for single-page invoice (allImageUris.size=1, handled by first LaunchedEffect)")
+            return@LaunchedEffect
+        }
+        
+        // CRITICAL: Skip if imageUri is already processed (prevents re-processing)
+        if (imageUri in processedUris) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect - imageUri already processed")
+            return@LaunchedEffect
+        }
+        
+        // Skip if:
+        // 1. We have multiple pages (handled by first LaunchedEffect)
+        // 2. imageUri is in allImageUris (handled by first LaunchedEffect)
+        // 3. URI is currently being processed
+        // 4. URI has OCR triggered
+        if (allImageUris.size > 1 || 
+            imageUri in allImageUris ||
+            imageUri in processingUris || 
+            imageUri in ocrTriggeredUris) {
+            Timber.d("ReviewScreen: Skipping second LaunchedEffect - URI already handled by first LaunchedEffect or already processing/triggered")
+            return@LaunchedEffect
+        }
+        
+        // CRITICAL: If activeCompanyId is set, wait for ownCompanyNumber OR ownCompanyVatNumber to be loaded before starting OCR
+        // This ensures the parser can properly exclude own company number or VAT number
         // If activeCompanyId is null, proceed immediately (no own company to exclude)
-        if (activeCompanyId != null && ownCompanyNumber == null) {
-            Timber.d("ReviewScreen: Waiting for ownCompanyNumber to load before starting OCR (activeCompanyId: $activeCompanyId)")
+        // If ownCompanyVatNumber is available, we can proceed without waiting for ownCompanyNumber
+        if (activeCompanyId != null && ownCompanyNumber == null && ownCompanyVatNumber == null) {
+            Timber.d("ReviewScreen: Waiting for ownCompanyNumber or ownCompanyVatNumber to load before starting OCR (activeCompanyId: $activeCompanyId)")
             return@LaunchedEffect
         }
         
         // Trigger OCR once when image is available and ownCompanyNumber is loaded (if needed)
-        Timber.d("ReviewScreen LaunchedEffect triggered - imageUri: $imageUri, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, ocrTriggeredForUri: $ocrTriggeredForUri, isReanalyzing: $isReanalyzing")
+        Timber.d("ReviewScreen LaunchedEffect triggered - imageUri: $imageUri, ownCompanyNumber: $ownCompanyNumber, ownCompanyVatNumber: $ownCompanyVatNumber, ocrTriggeredUris: $ocrTriggeredUris, isReanalyzing: $isReanalyzing")
         
         // Check if we have a cached result
         val cached = fileImportViewModel.getCachedOcrResult(imageUri)
-        if (cached != null && !ocrTriggeredForUri) {
+        if (cached != null && imageUri != null && imageUri !in ocrTriggeredUris) {
+            // Mark as being processed immediately
+            processingUris = processingUris + imageUri
+            ocrTriggeredUris = ocrTriggeredUris + imageUri
             Timber.d("Using cached OCR result for invoice (PRIORITY - immediate fill)")
-            ocrTriggeredForUri = true
             isReanalyzing = true
             isLoading = false
             ocrMethod = "Cached"
@@ -723,6 +828,8 @@ fun ReviewScreen(
                 }
                 fields = newFields.toMap()
                 isReanalyzing = false
+                processingUris = processingUris - imageUri // Remove from processing set
+                processedUris = processedUris + imageUri // Mark as processed to prevent re-processing
                 Timber.d("Cached OCR result applied - All fields extracted")
                 
                 // NOW mark that current invoice processing has completed and data is filled
@@ -732,17 +839,20 @@ fun ReviewScreen(
                 Timber.e(error, "Cached OCR result failed, will process normally")
                 // Remove failed cache entry and retry processing
                 fileImportViewModel.removeCachedResult(imageUri)
+                processingUris = processingUris - imageUri // Remove from processing set
+                ocrTriggeredUris = ocrTriggeredUris - imageUri // Remove from triggered set to allow retry
                 // Fall through to normal processing
-                ocrTriggeredForUri = false
             }
         }
         
-        if (imageUri != null && !ocrTriggeredForUri && !isReanalyzing && cached == null) {
+        if (imageUri != null && imageUri !in ocrTriggeredUris && !isReanalyzing && cached == null) {
             Timber.d("Starting Azure Document Intelligence OCR for current invoice (PRIORITY - no delay)...")
-            ocrTriggeredForUri = true
+            ocrTriggeredUris = ocrTriggeredUris + imageUri
             isReanalyzing = true
             isLoading = false // Set to false since we're starting immediately
             ocrMethod = "Azure" // Use Azure directly
+            // Mark as being processed immediately
+            processingUris = processingUris + imageUri
             // Don't set currentInvoiceProcessingStarted here - set it only AFTER data is filled
             
             // Start processing current invoice immediately (non-blocking, no delay)
@@ -863,6 +973,8 @@ fun ReviewScreen(
                         text = fullInvoiceText
                         fields = newFields.toMap()
                         isReanalyzing = false
+                        processingUris = processingUris - imageUri // Remove from processing set
+                        processedUris = processedUris + imageUri // Mark as processed to prevent re-processing
                         Timber.d("Current invoice processing complete - All fields extracted, Company_name: '${newFields["Company_name"]}', Invoice_ID: '${newFields["Invoice_ID"]}', Date: '${newFields["Date"]}', Amount: '${newFields["Amount_without_VAT_EUR"]}', VAT: '${newFields["VAT_amount_EUR"]}'")
                         // Cache the result for potential reuse
                         fileImportViewModel.cacheOcrResult(imageUri, Result.success(parsed))
@@ -876,6 +988,7 @@ fun ReviewScreen(
                     }.onFailure {
                         // Fallback to local OCR if Azure Document Intelligence fails
                         Timber.w("Azure Document Intelligence failed, falling back to local OCR")
+                        // Don't remove from processingUris yet - local OCR will handle it
                         ocrMethod = "Local" // Mark as using local OCR
                         // Use runOcr instead of runOcrSecondPass since we don't have a lookup key (no first pass)
                         viewModel.runOcr(
@@ -989,6 +1102,8 @@ fun ReviewScreen(
                                 }
                                 fields = newFields.toMap()
                                 isReanalyzing = false
+                                processingUris = processingUris - imageUri // Remove from processing set
+                                processedUris = processedUris + imageUri // Mark as processed to prevent re-processing
                                 Timber.d("Current invoice processing complete (local OCR) - All fields extracted, Company_name: '${newFields["Company_name"]}'")
                                 // Cache the result for potential reuse
                                 fileImportViewModel.cacheOcrResult(imageUri, localResult)
@@ -1002,6 +1117,7 @@ fun ReviewScreen(
                             }.onFailure { error ->
                                 Timber.e(error, "Local OCR fallback failed")
                                 isReanalyzing = false
+                                processingUris = processingUris - imageUri // Remove from processing set
                                 // Cache the failure result too
                                 fileImportViewModel.cacheOcrResult(imageUri, Result.failure(error))
                                 
@@ -1380,6 +1496,13 @@ fun ReviewScreen(
         item {
             ElevatedButton(
                 onClick = {
+                    // CRITICAL: Mark invoice as confirmed AND mark all URIs as processed BEFORE processing to prevent re-analysis
+                    isConfirmed = true
+                    // Mark all URIs as processed immediately to prevent any re-processing after screen recomposition
+                    processedUris = allImageUris.toSet()
+                    processingUris = emptySet()
+                    ocrTriggeredUris = allImageUris.toSet()
+                    
                     // Format date before saving
                     val formattedDate = DateFormatter.formatDateForDatabase(fields["Date"])
                     if (fields["Date"]?.isNotBlank() == true && formattedDate == null) {
@@ -1621,13 +1744,15 @@ fun ReviewScreen(
         }
         
         // Skip and Stop buttons (only shown when processing queue is active)
-        // Show buttons when there are multiple items in the queue (batch import mode)
+        // Show buttons when there are multiple items in the queue (batch import mode) OR multiple pages (multi-page invoice)
         item {
             // Always render the item, but conditionally show buttons
             // This ensures the item is in the composition tree
-            // Always show buttons when queue is not empty (for batch processing)
-            // Buttons are enabled only when queue has multiple items (size > 1)
-            if (processingQueue.isNotEmpty()) {
+            // Show buttons only for:
+            // 1. Multiple pages in current invoice (allImageUris.size > 1), OR
+            // 2. Multiple items in queue (processingQueue.size > 1) for folder/batch imports
+            // Hide buttons for single-page single-file imports
+            if (processingQueue.size > 1 || allImageUris.size > 1) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1857,6 +1982,27 @@ fun ReviewScreen(
                 ) {
                     Text("Cancel")
                 }
+            }
+        )
+    }
+    
+    // Upgrade dialog when limit reached
+    if (showUpgradeDialog) {
+        UpgradeDialog(
+            subscriptionStatus = subscriptionStatus,
+            onDismiss = {
+                showUpgradeDialog = false
+                // Clear queue and navigate back to home screen when user dismisses
+                // This prevents leaving the user on verification screen with pending analysis
+                fileImportViewModel.clearQueue()
+                navController?.navigate(Routes.Home) {
+                    // Clear back stack to prevent going back to review screen
+                    popUpTo(Routes.Home) { inclusive = false }
+                }
+            },
+            onUpgradeClick = { plan ->
+                showUpgradeDialog = false
+                navController?.navigate(Routes.Subscription)
             }
         )
     }

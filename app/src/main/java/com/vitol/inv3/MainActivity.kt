@@ -28,8 +28,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Camera
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -56,6 +59,10 @@ import com.vitol.inv3.data.remote.SupabaseRepository
 import com.vitol.inv3.ui.home.OwnCompanySelector
 import com.vitol.inv3.ui.home.OwnCompanyViewModel
 import com.vitol.inv3.ui.scan.FileImportViewModel
+import com.vitol.inv3.ui.subscription.UsageIndicator
+import com.vitol.inv3.ui.subscription.SubscriptionViewModel
+import com.vitol.inv3.ui.subscription.SubscriptionScreen
+import com.vitol.inv3.ui.subscription.UpgradeDialog
 import com.vitol.inv3.ui.scan.processSelectedFile
 import com.vitol.inv3.utils.FileImportService
 import com.vitol.inv3.auth.AuthManager
@@ -153,6 +160,7 @@ object Routes {
     const val EditInvoice = "editInvoice"
     const val EditCompany = "editCompany"
     const val Settings = "settings"
+    const val Subscription = "subscription"
 }
 
 @Composable
@@ -264,6 +272,11 @@ fun AppNavHost(
         }
         composable(Routes.Exports) { com.vitol.inv3.ui.exports.ExportsScreen(navController = navController) }
         composable(Routes.Settings) { com.vitol.inv3.ui.settings.SettingsScreen(navController = navController) }
+        composable(Routes.Subscription) { 
+            SubscriptionScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
         composable("${Routes.EditInvoice}/{invoiceId}") { backStackEntry ->
             val invoiceId = backStackEntry.arguments?.getString("invoiceId") ?: ""
             if (invoiceId.isNotBlank()) {
@@ -299,6 +312,7 @@ fun HomeScreen(
         }
     },
     ownCompanyViewModel: OwnCompanyViewModel = hiltViewModel(),
+    subscriptionViewModel: SubscriptionViewModel = hiltViewModel(),
     repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo
 ) {
     val context = LocalContext.current
@@ -362,6 +376,10 @@ fun HomeScreen(
     var showProcessingDialog by remember { mutableStateOf(false) }
     var showInvoiceTypeDialog by remember { mutableStateOf(false) }
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var showUpgradeDialog by remember { mutableStateOf(false) }
+    
+    // Get subscription status for limit checks and upgrade dialog
+    val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState()
     
     // Folder picker launcher for Import Folder button
     val folderPickerLauncher = rememberLauncherForActivityResult(
@@ -717,7 +735,18 @@ fun HomeScreen(
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Your Company section at the top
+            // Subscription usage indicator at the top
+            UsageIndicator(
+                subscriptionStatus = subscriptionStatus,
+                modifier = Modifier.padding(horizontal = 24.dp),
+                onUpgradeClick = {
+                    navController.navigate(Routes.Subscription)
+                }
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // Your Company section below subscription
             OwnCompanySelector(
                 activeCompanyId = activeCompanyId,
                 activeCompanyName = activeCompanyName,
@@ -757,20 +786,27 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Import File, Import Folder, and Scan with Camera buttons
+                // All buttons in one column with consistent spacing
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     // Import File button
                     Button(
                         onClick = {
-                            // Launch with "*/*" to allow all file types (PDFs and images)
-                            // The custom contract ensures multiple selection is enabled
-                            pendingAction = { filePickerLauncher.launch("*/*") }
-                            showInvoiceTypeDialog = true
+                            // Check subscription limit before showing invoice type dialog
+                            // For file import, check if user can scan at least 1 page
+                            if (!subscriptionViewModel.canScanPages(1)) {
+                                showUpgradeDialog = true
+                            } else {
+                                // Launch with "*/*" to allow all file types (PDFs and images)
+                                // The custom contract ensures multiple selection is enabled
+                                pendingAction = { filePickerLauncher.launch("*/*") }
+                                showInvoiceTypeDialog = true
+                            }
                         },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(0.6f)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Folder,
@@ -783,12 +819,18 @@ fun HomeScreen(
                     // Import Folder button
                     Button(
                         onClick = {
-                            pendingAction = { 
-                                folderPickerLauncher.launch(null)
+                            // Check subscription limit before showing invoice type dialog
+                            // For folder import, check if user can scan at least 1 page
+                            if (!subscriptionViewModel.canScanPages(1)) {
+                                showUpgradeDialog = true
+                            } else {
+                                pendingAction = { 
+                                    folderPickerLauncher.launch(null)
+                                }
+                                showInvoiceTypeDialog = true
                             }
-                            showInvoiceTypeDialog = true
                         },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(0.6f)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Folder,
@@ -801,10 +843,16 @@ fun HomeScreen(
                     // Scan with Camera button
                     Button(
                         onClick = {
-                            pendingAction = { navController.navigate(Routes.Scan) }
-                            showInvoiceTypeDialog = true
+                            // Check subscription limit before showing invoice type dialog
+                            // Camera scan is always 1 page
+                            if (!subscriptionViewModel.canScanPages(1)) {
+                                showUpgradeDialog = true
+                            } else {
+                                pendingAction = { navController.navigate(Routes.Scan) }
+                                showInvoiceTypeDialog = true
+                            }
                         },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(0.6f)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Camera,
@@ -813,28 +861,45 @@ fun HomeScreen(
                         )
                         Text("Scan with Camera")
                     }
-                }
-            
-                Spacer(modifier = Modifier.padding(16.dp))
-                
-                // Other buttons
-                Button(
-                    onClick = { navController.navigate(Routes.Companies) },
-                    modifier = Modifier.fillMaxWidth(0.6f)
-                ) {
-                    Text(text = "Companies")
-                }
-                Button(
-                    onClick = { navController.navigate(Routes.Exports) },
-                    modifier = Modifier.fillMaxWidth(0.6f)
-                ) {
-                    Text(text = "Exports")
-                }
-                Button(
-                    onClick = { navController.navigate(Routes.Settings) },
-                    modifier = Modifier.fillMaxWidth(0.6f)
-                ) {
-                    Text(text = "Settings")
+                    
+                    // Companies button
+                    Button(
+                        onClick = { navController.navigate(Routes.Companies) },
+                        modifier = Modifier.fillMaxWidth(0.6f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Business,
+                            contentDescription = "Companies",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(text = "Companies")
+                    }
+                    
+                    // Exports button
+                    Button(
+                        onClick = { navController.navigate(Routes.Exports) },
+                        modifier = Modifier.fillMaxWidth(0.6f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Exports",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(text = "Exports")
+                    }
+                    
+                    // Settings button
+                    Button(
+                        onClick = { navController.navigate(Routes.Settings) },
+                        modifier = Modifier.fillMaxWidth(0.6f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(text = "Settings")
+                    }
                 }
             }
         }
@@ -962,6 +1027,20 @@ fun HomeScreen(
                             Text("OK")
                         }
                     }
+                }
+            )
+        }
+        
+        // Upgrade dialog - shown when user tries to import/scan but has reached limit
+        if (showUpgradeDialog) {
+            UpgradeDialog(
+                subscriptionStatus = subscriptionStatus,
+                onDismiss = {
+                    showUpgradeDialog = false
+                },
+                onUpgradeClick = { plan ->
+                    showUpgradeDialog = false
+                    navController.navigate(Routes.Subscription)
                 }
             )
         }

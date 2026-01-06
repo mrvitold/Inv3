@@ -983,5 +983,118 @@ class SupabaseRepository(
             emptyList()
         }
     }
+    
+    /**
+     * Update subscription status in Supabase.
+     */
+    suspend fun updateSubscriptionStatus(
+        plan: String,
+        isActive: Boolean,
+        startDate: Long,
+        purchaseToken: String? = null
+    ) = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot update subscription status")
+            return@withContext
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot update subscription status")
+            return@withContext
+        }
+        try {
+            val endDate = if (isActive && plan != "free") {
+                startDate + (30L * 24 * 60 * 60 * 1000) // 30 days from start
+            } else {
+                null
+            }
+            
+            val updateData = mutableMapOf<String, Any>(
+                "subscription_plan" to plan,
+                "subscription_status" to if (isActive) "active" else "expired",
+                "subscription_start_date" to java.time.Instant.ofEpochMilli(startDate).toString()
+            )
+            
+            if (endDate != null) {
+                updateData["subscription_end_date"] = java.time.Instant.ofEpochMilli(endDate).toString()
+            }
+            
+            if (purchaseToken != null) {
+                updateData["purchase_token"] = purchaseToken
+            }
+            
+            client.from("users").update(updateData) {
+                filter {
+                    eq("id", userId)
+                }
+            }
+            Timber.d("Subscription status updated in Supabase: plan=$plan, active=$isActive")
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update subscription status in Supabase")
+        }
+    }
+    
+    /**
+     * Get subscription status from Supabase.
+     */
+    suspend fun getSubscriptionStatus(): Map<String, Any?>? = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot get subscription status")
+            return@withContext null
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot get subscription status")
+            return@withContext null
+        }
+        try {
+            val result = client.from("users")
+                .select {
+                    filter {
+                        eq("id", userId)
+                    }
+                }
+                .decodeSingle<Map<String, Any?>>()
+            
+            Timber.d("Fetched subscription status from Supabase")
+            return@withContext result
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to get subscription status from Supabase")
+            null
+        }
+    }
+    
+    /**
+     * Update usage count in Supabase.
+     */
+    suspend fun updateUsageCount(pagesUsed: Int, resetDate: Long? = null) = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot update usage count")
+            return@withContext
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot update usage count")
+            return@withContext
+        }
+        try {
+            val updateData = mutableMapOf<String, Any>(
+                "pages_used" to pagesUsed
+            )
+            
+            if (resetDate != null) {
+                updateData["usage_reset_date"] = java.time.Instant.ofEpochMilli(resetDate).toString()
+            }
+            
+            client.from("users").update(updateData) {
+                filter {
+                    eq("id", userId)
+                }
+            }
+            Timber.d("Usage count updated in Supabase: pagesUsed=$pagesUsed")
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to update usage count in Supabase")
+        }
+    }
 }
 

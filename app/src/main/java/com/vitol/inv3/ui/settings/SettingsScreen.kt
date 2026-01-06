@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,13 +22,17 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import com.vitol.inv3.data.local.setActiveOwnCompanyId
 import com.vitol.inv3.ui.auth.AuthViewModel
+import com.vitol.inv3.ui.subscription.SubscriptionViewModel
+import com.vitol.inv3.Routes
+import com.vitol.inv3.billing.SubscriptionPlan
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
     navController: NavHostController,
-    authViewModel: AuthViewModel = hiltViewModel()
+    authViewModel: AuthViewModel = hiltViewModel(),
+    subscriptionViewModel: SubscriptionViewModel = hiltViewModel()
 ) {
     val uiState by authViewModel.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -82,6 +87,52 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onTertiaryContainer,
                     modifier = Modifier.padding(12.dp)
                 )
+            }
+        }
+
+        // Subscription Management Option
+        val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState()
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = !uiState.isLoading) {
+                    navController.navigate(Routes.Subscription)
+                },
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Star,
+                    contentDescription = "Subscription",
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Subscription",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    subscriptionStatus?.let { status ->
+                        Text(
+                            text = "${status.plan.name} - ${status.pagesUsed}/${status.plan.pagesPerMonth} pages used",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                        )
+                    } ?: run {
+                        Text(
+                            text = "Manage your subscription",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                        )
+                    }
+                }
             }
         }
 
