@@ -279,34 +279,45 @@ class InvoiceValidator {
         
         val vatNumber = invoice.vat_number ?: return errors
         
-        // Get all other VAT numbers from database (excluding current invoice)
-        val otherVatNumbers = allInvoices
-            .filter { it.id != invoice.id && !it.vat_number.isNullOrBlank() }
-            .mapNotNull { it.vat_number }
-        
-        if (otherVatNumbers.isEmpty()) {
-            // No historical data to compare, skip check
-            return errors
-        }
-        
-        // Extract format pattern: prefix, length, character pattern
-        val currentFormat = extractVatFormat(vatNumber)
-        
-        // Check if any other VAT number has the same format
-        val hasMatchingFormat = otherVatNumbers.any { otherVat ->
-            val otherFormat = extractVatFormat(otherVat)
-            currentFormat == otherFormat
-        }
-        
-        if (!hasMatchingFormat) {
+        // Validate against standard VAT number formats instead of requiring historical pattern matches
+        // Lithuanian VAT numbers: LT + 9 digits (11 chars) or LT + 12 digits (14 chars)
+        // Other EU VAT numbers can have various formats, so we validate against common patterns
+        if (!isValidVatNumberFormat(vatNumber)) {
             errors.add(InvoiceError(
                 InvoiceErrorType.VAT_FORMAT_MISMATCH,
                 "vat_number",
-                "VAT number format/length does not match any historical VAT numbers in database"
+                "VAT number format is invalid. Lithuanian VAT numbers should be LT followed by 9 or 12 digits."
             ))
         }
         
         return errors
+    }
+    
+    /**
+     * Validate VAT number against standard formats.
+     * Lithuanian VAT: LT + 9 digits (11 chars) or LT + 12 digits (14 chars)
+     * Other EU VAT numbers: Country code (2 letters) + 8-12 alphanumeric characters
+     */
+    private fun isValidVatNumberFormat(vatNumber: String): Boolean {
+        if (vatNumber.length < 2) return false
+        
+        // Check if starts with country code (2 letters)
+        val prefix = vatNumber.substring(0, 2).uppercase()
+        if (!prefix.all { it.isLetter() }) {
+            // No country prefix, might be just digits - allow if reasonable length
+            return vatNumber.all { it.isDigit() } && vatNumber.length in 7..15
+        }
+        
+        val suffix = vatNumber.substring(2)
+        
+        // Lithuanian VAT numbers: LT + 9 or 12 digits
+        if (prefix == "LT") {
+            return suffix.all { it.isDigit() } && (suffix.length == 9 || suffix.length == 12)
+        }
+        
+        // Other EU VAT numbers: Country code + 8-12 alphanumeric characters
+        // Allow alphanumeric characters (letters and digits)
+        return suffix.all { it.isLetterOrDigit() } && suffix.length in 8..12
     }
     
     private fun checkCompanyNumberFormatMismatch(invoice: InvoiceRecord, allInvoices: List<InvoiceRecord>): List<InvoiceError> {

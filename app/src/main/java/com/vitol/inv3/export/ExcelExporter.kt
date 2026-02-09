@@ -23,7 +23,8 @@ data class ExportInvoice(
     val vatAmountEur: Double?,
     val vatNumber: String?,
     val companyNumber: String?,
-    val invoiceType: String? = null // P = Purchase/Received, S = Sales/Issued
+    val invoiceType: String? = null, // P = Purchase/Received, S = Sales/Issued
+    val taxCode: String? = null // PVM1, PVM2, PVM25, etc.
 )
 
 class ExcelExporter(private val context: Context) {
@@ -31,9 +32,9 @@ class ExcelExporter(private val context: Context) {
         val wb = XSSFWorkbook()
         val sheet = wb.createSheet("Invoices")
 
-        // Column order: Date, Invoice_ID, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number, Invoice_Type (last)
+        // Column order: Date, Invoice_ID, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number, Invoice_Type, Tax_Code
         val header = listOf(
-            "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number", "Invoice_Type"
+            "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number", "Invoice_Type", "Tax_Code"
         )
         val headerRow = sheet.createRow(0)
         header.forEachIndexed { idx, title -> headerRow.createCell(idx).setCellValue(title) }
@@ -47,7 +48,8 @@ class ExcelExporter(private val context: Context) {
             row.createCell(4).setCellValue(inv.vatAmountEur ?: 0.0)
             row.createCell(5).setCellValue(inv.vatNumber ?: "")
             row.createCell(6).setCellValue(inv.companyNumber ?: "")
-            row.createCell(7).setCellValue(inv.invoiceType ?: "") // Invoice Type (P/S) - last column
+            row.createCell(7).setCellValue(inv.invoiceType ?: "") // Invoice Type (P/S)
+            row.createCell(8).setCellValue(inv.taxCode ?: "") // Tax Code (PVM1, PVM2, etc.)
         }
 
         // Use month-specific filename if provided, otherwise use timestamp
@@ -73,9 +75,9 @@ class ExcelExporter(private val context: Context) {
         val wb = XSSFWorkbook()
         val sheet = wb.createSheet("Invoices")
 
-        // Column order: Date, Invoice_ID, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number, Invoice_Type (last)
+        // Column order: Date, Invoice_ID, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number, Invoice_Type, Tax_Code
         val header = listOf(
-            "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number", "Invoice_Type"
+            "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number", "Invoice_Type", "Tax_Code"
         )
         val headerRow = sheet.createRow(0)
         header.forEachIndexed { idx, title -> headerRow.createCell(idx).setCellValue(title) }
@@ -89,7 +91,8 @@ class ExcelExporter(private val context: Context) {
             row.createCell(4).setCellValue(inv.vatAmountEur ?: 0.0)
             row.createCell(5).setCellValue(inv.vatNumber ?: "")
             row.createCell(6).setCellValue(inv.companyNumber ?: "")
-            row.createCell(7).setCellValue(inv.invoiceType ?: "") // Invoice Type (P/S) - last column
+            row.createCell(7).setCellValue(inv.invoiceType ?: "") // Invoice Type (P/S)
+            row.createCell(8).setCellValue(inv.taxCode ?: "") // Tax Code (PVM1, PVM2, etc.)
         }
 
         // Use month-specific filename if provided, otherwise use timestamp

@@ -14,8 +14,8 @@ object KeywordMapping {
             "sf data", "saskaitos fakturos data", "data:", "date:"
         ),
         "Company_name" to listOf(
-            "imone", "kompanija", "bendrove", "pardavejas", "gavejas",
-            "uab", "ab", "mb", "ltd", "company", "seller"
+            "imone", "kompanija", "bendrove", "pardavejas", "gavejas", "tiekejas",
+            "uab", "ab", "mb", "ltd", "company", "seller", "supplier", "vendor"
         ),
         "Amount_without_VAT_EUR" to listOf(
             "suma be pvm", "suma bepvm", "sumabepvm", "suma", 
@@ -247,6 +247,15 @@ object FieldExtractors {
             // Must not be part of IBAN/VAT
             val context = line.lowercase()
             if (context.contains("lt$candidate", ignoreCase = true)) {
+                continue
+            }
+            
+            // Exclude if it's an invoice number (check if number appears after "nr", "numeris", or "serija")
+            val beforeMatch = if (matchStart > 0) line.substring(maxOf(0, matchStart - 15), matchStart).lowercase() else ""
+            val isInvoiceNumber = beforeMatch.matches(Regex(".*(?:nr\\.?|numeris|serija)\\s*$")) ||
+                                 beforeMatch.contains("serija") && beforeMatch.contains("nr")
+            if (isInvoiceNumber) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - invoice number pattern in fallback (after nr/serija)")
                 continue
             }
             

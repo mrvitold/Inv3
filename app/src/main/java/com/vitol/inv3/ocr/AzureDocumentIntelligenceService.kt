@@ -1,6 +1,8 @@
 package com.vitol.inv3.ocr
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import com.google.gson.Gson
 import com.google.gson.JsonObject
@@ -15,6 +17,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import timber.log.Timber
 import android.util.Base64
+import java.io.ByteArrayOutputStream
 
 /**
  * Service for processing invoices using Azure AI Document Intelligence REST API.
@@ -44,7 +47,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
      * @param imageUri URI of the invoice image
      * @return ParsedInvoice with extracted fields, or null if processing failed
      */
-    suspend fun processInvoice(imageUri: Uri, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, invoiceType: String? = null): ParsedInvoice? = withContext(Dispatchers.IO) {
+    suspend fun processInvoice(imageUri: Uri, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, excludeOwnCompanyName: String? = null, invoiceType: String? = null): ParsedInvoice? = withContext(Dispatchers.IO) {
         try {
             // Validate configuration
             if (apiKey.isBlank() || endpoint.isBlank()) {
@@ -52,14 +55,17 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 return@withContext null
             }
             
-            // Read image from URI
-            val imageBytes = readImageFromUri(imageUri)
-            val mimeType = determineMimeType(imageUri)
+            // Read and compress image from URI
+            val originalBytes = readImageFromUri(imageUri)
+            val originalMimeType = determineMimeType(imageUri)
+            Timber.d("Original image size: ${originalBytes.size} bytes")
             
-            Timber.d("Processing invoice with Azure Document Intelligence: ${imageBytes.size} bytes, mimeType: $mimeType")
+            // Compress image if too large (Azure has file size limits)
+            val (imageBytes, finalMimeType) = compressImageIfNeeded(originalBytes, imageUri, originalMimeType)
+            Timber.d("Processing invoice with Azure Document Intelligence: ${imageBytes.size} bytes, mimeType: $finalMimeType")
             
             // Step 1: Submit document for analysis
-            val operationLocation = submitDocumentForAnalysis(imageBytes, mimeType)
+            val operationLocation = submitDocumentForAnalysis(imageBytes, finalMimeType)
             if (operationLocation == null) {
                 Timber.e("Failed to submit document for analysis")
                 return@withContext null
@@ -73,7 +79,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
             
             // Step 3: Parse results to ParsedInvoice
-            parseResultsToInvoice(result, excludeOwnCompanyNumber, excludeOwnVatNumber, invoiceType)
+            parseResultsToInvoice(result, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
             
         } catch (e: Exception) {
             Timber.e(e, "Failed to process invoice with Azure Document Intelligence")
@@ -225,7 +231,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         }
     }
     
-    private fun parseResultsToInvoice(result: JsonObject, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, invoiceType: String? = null): ParsedInvoice {
+    private fun parseResultsToInvoice(result: JsonObject, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, excludeOwnCompanyName: String? = null, invoiceType: String? = null): ParsedInvoice {
         var invoiceId: String? = null
         var date: String? = null
         var companyName: String? = null
@@ -268,8 +274,12 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                                             lowerCustomerName.contains("as") || lowerCustomerName.contains("sp")
                         if (hasCompanyType && customerName.length >= 5) {
                             // For sales invoices, customer is the partner company (exclude own company)
-                            companyName = customerName
-                            Timber.d("Azure: [SALES] Extracted company name from CustomerName: $customerName")
+                            if (excludeOwnCompanyName == null || !customerName.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                                companyName = customerName
+                                Timber.d("Azure: [SALES] Extracted company name from CustomerName: $customerName")
+                            } else {
+                                Timber.d("Azure: [SALES] Skipped CustomerName '$customerName' (matches own company name)")
+                            }
                         } else {
                             Timber.d("Azure: [SALES] CustomerName '$customerName' doesn't contain company type suffix, will try text extraction")
                         }
@@ -286,8 +296,12 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                             if (hasCompanyType && vendorName.length >= 5) {
                                 // Check if this is NOT the own company before using it
                                 // For sales invoices, vendor is usually the own company, so we should exclude it
-                                companyName = vendorName
-                                Timber.d("Azure: [SALES] Fallback: Extracted company name from VendorName: $vendorName (will be excluded if matches own company)")
+                                if (excludeOwnCompanyName == null || !vendorName.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                                    companyName = vendorName
+                                    Timber.d("Azure: [SALES] Fallback: Extracted company name from VendorName: $vendorName")
+                                } else {
+                                    Timber.d("Azure: [SALES] Skipped VendorName '$vendorName' (matches own company name)")
+                                }
                             }
                         }
                     }
@@ -302,8 +316,12 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                                             lowerVendorName.contains("as") || lowerVendorName.contains("sp")
                         if (hasCompanyType && vendorName.length >= 5) {
                             // For purchase invoices, vendor is the partner company (exclude own company)
-                            companyName = vendorName
-                            Timber.d("Azure: [PURCHASE] Extracted company name from VendorName: $vendorName")
+                            if (excludeOwnCompanyName == null || !vendorName.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                                companyName = vendorName
+                                Timber.d("Azure: [PURCHASE] Extracted company name from VendorName: $vendorName")
+                            } else {
+                                Timber.d("Azure: [PURCHASE] Skipped VendorName '$vendorName' (matches own company name)")
+                            }
                         } else {
                             Timber.d("Azure: [PURCHASE] VendorName '$vendorName' doesn't contain company type suffix, will try text extraction")
                         }
@@ -457,7 +475,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         // Always try to extract from text using local parser for missing fields or to improve accuracy
         // This is especially important for sales invoices where we need to extract buyer info
         // Pass invoice type so parser can prioritize buyer vs seller sections correctly
-        val parsedFromText = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber, invoiceType)
+        val parsedFromText = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
         
         // Extract amounts if not found
         if (amountNoVat == null && parsedFromText.amountWithoutVatEur != null) {
@@ -473,8 +491,13 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         if ((companyName == null || !hasCompanyTypeSuffix(companyName)) && parsedFromText.companyName != null) {
             val extractedCompanyName = parsedFromText.companyName
             if (hasCompanyTypeSuffix(extractedCompanyName)) {
-                companyName = extractedCompanyName
-                Timber.d("Azure: Extracted company name from text: $companyName")
+                // Exclude own company name
+                if (excludeOwnCompanyName == null || !extractedCompanyName.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                    companyName = extractedCompanyName
+                    Timber.d("Azure: Extracted company name from text: $companyName")
+                } else {
+                    Timber.d("Azure: Skipped company name '$extractedCompanyName' from text (matches own company name)")
+                }
             } else {
                 Timber.d("Azure: Extracted company name '$extractedCompanyName' doesn't have company type suffix")
             }
@@ -523,9 +546,12 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
         }
         
+        // Extract VAT rate from text if available
+        var vatRate: String? = parsedFromText.vatRate
+        
         Timber.d("Azure Extracted - InvoiceID: $invoiceId, Date: $date, Company: $companyName, " +
                 "AmountNoVat: $amountNoVat, VatAmount: $vatAmount, " +
-                "VatNumber: $vatNumber, CompanyNumber: $companyNumber")
+                "VatNumber: $vatNumber, CompanyNumber: $companyNumber, VatRate: $vatRate")
         
         return ParsedInvoice(
             invoiceId = invoiceId,
@@ -535,6 +561,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             vatAmountEur = vatAmount,
             vatNumber = vatNumber,
             companyNumber = companyNumber,
+            vatRate = vatRate,
             lines = lines
         )
     }
@@ -555,6 +582,103 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         context.contentResolver.openInputStream(uri)?.use { inputStream ->
             inputStream.readBytes()
         } ?: throw IllegalStateException("Could not read image from URI: $uri")
+    }
+    
+    /**
+     * Compress image if it exceeds size limits for Azure Document Intelligence.
+     * Azure has a maximum file size limit (typically 50MB, but smaller for certain operations).
+     * We'll compress to max 3MB and max 3000px dimension to ensure compatibility.
+     * Returns Pair of (compressed bytes, mime type) - mime type will be "image/jpeg" if compressed.
+     */
+    private suspend fun compressImageIfNeeded(originalBytes: ByteArray, uri: Uri, mimeType: String): Pair<ByteArray, String> = withContext(Dispatchers.IO) {
+        val maxFileSizeBytes = 3 * 1024 * 1024 // 3 MB
+        val maxDimension = 3000 // Max width or height in pixels
+        
+        // If already small enough, return as-is
+        if (originalBytes.size <= maxFileSizeBytes) {
+            // Still check dimensions - might be high resolution but compressed
+            val bitmap = BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size)
+            if (bitmap != null) {
+                val maxDim = maxOf(bitmap.width, bitmap.height)
+                if (maxDim <= maxDimension) {
+                    bitmap.recycle()
+                    return@withContext Pair(originalBytes, mimeType)
+                }
+                bitmap.recycle()
+            } else {
+                return@withContext Pair(originalBytes, mimeType)
+            }
+        }
+        
+        Timber.d("Image too large (${originalBytes.size} bytes), compressing...")
+        
+        // Decode bitmap
+        val options = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size, options)
+        
+        val originalWidth = options.outWidth
+        val originalHeight = options.outHeight
+        val maxOriginalDim = maxOf(originalWidth, originalHeight)
+        
+        // Calculate sample size for resizing
+        val sampleSize = if (maxOriginalDim > maxDimension) {
+            (maxOriginalDim / maxDimension).coerceAtLeast(1)
+        } else {
+            1
+        }
+        
+        Timber.d("Original dimensions: ${originalWidth}x${originalHeight}, sampleSize: $sampleSize")
+        
+        // Decode with sample size
+        val decodeOptions = BitmapFactory.Options().apply {
+            this.inSampleSize = sampleSize
+        }
+        val bitmap = BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size, decodeOptions)
+            ?: return@withContext Pair(originalBytes, mimeType)
+        
+        try {
+            // Compress to JPEG with quality adjustment
+            val outputStream = ByteArrayOutputStream()
+            var quality = 90
+            var compressedBytes: ByteArray
+            
+            do {
+                outputStream.reset()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
+                compressedBytes = outputStream.toByteArray()
+                
+                if (compressedBytes.size <= maxFileSizeBytes) {
+                    break
+                }
+                
+                // Reduce quality by 10% each iteration
+                quality -= 10
+            } while (quality >= 50 && compressedBytes.size > maxFileSizeBytes)
+            
+            Timber.d("Compressed image: ${compressedBytes.size} bytes (quality: $quality)")
+            
+            // If still too large after compression, resize further
+            if (compressedBytes.size > maxFileSizeBytes && quality >= 50) {
+                val scaleFactor = kotlin.math.sqrt(maxFileSizeBytes.toDouble() / compressedBytes.size)
+                val newWidth = (bitmap.width * scaleFactor).toInt().coerceAtLeast(1000)
+                val newHeight = (bitmap.height * scaleFactor).toInt().coerceAtLeast(1000)
+                
+                val resizedBitmap = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+                outputStream.reset()
+                resizedBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
+                compressedBytes = outputStream.toByteArray()
+                resizedBitmap.recycle()
+                
+                Timber.d("Further resized to ${newWidth}x${newHeight}, final size: ${compressedBytes.size} bytes")
+            }
+            
+            // Return compressed bytes with JPEG mime type (since we compressed to JPEG)
+            Pair(compressedBytes, "image/jpeg")
+        } finally {
+            bitmap.recycle()
+        }
     }
     
     private fun determineMimeType(uri: Uri): String {

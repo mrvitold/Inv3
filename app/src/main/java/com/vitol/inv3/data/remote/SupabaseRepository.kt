@@ -840,6 +840,68 @@ class SupabaseRepository(
         }
     }
 
+    /**
+     * Find an invoice by VAT number or company number for partner company lookup.
+     * Returns the first matching invoice to extract partner company parameters.
+     * Filters by current user_id.
+     */
+    suspend fun findInvoiceByVatOrCompanyNumber(vatNumber: String?, companyNumber: String?): InvoiceRecord? = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot find invoice")
+            return@withContext null
+        }
+        val userId = getCurrentUserId()
+        if (userId == null) {
+            Timber.w("User not authenticated, cannot find invoice")
+            return@withContext null
+        }
+        try {
+            // Normalize VAT number for comparison
+            val normalizedVat = normalizeVatNumber(vatNumber)
+            
+            // Try to find by VAT number first (more reliable)
+            if (!normalizedVat.isNullOrBlank()) {
+                val results = client.from("invoices")
+                    .select {
+                        filter {
+                            eq("user_id", userId)
+                            eq("vat_number", normalizedVat)
+                        }
+                    }
+                    .decodeList<InvoiceRecord>()
+                if (results.isNotEmpty()) {
+                    val result = results.first()
+                    Timber.d("Found invoice by VAT number: ${result.invoice_id} for partner company: ${result.company_name}")
+                    return@withContext result
+                }
+            }
+            
+            // Fallback: Try to find by company number
+            if (!companyNumber.isNullOrBlank()) {
+                val normalizedCompanyNumber = companyNumber.trim()
+                val results = client.from("invoices")
+                    .select {
+                        filter {
+                            eq("user_id", userId)
+                            eq("company_number", normalizedCompanyNumber)
+                        }
+                    }
+                    .decodeList<InvoiceRecord>()
+                if (results.isNotEmpty()) {
+                    val result = results.first()
+                    Timber.d("Found invoice by company number: ${result.invoice_id} for partner company: ${result.company_name}")
+                    return@withContext result
+                }
+            }
+            
+            Timber.d("No invoice found for VAT number: $vatNumber, company number: $companyNumber")
+            null
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to find invoice by VAT or company number")
+            null
+        }
+    }
+
     suspend fun updateInvoice(invoice: InvoiceRecord) = withContext(Dispatchers.IO) {
         if (client == null) {
             Timber.w("Supabase client is null, cannot update invoice")

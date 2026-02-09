@@ -22,23 +22,42 @@ object TaxCodeDeterminer {
         // Check for special keywords first - reverse charge VAT (PVM25)
         val text = invoiceText?.uppercase() ?: ""
         // Check for various patterns indicating reverse charge VAT (Article 96)
-        val reverseChargePatterns = listOf(
+        // Patterns to check (case-insensitive substring matching)
+        val reverseChargeKeywords = listOf(
             "96 STRAIPSNIS",
             "96 STR",
-            "96 STR\\.",
+            "96 STR.",
             "ATVIRKŠTINIS PVM",
             "ATVIRKŠTINIS PVM APMOKESTINIMAS",
             "APMOKESTINIMAS PAGAL 96",
             "APMOKESTINIMAS PAGAL 96 STR",
-            "APMOKESTINIMAS PAGAL 96 STR\\.",
+            "APMOKESTINIMAS PAGAL 96 STR.",
             "PAGAL 96 STRAIPSNIS",
             "PAGAL 96 STR",
-            "PAGAL 96 STR\\."
+            "PAGAL 96 STR.",
+            "APMOKESTINIMAS PAGAL 96 STR", // Additional variations
+            "PAGAL 96 STR" // Additional variations
         )
         
-        for (pattern in reverseChargePatterns) {
-            if (text.contains(Regex(pattern, RegexOption.IGNORE_CASE))) {
-                Timber.d("Tax code determined: PVM25 (reverse charge detected: pattern '$pattern')")
+        for (keyword in reverseChargeKeywords) {
+            if (text.contains(keyword, ignoreCase = true)) {
+                Timber.d("Tax code determined: PVM25 (reverse charge detected: keyword '$keyword')")
+                return "PVM25"
+            }
+        }
+        
+        // Also check with regex for more flexible matching (handles variations with spaces/punctuation)
+        val reverseChargeRegexPatterns = listOf(
+            Regex("96\\s*STRAIPSNIS", RegexOption.IGNORE_CASE),
+            Regex("96\\s*STR\\.?", RegexOption.IGNORE_CASE),
+            Regex("ATVIRKŠTINIS\\s*PVM", RegexOption.IGNORE_CASE),
+            Regex("APMOKESTINIMAS\\s*PAGAL\\s*96", RegexOption.IGNORE_CASE),
+            Regex("PAGAL\\s*96\\s*STR", RegexOption.IGNORE_CASE)
+        )
+        
+        for (pattern in reverseChargeRegexPatterns) {
+            if (pattern.containsMatchIn(text)) {
+                Timber.d("Tax code determined: PVM25 (reverse charge detected: regex pattern '${pattern.pattern}')")
                 return "PVM25"
             }
         }
