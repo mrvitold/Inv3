@@ -15,7 +15,9 @@ data class ParsedInvoice(
     val vatNumber: String? = null,
     val companyNumber: String? = null,
     val vatRate: String? = null,
-    val lines: List<String> = emptyList()
+    val lines: List<String> = emptyList(),
+    /** User-visible message when no text could be read (e.g. empty OCR result). */
+    val extractionMessage: String? = null
 )
 
 object InvoiceParser {
@@ -521,7 +523,7 @@ object InvoiceParser {
                                     if (extracted != null) {
                                         val extractedLower = extracted.lowercase()
                                         // CRITICAL: Exclude own company name - NEVER fill it
-                                        if (excludeOwnCompanyName != null && extracted.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                                        if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(extracted, excludeOwnCompanyName)) {
                                             Timber.d("Skipped own company name after Tiekėjas: $extracted")
                                         } else if (!extractedLower.matches(labelPattern) && 
                                             !extractedLower.contains("saskaita") && 
@@ -543,7 +545,7 @@ object InvoiceParser {
                         if (extracted != null) {
                             val extractedLower = extracted.lowercase()
                             // CRITICAL: Exclude own company name - NEVER fill it
-                            if (excludeOwnCompanyName != null && extracted.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                            if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(extracted, excludeOwnCompanyName)) {
                                 Timber.d("Skipped own company name in first pass: $extracted")
                             } else if (!extractedLower.matches(labelPattern) && 
                                 !extractedLower.contains("saskaita") && 
@@ -691,9 +693,13 @@ object InvoiceParser {
             } else {
                 Timber.d("Company name is null or invalid, starting second pass extraction")
             }
-            val extractedName = extractCompanyNameAdvanced(lines, companyNumber, vatNumber, excludeOwnCompanyNumber, excludeOwnCompanyName, invoiceType)
-            // CRITICAL: Exclude own company name - NEVER fill it
-            if (extractedName != null && excludeOwnCompanyName != null && extractedName.equals(excludeOwnCompanyName, ignoreCase = true)) {
+            var extractedName = extractCompanyNameAdvanced(lines, companyNumber, vatNumber, excludeOwnCompanyNumber, excludeOwnCompanyName, invoiceType)
+            if (extractedName != null && isKnownSectionLabel(extractedName)) {
+                Timber.d("Rejected section label as company name: $extractedName")
+                extractedName = null
+            }
+            // CRITICAL: Exclude own company name - NEVER fill it (normalize to match with/without quotes)
+            if (extractedName != null && excludeOwnCompanyName != null && isSameAsOwnCompanyName(extractedName, excludeOwnCompanyName)) {
                 Timber.d("Skipped own company name in second pass: $extractedName")
                 // Keep existing companyName if it was valid, otherwise set to null
                 if (companyName == null || isInvalidCompanyName(companyName)) {
@@ -709,7 +715,7 @@ object InvoiceParser {
             }
         } else {
             // CRITICAL: Double-check existing company name - exclude own company name
-            if (excludeOwnCompanyName != null && companyName.equals(excludeOwnCompanyName, ignoreCase = true)) {
+            if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(companyName ?: "", excludeOwnCompanyName)) {
                 Timber.d("Skipped own company name (already extracted): $companyName")
                 companyName = null
             }
@@ -1128,24 +1134,60 @@ object InvoiceParser {
                 }
             }
         } else if (amountNoVat != null && vatAmount == null) {
+            val amountNoVatVal = amountNoVat!!
             // Try to calculate VAT from amount without VAT using Lithuanian rates
-            calculateVatFromAmount(amountNoVat)
+            calculateVatFromAmount(amountNoVatVal)
+            // Search document for a number matching one of the calculated VAT amounts and set vatAmount + vatRate
+            val baseAmount = amountNoVatVal.replace(",", ".").toDoubleOrNull() ?: 0.0
+            if (baseAmount > 0) {
+                for (rate in LITHUANIAN_VAT_RATES) {
+                    if (rate == 0.0) continue
+                    val expectedVat = baseAmount * rate
+                    val expectedVatStr = String.format("%.2f", expectedVat)
+                    for (line in lines) {
+                        val extracted = FieldExtractors.tryExtractAmount(line)
+                        if (extracted != null) {
+                            val normalized = FieldExtractors.normalizeAmount(extracted)
+                            if (normalized != null) {
+                                val value = normalized.toDoubleOrNull() ?: continue
+                                if (kotlin.math.abs(value - expectedVat) < 0.02) {
+                                    vatAmount = normalized
+                                    vatRate = (rate * 100).toInt().toString()
+                                    Timber.d("Inferred VAT from document: amount=$vatAmount, rate=$vatRate% (matched calculated $expectedVatStr)")
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    if (vatAmount != null) break
+                }
+            }
         }
         
-        // Extract VAT rate from text (look for patterns like "21%", "21% PVM", "PVM 21%", etc.)
+        // Extract VAT rate from text (look for "21%", "21% PVM", "PVM 21%", "PVM 21", "21 %", "tarifas 21", etc.)
         if (vatRate == null) {
-            val vatRatePattern = Regex("""(\d+(?:[.,]\d+)?)\s*%\s*(?:PVM|VAT)?""", RegexOption.IGNORE_CASE)
+            val vatRatePatterns = listOf(
+                Regex("""(\d+(?:[.,]\d+)?)\s*%\s*(?:PVM|VAT)?""", RegexOption.IGNORE_CASE),
+                Regex("""(?:PVM|VAT)\s*[:\s]*(\d+(?:[.,]\d+)?)\s*%?""", RegexOption.IGNORE_CASE),
+                Regex("""(?:PVM|VAT)\s+(\d+(?:[.,]\d+)?)\s*%?""", RegexOption.IGNORE_CASE),
+                Regex("""(\d+)\s*%\s*(?:PVM|vat)""", RegexOption.IGNORE_CASE),
+                Regex("""(?:tarifas|rate|procentas)\s*[:\s]*(\d+(?:[.,]\d+)?)\s*%?""", RegexOption.IGNORE_CASE)
+            )
             for (line in lines) {
-                val match = vatRatePattern.find(line)
-                if (match != null) {
-                    val rateValue = match.groupValues[1].replace(",", ".")
-                    val rate = rateValue.toDoubleOrNull()
-                    if (rate != null && rate in 0.0..100.0) {
-                        vatRate = rate.toInt().toString()
-                        Timber.d("Extracted VAT rate from text: $vatRate%")
-                        break
+                for (pattern in vatRatePatterns) {
+                    val match = pattern.find(line)
+                    if (match != null) {
+                        val rateValue = match.groupValues[1].replace(",", ".")
+                        val rate = rateValue.toDoubleOrNull()
+                        if (rate != null && rate in 0.0..100.0) {
+                            vatRate = rate.toInt().toString()
+                            Timber.d("Extracted VAT rate from text: $vatRate%")
+                            break
+                        }
                     }
+                    if (vatRate != null) break
                 }
+                if (vatRate != null) break
             }
             // Also try to calculate VAT rate from amounts if not found
             if (vatRate == null) {
@@ -1172,7 +1214,7 @@ object InvoiceParser {
         // Final validation: reject invalid company names and exclude own company name
         val finalCompanyName = companyName?.let { name ->
             // CRITICAL: Exclude own company name - NEVER fill it
-            if (excludeOwnCompanyName != null && name.equals(excludeOwnCompanyName, ignoreCase = true)) {
+            if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(name, excludeOwnCompanyName)) {
                 Timber.w("Rejecting own company name: '$name'")
                 null
             } else if (isInvalidCompanyName(name)) {
@@ -1699,7 +1741,7 @@ object InvoiceParser {
                             val cleaned = cleanCompanyName(candidateLine)
                             if (cleaned != null) {
                                 // CRITICAL: Exclude own company name - NEVER fill it
-                                if (excludeOwnCompanyName != null && cleaned.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                                if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(cleaned, excludeOwnCompanyName)) {
                                     Timber.d("extractCompanyNameAdvanced: Skipped own company name: '$cleaned'")
                                     continue
                                 }
@@ -1727,7 +1769,7 @@ object InvoiceParser {
                             val cleaned = cleanCompanyName(candidateLine)
                             if (cleaned != null) {
                                 // CRITICAL: Exclude own company name - NEVER fill it
-                                if (excludeOwnCompanyName != null && cleaned.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                                if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(cleaned, excludeOwnCompanyName)) {
                                     Timber.d("extractCompanyNameAdvanced: Skipped own company name (fallback): '$cleaned'")
                                     continue
                                 }
@@ -1786,7 +1828,7 @@ object InvoiceParser {
                             val cleaned = cleanCompanyName(candidateLine)
                             if (cleaned != null) {
                                 // CRITICAL: Exclude own company name - NEVER fill it
-                                if (excludeOwnCompanyName != null && cleaned.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                                if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(cleaned, excludeOwnCompanyName)) {
                                     Timber.d("extractCompanyNameAdvanced: Skipped own company name (both numbers): '$cleaned'")
                                     continue
                                 }
@@ -1800,12 +1842,11 @@ object InvoiceParser {
         }
         
         // Strategy 3: Find "TIEKĖJAS" (Supplier) or "PARDAVEJAS" (Seller) or "PIRKĖJAS" (Buyer) section
-        // For purchase invoices, prioritize "Tiekėjas" section
-        // Look for company name AFTER the label, but prioritize if it appears BEFORE company/VAT number
+        // For purchase invoices, prioritize "Tiekėjas" (seller) section only - NEVER use "pirkėjas" (buyer)
+        // as that would fill in the user's own company name.
         val labelKeywords = listOf("pardavejas", "tiekejas", "gavejas", "pirkėjas", "pirkėjo")
-        // For purchase invoices, prioritize "tiekėjas" (supplier)
         val priorityKeywords = if (isPurchaseInvoice) {
-            listOf("tiekejas", "pardavejas", "gavejas", "pirkėjas", "pirkėjo")
+            listOf("tiekejas", "pardavejas", "gavejas")  // seller/supplier only - never buyer
         } else {
             listOf("pirkėjas", "pirkėjo", "pardavejas", "tiekejas", "gavejas")
         }
@@ -1846,11 +1887,13 @@ object InvoiceParser {
                             val nextLine = lines[i + j].trim()
                             val nextLower = nextLine.lowercase()
                             
-                            // Skip if next line is also a label
+                            // Skip if next line is also a label (use normalized compare so PARDAVĖJAS matches pardavejas)
+                            if (isKnownSectionLabel(nextLine)) {
+                                continue
+                            }
                             if (labelKeywords.any { keyword -> 
-                                nextLower == keyword || 
-                                (nextLower.contains(keyword) && nextLower.length < 20) ||
-                                nextLower.matches(Regex(".*\\b$keyword\\b.*", RegexOption.IGNORE_CASE))
+                                normalizeForLabelCompare(nextLower) == normalizeForLabelCompare(keyword) ||
+                                (nextLower.length < 20 && normalizeForLabelCompare(nextLower).contains(normalizeForLabelCompare(keyword)))
                             }) {
                                 continue
                             }
@@ -1866,9 +1909,9 @@ object InvoiceParser {
                             // Check if line is valid company name (with or without quotes)
                             if (isValidCompanyNameLine(nextLine, nextLower)) {
                                 val cleaned = cleanCompanyName(nextLine)
-                                if (cleaned != null) {
+                                if (cleaned != null && !isKnownSectionLabel(cleaned)) {
                                     // CRITICAL: Exclude own company name - NEVER fill it
-                                    if (excludeOwnCompanyName != null && cleaned.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                                    if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(cleaned, excludeOwnCompanyName)) {
                                         Timber.d("extractCompanyNameAdvanced: Skipped own company name (after label): '$cleaned'")
                                         continue
                                     }
@@ -1909,26 +1952,14 @@ object InvoiceParser {
                     if (i + j < lines.size) {
                         val nextLine = lines[i + j].trim()
                         val nextLower = nextLine.lowercase()
-                        // Skip if next line is also a label
-                        if (labelKeywords.any { keyword -> 
-                            nextLower == keyword || 
-                            (nextLower.contains(keyword) && nextLower.length < 20) ||
-                            nextLower.matches(Regex(".*\\b$keyword\\b.*", RegexOption.IGNORE_CASE))
-                        }) {
-                            continue
-                        }
-                        // Skip if this line contains company/VAT number (name should be BEFORE number)
-                        if (companyNumber != null && nextLower.contains(companyNumber)) {
-                            continue
-                        }
-                        if (vatNumber != null && nextLower.contains(vatNumber)) {
-                            continue
-                        }
+                        if (isKnownSectionLabel(nextLine)) continue
+                        if (labelKeywords.any { keyword -> normalizeForLabelCompare(nextLower) == normalizeForLabelCompare(keyword) }) continue
+                        if (companyNumber != null && nextLower.contains(companyNumber)) continue
+                        if (vatNumber != null && nextLower.contains(vatNumber)) continue
                         if (isValidCompanyNameLine(nextLine, nextLower)) {
                             val cleaned = cleanCompanyName(nextLine)
-                            if (cleaned != null) {
-                                // CRITICAL: Exclude own company name - NEVER fill it
-                                if (excludeOwnCompanyName != null && cleaned.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                            if (cleaned != null && !isKnownSectionLabel(cleaned)) {
+                                if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(cleaned, excludeOwnCompanyName)) {
                                     Timber.d("extractCompanyNameAdvanced: Skipped own company name (after label): '$cleaned'")
                                     continue
                                 }
@@ -1947,9 +1978,8 @@ object InvoiceParser {
             val l = line.lowercase().trim()
             if (isValidCompanyNameLine(line, l)) {
                 val cleaned = cleanCompanyName(line)
-                if (cleaned != null) {
-                    // CRITICAL: Exclude own company name - NEVER fill it
-                    if (excludeOwnCompanyName != null && cleaned.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                if (cleaned != null && !isKnownSectionLabel(cleaned)) {
+                    if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(cleaned, excludeOwnCompanyName)) {
                         Timber.d("extractCompanyNameAdvanced: Skipped own company name (first half): '$cleaned'")
                         continue
                     }
@@ -1960,11 +1990,55 @@ object InvoiceParser {
         return null
     }
     
+    /** Normalize company name for comparison so "UAB \"STATYBŲ FRONTAS\"" matches "UAB STATYBŲ FRONTAS". */
+    private fun normalizeForOwnCompanyCompare(name: String?): String {
+        if (name.isNullOrBlank()) return ""
+        return name.trim()
+            .replace(Regex("""["'\\]+"""), "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
+    }
+    
+    /** Normalize Lithuanian chars (ė, ē, į, ą, etc.) to ASCII for label matching so "PARDAVĖJAS" matches "pardavejas". */
+    private fun normalizeForLabelCompare(s: String?): String {
+        if (s.isNullOrBlank()) return ""
+        return s.trim().lowercase()
+            .replace('\u0117', 'e')  // ė
+            .replace('\u0113', 'e')  // ē
+            .replace('\u012f', 'i')  // į
+            .replace('\u012b', 'i')  // ī
+            .replace('\u0105', 'a')  // ą
+            .replace('\u0173', 'u')  // ų
+            .replace('\u016b', 'u')  // ū
+            .replace(Regex("\\s+"), " ")
+    }
+    
+    /** Known section headers that must never be used as company name (seller, buyer, etc.). */
+    private val KNOWN_SECTION_LABELS_NORMALIZED = setOf(
+        "pardavejas", "tiekejas", "gavejas", "pirkėjas", "pirkėjo",
+        "seller", "buyer", "recipient", "supplier", "imone", "kompanija", "bendrove", "company"
+    )
+    
+    /** True if the string is a known section label (e.g. PARDAVĖJAS, TIEKĖJAS) - never use as company name. */
+    private fun isKnownSectionLabel(name: String?): Boolean {
+        if (name.isNullOrBlank()) return true
+        val n = normalizeForLabelCompare(name)
+        if (n.length < 3) return false
+        return KNOWN_SECTION_LABELS_NORMALIZED.any { label -> n == normalizeForLabelCompare(label) }
+    }
+    
+    /** True if name is the same as own company (after normalizing quotes and spaces). */
+    private fun isSameAsOwnCompanyName(name: String?, ownName: String?): Boolean {
+        if (name.isNullOrBlank() || ownName.isNullOrBlank()) return false
+        return normalizeForOwnCompanyCompare(name) == normalizeForOwnCompanyCompare(ownName)
+    }
+    
     private fun isValidCompanyNameLine(line: String, lower: String): Boolean {
         val trimmedLower = lower.trim()
         
-        // Reject labels
-        if (trimmedLower.matches(Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier|imone|kompanija|bendrove|company)$"))) {
+        // Reject labels (including Lithuanian ė: PARDAVĖJAS -> pardavėjas -> normalize -> pardavejas)
+        if (isKnownSectionLabel(trimmedLower)) {
             return false
         }
         

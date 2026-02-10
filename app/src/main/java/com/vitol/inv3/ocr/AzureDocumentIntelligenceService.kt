@@ -37,57 +37,77 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     private val apiVersion = "2023-07-31"  // API version
     
     private val analyzeUrl = "${endpoint}formrecognizer/documentModels/prebuilt-invoice:analyze?api-version=$apiVersion"
+    private val layoutAnalyzeUrl = "${endpoint}formrecognizer/documentModels/prebuilt-layout:analyze?api-version=$apiVersion"
+    private val readAnalyzeUrl = "${endpoint}formrecognizer/documentModels/prebuilt-read:analyze?api-version=$apiVersion"
+    
+    /** Minimum lines from invoice model below which we call prebuilt-layout for full OCR (same as camera quality). */
+    private val minLinesBeforeLayoutFallback = 10
     
     private val gson = Gson()
     private val httpClient = OkHttpClient()
     
     /**
-     * Process an invoice image using Azure Document Intelligence REST API.
-     * 
-     * @param imageUri URI of the invoice image
-     * @return ParsedInvoice with extracted fields, or null if processing failed
+     * Extract invoice data from raw image/PDF bytes. Use this for import flow (no URI).
+     * Strategy: prebuilt-layout first (best OCR), then prebuilt-invoice (structured fields), merge.
+     */
+    suspend fun extractFromBytes(
+        imageBytes: ByteArray,
+        mimeType: String,
+        excludeOwnCompanyNumber: String? = null,
+        excludeOwnVatNumber: String? = null,
+        excludeOwnCompanyName: String? = null,
+        invoiceType: String? = null
+    ): ParsedInvoice = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank() || endpoint.isBlank()) {
+            Timber.e("Azure Document Intelligence not configured")
+            return@withContext ParsedInvoice(extractionMessage = "OCR not configured. Enter details manually.")
+        }
+        val (bytes, finalMime) = compressImageIfNeeded(imageBytes, mimeType)
+        // 1) Layout for reliable OCR text
+        val layoutOp = submitDocumentToUrl(layoutAnalyzeUrl, bytes, finalMime)
+        var parsed = if (layoutOp != null) {
+            val res = pollForResults(layoutOp)
+            if (res != null) parseResultsToInvoice(res, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+            else ParsedInvoice(extractionMessage = "Could not read document. Try a clearer file or enter manually.")
+        } else ParsedInvoice(extractionMessage = "Could not send document. Check connection and try again.")
+        // 2) Invoice model for structured fields (VendorName, amounts, etc.)
+        val invoiceOp = submitDocumentToUrl(analyzeUrl, bytes, finalMime)
+        if (invoiceOp != null) {
+            val invRes = pollForResults(invoiceOp)
+            if (invRes != null) {
+                val invoiceParsed = parseResultsToInvoice(invRes, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+                parsed = mergeParsedInvoices(invoiceParsed, parsed)
+            }
+        }
+        // 3) If still no text, try prebuilt-read
+        if (parsed.lines.isEmpty()) {
+            val readOp = submitDocumentToUrl(readAnalyzeUrl, bytes, finalMime)
+            if (readOp != null) {
+                val readRes = pollForResults(readOp)
+                if (readRes != null) {
+                    val readParsed = parseResultsToInvoice(readRes, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+                    if (readParsed.lines.isNotEmpty()) parsed = mergeParsedInvoices(parsed, readParsed)
+                }
+            }
+        }
+        parsed
+    }
+
+    /**
+     * Process an invoice from a URI (camera flow). Reads bytes and delegates to extractFromBytes.
      */
     suspend fun processInvoice(imageUri: Uri, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, excludeOwnCompanyName: String? = null, invoiceType: String? = null): ParsedInvoice? = withContext(Dispatchers.IO) {
         try {
-            // Validate configuration
-            if (apiKey.isBlank() || endpoint.isBlank()) {
-                Timber.e("Azure Document Intelligence not configured. Please add AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and AZURE_DOCUMENT_INTELLIGENCE_API_KEY to gradle.properties")
-                return@withContext null
-            }
-            
-            // Read and compress image from URI
             val originalBytes = readImageFromUri(imageUri)
-            val originalMimeType = determineMimeType(imageUri)
-            Timber.d("Original image size: ${originalBytes.size} bytes")
-            
-            // Compress image if too large (Azure has file size limits)
-            val (imageBytes, finalMimeType) = compressImageIfNeeded(originalBytes, imageUri, originalMimeType)
-            Timber.d("Processing invoice with Azure Document Intelligence: ${imageBytes.size} bytes, mimeType: $finalMimeType")
-            
-            // Step 1: Submit document for analysis
-            val operationLocation = submitDocumentForAnalysis(imageBytes, finalMimeType)
-            if (operationLocation == null) {
-                Timber.e("Failed to submit document for analysis")
-                return@withContext null
-            }
-            
-            // Step 2: Poll for results (Azure uses async processing)
-            val result = pollForResults(operationLocation)
-            if (result == null) {
-                Timber.e("Failed to get analysis results")
-                return@withContext null
-            }
-            
-            // Step 3: Parse results to ParsedInvoice
-            parseResultsToInvoice(result, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
-            
+            val mimeType = determineMimeType(imageUri)
+            extractFromBytes(originalBytes, mimeType, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
         } catch (e: Exception) {
-            Timber.e(e, "Failed to process invoice with Azure Document Intelligence")
+            Timber.e(e, "Failed to process invoice from URI")
             null
         }
     }
     
-    private suspend fun submitDocumentForAnalysis(imageBytes: ByteArray, mimeType: String): String? = withContext(Dispatchers.IO) {
+    private suspend fun submitDocumentToUrl(url: String, imageBytes: ByteArray, mimeType: String): String? = withContext(Dispatchers.IO) {
         var retryCount = 0
         val maxRetries = 3
         val baseDelayMs = 2000L // Start with 2 seconds
@@ -95,13 +115,13 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         while (retryCount <= maxRetries) {
             try {
                 val request = Request.Builder()
-                    .url(analyzeUrl)
+                    .url(url)
                     .addHeader("Ocp-Apim-Subscription-Key", apiKey)
                     .addHeader("Content-Type", mimeType)
                     .post(imageBytes.toRequestBody(mimeType.toMediaType()))
                     .build()
                 
-                Timber.d("Submitting document to Azure: $analyzeUrl (attempt ${retryCount + 1}/${maxRetries + 1})")
+                Timber.d("Submitting document to Azure: $url (attempt ${retryCount + 1}/${maxRetries + 1})")
                 val response = httpClient.newCall(request).execute()
                 
                 if (response.code == 429) {
@@ -231,6 +251,20 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         }
     }
     
+    /** Merges invoice-model result with layout-model result: prefer non-blank from invoice, fill from layout; use layout lines (full OCR). */
+    private fun mergeParsedInvoices(fromInvoice: ParsedInvoice, fromLayout: ParsedInvoice): ParsedInvoice = ParsedInvoice(
+        invoiceId = fromInvoice.invoiceId.takeIf { !it.isNullOrBlank() } ?: fromLayout.invoiceId,
+        date = fromInvoice.date.takeIf { !it.isNullOrBlank() } ?: fromLayout.date,
+        companyName = fromInvoice.companyName.takeIf { !it.isNullOrBlank() } ?: fromLayout.companyName,
+        amountWithoutVatEur = fromInvoice.amountWithoutVatEur.takeIf { !it.isNullOrBlank() } ?: fromLayout.amountWithoutVatEur,
+        vatAmountEur = fromInvoice.vatAmountEur.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatAmountEur,
+        vatNumber = fromInvoice.vatNumber.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatNumber,
+        companyNumber = fromInvoice.companyNumber.takeIf { !it.isNullOrBlank() } ?: fromLayout.companyNumber,
+        vatRate = fromInvoice.vatRate.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatRate,
+        lines = fromLayout.lines,
+        extractionMessage = if (fromLayout.lines.isNotEmpty()) null else (fromInvoice.extractionMessage ?: fromLayout.extractionMessage)
+    )
+    
     private fun parseResultsToInvoice(result: JsonObject, excludeOwnCompanyNumber: String? = null, excludeOwnVatNumber: String? = null, excludeOwnCompanyName: String? = null, invoiceType: String? = null): ParsedInvoice {
         var invoiceId: String? = null
         var date: String? = null
@@ -240,104 +274,74 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         var vatNumber: String? = null
         var companyNumber: String? = null
         
-        // Azure returns results in analyzeResult.documents[0].fields
-        val analyzeResult = result.getAsJsonObject("analyzeResult")
+        // Azure returns results in analyzeResult.documents[0].fields (or "result" in some API versions)
+        val analyzeResult = result.getAsJsonObject("analyzeResult") ?: result.getAsJsonObject("result")
         val documents = analyzeResult?.getAsJsonArray("documents")
+        
+        // Helper: get string from a field object (API may use valueString or content)
+        fun fieldString(field: com.google.gson.JsonElement?): String? {
+            val obj = field?.asJsonObject ?: return null
+            return obj.get("valueString")?.asString ?: obj.get("content")?.asString
+        }
+        // Helper: get number from a field (valueNumber, valueCurrency.amount, or parse content)
+        fun fieldNumber(field: com.google.gson.JsonElement?): Double? {
+            val obj = field?.asJsonObject ?: return null
+            obj.get("valueNumber")?.asDouble?.let { return it }
+            obj.get("valueCurrency")?.asJsonObject?.get("amount")?.asDouble?.let { return it }
+            fieldString(field)?.toDoubleOrNull()?.let { return it }
+            return null
+        }
         
         if (documents != null && documents.size() > 0) {
             val document = documents[0].asJsonObject
             val fields = document.getAsJsonObject("fields")
             
             if (fields != null) {
-                // Map Azure fields to your ParsedInvoice
-                fields.get("InvoiceId")?.asJsonObject?.get("valueString")?.asString?.let {
-                    invoiceId = it
-                }
+                // Map Azure fields to your ParsedInvoice (use valueString or content)
+                fieldString(fields.get("InvoiceId"))?.let { invoiceId = it }
                 
-                fields.get("InvoiceDate")?.asJsonObject?.get("valueDate")?.asString?.let {
-                    date = normalizeDate(it)
-                }
+                (fields.get("InvoiceDate")?.asJsonObject?.get("valueDate")?.asString
+                    ?: fieldString(fields.get("InvoiceDate")))?.let { date = normalizeDate(it) }
                 
                 // Determine if this is a sales invoice
                 val isSalesInvoice = invoiceType == "S"
                 
                 // For sales invoices: prioritize CustomerName (buyer), exclude VendorName (seller = own company)
                 // For purchase invoices: prioritize VendorName (seller), exclude CustomerName (buyer = own company)
+                // Use vendor/customer name even without UAB/AB/etc. so names like "KESKO", "SENUKAI" fill the form
                 if (isSalesInvoice) {
-                    // SALES INVOICE: Extract customer (buyer) info, exclude vendor (seller = own company)
-                    fields.get("CustomerName")?.asJsonObject?.get("valueString")?.asString?.let {
-                        val customerName = it.trim()
-                        val lowerCustomerName = customerName.lowercase()
-                        val hasCompanyType = lowerCustomerName.contains("uab") || lowerCustomerName.contains("ab") || 
-                                            lowerCustomerName.contains("mb") || lowerCustomerName.contains("iį") ||
-                                            lowerCustomerName.contains("ltd") || lowerCustomerName.contains("oy") || 
-                                            lowerCustomerName.contains("as") || lowerCustomerName.contains("sp")
-                        if (hasCompanyType && customerName.length >= 5) {
-                            // For sales invoices, customer is the partner company (exclude own company)
-                            if (excludeOwnCompanyName == null || !customerName.equals(excludeOwnCompanyName, ignoreCase = true)) {
-                                companyName = customerName
-                                Timber.d("Azure: [SALES] Extracted company name from CustomerName: $customerName")
-                            } else {
-                                Timber.d("Azure: [SALES] Skipped CustomerName '$customerName' (matches own company name)")
-                            }
-                        } else {
-                            Timber.d("Azure: [SALES] CustomerName '$customerName' doesn't contain company type suffix, will try text extraction")
+                    // SALES: customer = buyer (partner), vendor = seller (often own company)
+                    fieldString(fields.get("CustomerName"))?.let {
+                        val name = it.trim()
+                        if (name.length >= 2 && (excludeOwnCompanyName == null || !name.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                            companyName = name
+                            Timber.d("Azure: [SALES] Extracted company name from CustomerName: $name")
                         }
                     }
-                    // Fallback to VendorName only if CustomerName wasn't found (shouldn't happen for sales invoices)
                     if (companyName == null) {
-                        fields.get("VendorName")?.asJsonObject?.get("valueString")?.asString?.let {
-                            val vendorName = it.trim()
-                            val lowerVendorName = vendorName.lowercase()
-                            val hasCompanyType = lowerVendorName.contains("uab") || lowerVendorName.contains("ab") || 
-                                                lowerVendorName.contains("mb") || lowerVendorName.contains("iį") ||
-                                                lowerVendorName.contains("ltd") || lowerVendorName.contains("oy") || 
-                                                lowerVendorName.contains("as") || lowerVendorName.contains("sp")
-                            if (hasCompanyType && vendorName.length >= 5) {
-                                // Check if this is NOT the own company before using it
-                                // For sales invoices, vendor is usually the own company, so we should exclude it
-                                if (excludeOwnCompanyName == null || !vendorName.equals(excludeOwnCompanyName, ignoreCase = true)) {
-                                    companyName = vendorName
-                                    Timber.d("Azure: [SALES] Fallback: Extracted company name from VendorName: $vendorName")
-                                } else {
-                                    Timber.d("Azure: [SALES] Skipped VendorName '$vendorName' (matches own company name)")
-                                }
+                        fieldString(fields.get("VendorName"))?.let {
+                            val name = it.trim()
+                            if (name.length >= 2 && (excludeOwnCompanyName == null || !name.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                                companyName = name
+                                Timber.d("Azure: [SALES] Fallback: Extracted company name from VendorName: $name")
                             }
                         }
                     }
                 } else {
-                    // PURCHASE INVOICE: Extract vendor (seller) info, exclude customer (buyer = own company)
-                    fields.get("VendorName")?.asJsonObject?.get("valueString")?.asString?.let {
-                        val vendorName = it.trim()
-                        val lowerVendorName = vendorName.lowercase()
-                        val hasCompanyType = lowerVendorName.contains("uab") || lowerVendorName.contains("ab") || 
-                                            lowerVendorName.contains("mb") || lowerVendorName.contains("iį") ||
-                                            lowerVendorName.contains("ltd") || lowerVendorName.contains("oy") || 
-                                            lowerVendorName.contains("as") || lowerVendorName.contains("sp")
-                        if (hasCompanyType && vendorName.length >= 5) {
-                            // For purchase invoices, vendor is the partner company (exclude own company)
-                            if (excludeOwnCompanyName == null || !vendorName.equals(excludeOwnCompanyName, ignoreCase = true)) {
-                                companyName = vendorName
-                                Timber.d("Azure: [PURCHASE] Extracted company name from VendorName: $vendorName")
-                            } else {
-                                Timber.d("Azure: [PURCHASE] Skipped VendorName '$vendorName' (matches own company name)")
-                            }
-                        } else {
-                            Timber.d("Azure: [PURCHASE] VendorName '$vendorName' doesn't contain company type suffix, will try text extraction")
+                    // PURCHASE: vendor = seller (partner), customer = buyer (often own company)
+                    fieldString(fields.get("VendorName"))?.let {
+                        val name = it.trim()
+                        if (name.length >= 2 && (excludeOwnCompanyName == null || !name.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                            companyName = name
+                            Timber.d("Azure: [PURCHASE] Extracted company name from VendorName: $name")
                         }
                     }
-                    // Fallback to CustomerName only if VendorName wasn't found
                     if (companyName == null) {
-                        fields.get("CustomerName")?.asJsonObject?.get("valueString")?.asString?.let {
-                            val customerName = it.trim()
-                            val lowerCustomerName = customerName.lowercase()
-                            val hasCompanyType = lowerCustomerName.contains("uab") || lowerCustomerName.contains("ab") || 
-                                                lowerCustomerName.contains("mb") || lowerCustomerName.contains("iį") ||
-                                                lowerCustomerName.contains("ltd") || lowerCustomerName.contains("oy") || 
-                                                lowerCustomerName.contains("as") || lowerCustomerName.contains("sp")
-                            if (hasCompanyType && customerName.length >= 5) {
-                                companyName = customerName
-                                Timber.d("Azure: [PURCHASE] Fallback: Extracted company name from CustomerName: $customerName")
+                        fieldString(fields.get("CustomerName"))?.let {
+                            val name = it.trim()
+                            if (name.length >= 2 && (excludeOwnCompanyName == null || !name.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                                companyName = name
+                                Timber.d("Azure: [PURCHASE] Fallback: Extracted company name from CustomerName: $name")
                             }
                         }
                     }
@@ -345,42 +349,31 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 
                 // Subtotal (amount without VAT) - try multiple field names
                 if (amountNoVat == null) {
-                    fields.get("SubTotal")?.asJsonObject?.get("valueNumber")?.asDouble?.let {
-                        amountNoVat = String.format("%.2f", it)
-                    }
+                    fieldNumber(fields.get("SubTotal"))?.let { amountNoVat = String.format("%.2f", it) }
                 }
                 if (amountNoVat == null) {
-                    fields.get("Subtotal")?.asJsonObject?.get("valueNumber")?.asDouble?.let {
-                        amountNoVat = String.format("%.2f", it)
-                    }
-                }
-                if (amountNoVat == null) {
-                    fields.get("SubTotal")?.asJsonObject?.get("valueCurrency")?.asJsonObject?.get("amount")?.asDouble?.let {
-                        amountNoVat = String.format("%.2f", it)
-                    }
+                    fieldNumber(fields.get("Subtotal"))?.let { amountNoVat = String.format("%.2f", it) }
                 }
                 
                 // Tax amount (VAT) - try multiple field names
                 if (vatAmount == null) {
-                    fields.get("TotalTax")?.asJsonObject?.get("valueNumber")?.asDouble?.let {
-                        vatAmount = String.format("%.2f", it)
-                    }
+                    fieldNumber(fields.get("TotalTax"))?.let { vatAmount = String.format("%.2f", it) }
                 }
                 if (vatAmount == null) {
-                    fields.get("TotalTax")?.asJsonObject?.get("valueCurrency")?.asJsonObject?.get("amount")?.asDouble?.let {
-                        vatAmount = String.format("%.2f", it)
-                    }
+                    fieldNumber(fields.get("Tax"))?.let { vatAmount = String.format("%.2f", it) }
                 }
-                if (vatAmount == null) {
-                    fields.get("Tax")?.asJsonObject?.get("valueNumber")?.asDouble?.let {
-                        vatAmount = String.format("%.2f", it)
-                    }
+                // Total / InvoiceTotal as fallback for amount if no subtotal
+                if (amountNoVat == null) {
+                    fieldNumber(fields.get("InvoiceTotal"))?.let { amountNoVat = String.format("%.2f", it) }
+                }
+                if (amountNoVat == null) {
+                    fieldNumber(fields.get("Total"))?.let { amountNoVat = String.format("%.2f", it) }
                 }
                 
                 // VAT number extraction - prioritize based on invoice type
                 if (isSalesInvoice) {
                     // SALES INVOICE: Extract customer VAT (buyer), exclude vendor VAT (seller = own company)
-                    fields.get("CustomerTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
+                    fieldString(fields.get("CustomerTaxId"))?.let {
                         val vatValue = it.trim().uppercase()
                         // Only accept if it starts with "LT" and exclude own company VAT number
                         if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
@@ -392,7 +385,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                     }
                     // Fallback to VendorTaxId only if CustomerTaxId wasn't found (shouldn't happen for sales invoices)
                     if (vatNumber == null) {
-                        fields.get("VendorTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
+                        fieldString(fields.get("VendorTaxId"))?.let {
                             val vatValue = it.trim().uppercase()
                             // Exclude own company VAT number - for sales invoices, vendor is usually own company
                             if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
@@ -405,7 +398,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                     }
                 } else {
                     // PURCHASE INVOICE: Extract vendor VAT (seller), exclude customer VAT (buyer = own company)
-                    fields.get("VendorTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
+                    fieldString(fields.get("VendorTaxId"))?.let {
                         val vatValue = it.trim().uppercase()
                         // Only accept if it starts with "LT" and exclude own company VAT number
                         if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
@@ -417,7 +410,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                     }
                     // Fallback to CustomerTaxId only if VendorTaxId wasn't found
                     if (vatNumber == null) {
-                        fields.get("CustomerTaxId")?.asJsonObject?.get("valueString")?.asString?.let {
+                        fieldString(fields.get("CustomerTaxId"))?.let {
                             val vatValue = it.trim().uppercase()
                             // Only accept if it starts with "LT" and exclude own company VAT number
                             if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
@@ -432,9 +425,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 
                 // Also check alternative field names for invoice ID
                 if (invoiceId == null) {
-                    fields.get("InvoiceNumber")?.asJsonObject?.get("valueString")?.asString?.let {
-                        invoiceId = it
-                    }
+                    fieldString(fields.get("InvoiceNumber"))?.let { invoiceId = it }
                 }
                 
                 // Company number - try to extract from text if not in structured fields
@@ -442,20 +433,106 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
         }
         
-        // Also extract text for fallback parsing
+        // Extract text for InvoiceParser. Azure can return full OCR in "content" OR in pages[].lines;
+        // for some documents (e.g. Kesko receipt PDF) "content" is only the first block (e.g. "KESKO SENUKAI")
+        // while pages[].lines has the full page text. So we use whichever source has more lines.
         val pages = analyzeResult?.getAsJsonArray("pages")
-        val lines = mutableListOf<String>()
+        val linesFromContent = mutableListOf<String>()
+        val contentStr = analyzeResult?.get("content")?.asString ?: result.get("content")?.asString
+        if (!contentStr.isNullOrBlank()) {
+            var fromContent = contentStr.split(Regex("\\r?\\n")).map { it.trim() }.filter { it.isNotEmpty() }
+            if (fromContent.size == 1 && fromContent[0].length > 300) {
+                val singleLine = fromContent[0]
+                fromContent = singleLine.split(Regex("\\s{2,}|\u00a0+")).map { it.trim() }.filter { it.isNotEmpty() }
+                Timber.d("Azure: Split single long line (${singleLine.length} chars) into ${fromContent.size} lines by spaces")
+            }
+            if (fromContent.isNotEmpty()) {
+                linesFromContent.addAll(fromContent)
+            }
+        }
+        val linesFromPages = mutableListOf<String>()
         if (pages != null) {
             for (pageElement in pages) {
                 val page = pageElement.asJsonObject
-                val pageText = page.get("lines")?.asJsonArray
-                if (pageText != null) {
-                    for (lineElement in pageText) {
-                        val line = lineElement.asJsonObject
-                        line.get("content")?.asString?.let { lines.add(it) }
+                val pageLines = page.get("lines")?.asJsonArray
+                if (pageLines != null) {
+                    for (lineElement in pageLines) {
+                        val lineObj = lineElement.asJsonObject
+                        (lineObj.get("content")?.asString ?: lineObj.get("text")?.asString)?.trim()?.takeIf { it.isNotEmpty() }?.let { linesFromPages.add(it) }
                     }
                 }
             }
+        }
+        val lines = when {
+            linesFromPages.size > linesFromContent.size -> {
+                Timber.d("Azure: Using ${linesFromPages.size} lines from pages[].lines (content had ${linesFromContent.size})")
+                linesFromPages.toMutableList()
+            }
+            linesFromContent.isNotEmpty() -> {
+                Timber.d("Azure: Using ${linesFromContent.size} lines from content")
+                linesFromContent.toMutableList()
+            }
+            linesFromPages.isNotEmpty() -> linesFromPages.toMutableList()
+            else -> mutableListOf<String>()
+        }
+        // Fallback: use paragraphs[].content if present
+        if (lines.isEmpty()) {
+            val paragraphs = analyzeResult?.getAsJsonArray("paragraphs")
+            if (paragraphs != null) {
+                for (p in paragraphs) {
+                    val para = p.asJsonObject
+                    (para.get("content")?.asString?.trim())?.takeIf { it.isNotEmpty() }?.let { lines.add(it) }
+                }
+                if (lines.isNotEmpty()) {
+                    Timber.d("Azure: Extracted ${lines.size} lines from analyzeResult.paragraphs")
+                }
+            }
+        }
+        // Fallback: build lines from pages[].words (OCR words when lines array is empty)
+        if (lines.isEmpty() && pages != null) {
+            for (pageElement in pages) {
+                val page = pageElement.asJsonObject
+                val words = page.get("words")?.asJsonArray
+                if (words != null && words.size() > 0) {
+                    val pageWords = words.mapNotNull { w ->
+                        (w.asJsonObject.get("content")?.asString ?: w.asJsonObject.get("text")?.asString)?.trim()
+                    }.filter { it.isNotEmpty() }
+                    if (pageWords.isNotEmpty()) {
+                        // One line per page: join words with space (preserves order for parser)
+                        lines.add(pageWords.joinToString(" "))
+                        Timber.d("Azure: Built line from page words (${pageWords.size} words)")
+                    }
+                }
+            }
+            if (lines.isNotEmpty()) {
+                Timber.d("Azure: Extracted ${lines.size} lines from pages[].words")
+            }
+        }
+        // Fallback: build lines from document fields (content/valueString) so parser can run
+        if (lines.isEmpty() && documents != null && documents.size() > 0) {
+            val document = documents[0].asJsonObject
+            val fields = document.getAsJsonObject("fields")
+            if (fields != null) {
+                for (entry in fields.entrySet()) {
+                    val fieldObj = entry.value?.asJsonObject ?: continue
+                    val text = fieldObj.get("content")?.asString ?: fieldObj.get("valueString")?.asString
+                        ?: fieldObj.get("valueDate")?.asString
+                        ?: fieldObj.get("valueNumber")?.let { n -> n.asNumber.toString() }
+                    text?.trim()?.takeIf { it.isNotEmpty() }?.let { lines.add(it) }
+                }
+                if (lines.isNotEmpty()) {
+                    Timber.d("Azure: Built ${lines.size} lines from document fields (no OCR text in result)")
+                }
+            }
+        }
+        val emptyExtractionMessage = "No text could be read from this page. Try a clearer scan or enter details manually."
+        if (lines.isEmpty()) {
+            val content = analyzeResult?.get("content")?.asString ?: result.get("content")?.asString
+            val contentLen = content?.length ?: 0
+            val paragraphCount = analyzeResult?.getAsJsonArray("paragraphs")?.size() ?: 0
+            val docCount = documents?.size() ?: 0
+            val hasFields = documents?.let { it.size() > 0 && it[0].asJsonObject.getAsJsonObject("fields") != null } ?: false
+            Timber.w("Azure: No text lines in result. content.length=$contentLen, paragraphs=$paragraphCount, analyzeResult keys=${analyzeResult?.keySet()}, documents.size=$docCount, hasFields=$hasFields")
         }
         
         // Always try to extract invoice ID with serial+number combination from text (more accurate)
@@ -546,6 +623,28 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
         }
         
+        // When Azure returns very little OCR, use first lines as company name (same logic as when document fields exist)
+        // Prefer a line or joined lines that contain legal suffix (UAB, AB, etc.) so "UAB" is not dropped
+        if (companyName.isNullOrBlank() && lines.isNotEmpty()) {
+            val trimmed = lines.map { it.trim() }.filter { it.isNotEmpty() }
+            var candidate: String? = null
+            for (n in 1..minOf(5, trimmed.size)) {
+                val joined = trimmed.take(n).joinToString(" ").trim()
+                if (joined.length >= 2 && hasCompanyTypeSuffix(joined)) {
+                    candidate = joined
+                    break
+                }
+            }
+            if (candidate == null && trimmed.isNotEmpty()) {
+                candidate = trimmed.take(3).joinToString(" ").trim()
+            }
+            if (!candidate.isNullOrBlank() &&
+                (excludeOwnCompanyName == null || !candidate.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                companyName = candidate
+                Timber.d("Azure: Using first line(s) as company name (no structured data): $companyName")
+            }
+        }
+        
         // Extract VAT rate from text if available
         var vatRate: String? = parsedFromText.vatRate
         
@@ -562,7 +661,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             vatNumber = vatNumber,
             companyNumber = companyNumber,
             vatRate = vatRate,
-            lines = lines
+            lines = lines,
+            extractionMessage = if (lines.isEmpty()) emptyExtractionMessage else null
         )
     }
     
@@ -586,10 +686,12 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     
     /**
      * Compress image if it exceeds size limits for Azure Document Intelligence.
-     * Azure has a maximum file size limit (typically 50MB, but smaller for certain operations).
-     * We'll compress to max 3MB and max 3000px dimension to ensure compatibility.
      * Returns Pair of (compressed bytes, mime type) - mime type will be "image/jpeg" if compressed.
      */
+    private suspend fun compressImageIfNeeded(originalBytes: ByteArray, mimeType: String): Pair<ByteArray, String> =
+        compressImageIfNeeded(originalBytes, Uri.EMPTY, mimeType)
+
+    @Suppress("UNUSED_PARAMETER")
     private suspend fun compressImageIfNeeded(originalBytes: ByteArray, uri: Uri, mimeType: String): Pair<ByteArray, String> = withContext(Dispatchers.IO) {
         val maxFileSizeBytes = 3 * 1024 * 1024 // 3 MB
         val maxDimension = 3000 // Max width or height in pixels

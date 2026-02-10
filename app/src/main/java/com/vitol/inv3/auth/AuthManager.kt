@@ -140,6 +140,13 @@ class AuthManager(
                         Timber.d("Session refreshed from stored session: User ID = $userId")
                         return true
                     }
+                } catch (e: IllegalStateException) {
+                    if (e.message?.contains("refresh token") == true) {
+                        Timber.w("No refresh token in session; user may need to sign in again")
+                    } else {
+                        Timber.w(e, "Failed to refresh stored session")
+                    }
+                    return false
                 } catch (e: Exception) {
                     Timber.w(e, "Failed to refresh stored session")
                     return false

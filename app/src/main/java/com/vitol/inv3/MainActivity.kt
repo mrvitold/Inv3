@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -157,9 +158,13 @@ object Routes {
     const val Settings = "settings"
     const val Subscription = "subscription"
     const val SelectInvoiceType = "selectInvoiceType"
+    const val SelectImportType = "selectImportType"
     const val ScanCamera = "scanCamera/{invoiceType}"
     const val ReviewScan = "reviewScan/{imageUri}/{invoiceType}"
     const val ReviewScanEdit = "reviewScanEdit/{invoiceId}/{invoiceType}"
+    const val ReviewScanImport = "reviewScanImport/{invoiceType}"
+    const val ImportFiles = "importFiles/{invoiceType}"
+    const val ImportPrepare = "importPrepare"
 }
 
 @Composable
@@ -289,6 +294,9 @@ fun AppNavHost(
         composable(Routes.SelectInvoiceType) {
             com.vitol.inv3.ui.scan.SelectInvoiceTypeScreen(navController = navController)
         }
+        composable(Routes.SelectImportType) {
+            com.vitol.inv3.ui.scan.SelectImportTypeScreen(navController = navController)
+        }
         composable("${Routes.ScanCamera}/{invoiceType}") { backStackEntry ->
             val invoiceType = backStackEntry.arguments?.getString("invoiceType") ?: "P"
             com.vitol.inv3.ui.scan.CameraScreen(
@@ -306,11 +314,25 @@ fun AppNavHost(
                 com.vitol.inv3.ui.scan.ReviewScanScreen(
                     imageUri = imageUri,
                     navController = navController,
-                    invoiceType = invoiceType
+                    invoiceType = invoiceType,
+                    fromImport = false
                 )
             } else {
                 PlaceholderScreen("Invalid image URI")
             }
+        }
+        composable("${Routes.ReviewScanImport}/{invoiceType}") { backStackEntry ->
+            val invoiceTypeEnc = backStackEntry.arguments?.getString("invoiceType") ?: ""
+            val invoiceType = if (invoiceTypeEnc.isNotBlank()) java.net.URLDecoder.decode(invoiceTypeEnc, "UTF-8") else "P"
+            com.vitol.inv3.ui.scan.ReviewScanScreen(
+                imageUri = null,
+                navController = navController,
+                invoiceType = invoiceType,
+                fromImport = true
+            )
+        }
+        composable(Routes.ImportPrepare) {
+            com.vitol.inv3.ui.scan.ImportPrepareScreen(navController = navController)
         }
     }
 }
@@ -460,6 +482,25 @@ fun HomeScreen(
                             modifier = Modifier.padding(end = 8.dp)
                         )
                         Text(text = "Scan with Camera")
+                    }
+                    
+                    // Import files button
+                    Button(
+                        onClick = { 
+                            if (subscriptionStatus?.canScan == true) {
+                                navController.navigate(Routes.SelectImportType)
+                            } else {
+                                showUpgradeDialog = true
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(0.6f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Upload,
+                            contentDescription = "Import files",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(text = "Import files")
                     }
                     
                     // Companies button

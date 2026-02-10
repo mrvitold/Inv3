@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,20 +49,23 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.vitol.inv3.Routes
-import kotlinx.coroutines.Dispatchers
+import com.vitol.inv3.ui.subscription.SubscriptionViewModel
+import com.vitol.inv3.ui.subscription.UpgradeDialog
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Sell
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.text.style.TextAlign
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 import java.net.URLEncoder
@@ -178,6 +183,195 @@ fun SelectInvoiceTypeScreen(navController: NavController) {
                             textAlign = TextAlign.Center
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+private val importPickerMimeTypes = arrayOf("image/*", "application/pdf")
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SelectImportTypeScreen(navController: NavController) {
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
+    val importSessionViewModel: ImportSessionViewModel = hiltViewModel(viewModelStoreOwner = activity!!)
+    val subscriptionViewModel: SubscriptionViewModel = hiltViewModel()
+
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showUpgradeDialog by remember { mutableStateOf(false) }
+
+    val buildPagesResult by importSessionViewModel.buildPagesResult.collectAsState()
+
+    val pickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            errorMessage = null
+            importSessionViewModel.buildPagesFromUris(uris)
+        }
+    }
+
+    LaunchedEffect(buildPagesResult) {
+        when (val result = buildPagesResult) {
+            is BuildPagesResult.Success -> {
+                importSessionViewModel.clearBuildPagesResult()
+                if (!subscriptionViewModel.canScanPages(result.pages.size)) {
+                    showUpgradeDialog = true
+                } else {
+                    importSessionViewModel.startSession(result.pages, result.invoiceType)
+                    navController.navigate(Routes.ImportPrepare) {
+                        popUpTo(Routes.SelectImportType) { inclusive = true }
+                    }
+                }
+            }
+            is BuildPagesResult.Error -> {
+                errorMessage = result.message
+                importSessionViewModel.clearBuildPagesResult()
+            }
+            else -> { }
+        }
+    }
+
+    val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState(initial = null)
+    if (showUpgradeDialog) {
+        UpgradeDialog(
+            subscriptionStatus = subscriptionStatus,
+            onDismiss = { showUpgradeDialog = false },
+            onUpgradeClick = { _ ->
+                showUpgradeDialog = false
+                navController.navigate(Routes.Subscription) {
+                    popUpTo(Routes.Home) { inclusive = false }
+                }
+            }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Select Invoice Type") },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "What type of invoice are you importing?",
+                    style = MaterialTheme.typography.headlineSmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 32.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        ),
+                        onClick = {
+                            importSessionViewModel.setPendingImportType("P")
+                            pickerLauncher.launch(importPickerMimeTypes)
+                        }
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Upload,
+                                contentDescription = "Import purchase",
+                                modifier = Modifier.padding(bottom = 8.dp),
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "Purchase",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "Invoice from supplier",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer
+                        ),
+                        onClick = {
+                            importSessionViewModel.setPendingImportType("S")
+                            pickerLauncher.launch(importPickerMimeTypes)
+                        }
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Upload,
+                                contentDescription = "Import sales",
+                                modifier = Modifier.padding(bottom = 8.dp),
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "Sales",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "Invoice to customer",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+                errorMessage?.let { msg ->
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        text = msg,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+            if (buildPagesResult is BuildPagesResult.Loading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
                 }
             }
         }

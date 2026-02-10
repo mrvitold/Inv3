@@ -2,6 +2,7 @@ package com.vitol.inv3.ui.scan
 
 import android.content.Context
 import android.net.Uri
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,7 +62,9 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -197,11 +200,19 @@ class ReviewScanViewModel @Inject constructor(
                     invoiceType = invoiceType
                 )
 
+                val noUsefulData = parsedInvoice != null && parsedInvoice.lines.isEmpty() &&
+                    parsedInvoice.invoiceId.isNullOrBlank() && parsedInvoice.companyName.isNullOrBlank() &&
+                    parsedInvoice.amountWithoutVatEur.isNullOrBlank() && parsedInvoice.vatAmountEur.isNullOrBlank() &&
+                    parsedInvoice.vatNumber.isNullOrBlank() && parsedInvoice.companyNumber.isNullOrBlank()
                 _processingState.value = _processingState.value.copy(
                     isLoading = false,
                     isProcessing = false,
                     parsedInvoice = parsedInvoice,
-                    errorMessage = if (parsedInvoice == null) "Failed to extract invoice data. Please try again." else null
+                    errorMessage = when {
+                        parsedInvoice == null -> "Failed to extract invoice data. Please try again."
+                        noUsefulData -> (parsedInvoice.extractionMessage ?: "No data could be extracted. Try a clearer or larger image.")
+                        else -> null
+                    }
                 )
             } catch (e: Exception) {
                 Timber.e(e, "Failed to process invoice")
@@ -234,10 +245,14 @@ fun ReviewScanScreen(
     navController: NavController?,
     invoiceType: String = "P",
     invoiceId: String? = null, // For editing existing invoice
+    fromImport: Boolean = false,
     viewModel: ReviewScanViewModel = hiltViewModel(),
     subscriptionViewModel: SubscriptionViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val importSessionViewModel: ImportSessionViewModel? = if (fromImport) {
+        hiltViewModel(viewModelStoreOwner = context as ComponentActivity)
+    } else null
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     
@@ -274,6 +289,12 @@ fun ReviewScanScreen(
     // Get active own company ID
     val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
     val activeCompanyId by activeCompanyIdFlow.collectAsState(initial = null)
+    // Wait for company id to be resolved before first processInvoice (same as camera: single call with correct exclusion)
+    var companyIdResolved by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        withTimeoutOrNull(500) { activeCompanyIdFlow.first() }
+        companyIdResolved = true
+    }
     
     // Observe processing state from ViewModel
     val processingState by viewModel.processingState.collectAsState()
@@ -307,12 +328,10 @@ fun ReviewScanScreen(
         }
     }
     
-    // Trigger processing when imageUri or activeCompanyId changes (only if not editing)
-    LaunchedEffect(imageUri, activeCompanyId) {
-        if (invoiceId == null && imageUri != null) {
-            if (activeCompanyId != null || activeCompanyId == null) { // Process even if null
-                viewModel.processInvoice(context, imageUri, activeCompanyId, invoiceType)
-            }
+    // Camera only: extract from URI when we have imageUri
+    LaunchedEffect(imageUri, companyIdResolved) {
+        if (invoiceId == null && imageUri != null && companyIdResolved) {
+            viewModel.processInvoice(context, imageUri, activeCompanyId, invoiceType)
         }
     }
     
@@ -407,17 +426,74 @@ fun ReviewScanScreen(
         }
     }
     
-    // Reset processed flag when imageUri changes
+    // Reset processed flag when imageUri changes (camera)
     LaunchedEffect(imageUri) {
         hasProcessedInvoice = false
+    }
+
+    // Import flow: fill form from pre-extracted parsedInvoices (no processInvoice call)
+    val parsedInvoices by importSessionViewModel?.parsedInvoices?.collectAsState(initial = emptyList()) ?: remember { mutableStateOf(emptyList()) }
+    val importCurrentIndex by importSessionViewModel?.currentIndex?.collectAsState(initial = 0) ?: remember { mutableStateOf(0) }
+    LaunchedEffect(fromImport, parsedInvoices, importCurrentIndex, activeCompanyId) {
+        if (!fromImport || importSessionViewModel == null || invoiceId != null) return@LaunchedEffect
+        val parsed = importSessionViewModel.getCurrentParsedInvoice() ?: return@LaunchedEffect
+        val ownCompany = activeCompanyId?.let { viewModel.getOwnCompany(it) }
+        invoiceIdField = parsed.invoiceId ?: ""
+        dateField = parsed.date ?: ""
+        companyNameField = parsed.companyName ?: ""
+        amountWithoutVatField = parsed.amountWithoutVatEur ?: ""
+        vatAmountField = parsed.vatAmountEur ?: ""
+        vatNumberField = parsed.vatNumber ?: ""
+        companyNumberField = parsed.companyNumber ?: ""
+        vatRateField = parsed.vatRate ?: ""
+        val invoiceText = parsed.lines.joinToString(" ")
+        val detectedTaxCode = com.vitol.inv3.export.TaxCodeDeterminer.determineTaxCode(
+            vatRateField.toDoubleOrNull(),
+            invoiceText
+        )
+        if (detectedTaxCode.isNotBlank()) taxCodeField = detectedTaxCode
+        if (ownCompany != null) {
+            if (companyNumberField == ownCompany.company_number) companyNumberField = ""
+            if (vatNumberField.equals(ownCompany.vat_number, ignoreCase = true)) vatNumberField = ""
+            if (companyNameField.equals(ownCompany.company_name, ignoreCase = true)) companyNameField = ""
+        }
+        val partnerInvoice = viewModel.findPartnerCompany(
+            vatNumber = vatNumberField.takeIf { it.isNotBlank() },
+            companyNumber = companyNumberField.takeIf { it.isNotBlank() }
+        )
+        if (partnerInvoice != null) {
+            if (companyNameField.isBlank() && !partnerInvoice.company_name.isNullOrBlank()) companyNameField = partnerInvoice.company_name
+            if (vatNumberField.isBlank() && !partnerInvoice.vat_number.isNullOrBlank()) vatNumberField = partnerInvoice.vat_number
+            if (companyNumberField.isBlank() && !partnerInvoice.company_number.isNullOrBlank()) companyNumberField = partnerInvoice.company_number
+        }
+        errorMessage = parsed.extractionMessage
     }
     
     Scaffold(
         topBar = {
+            val currentIndex by importSessionViewModel?.currentIndex?.collectAsState(initial = 0) ?: remember { mutableStateOf(0) }
+            val totalCount = importSessionViewModel?.totalCount ?: 1
             TopAppBar(
-                title = { Text(if (invoiceId != null) "Edit Invoice" else "Review Scanned Invoice") },
+                title = {
+                    Text(
+                        when {
+                            invoiceId != null -> "Edit Invoice"
+                            fromImport && totalCount > 1 -> "Invoice ${currentIndex + 1} of $totalCount"
+                            else -> "Review Scanned Invoice"
+                        }
+                    )
+                },
                 navigationIcon = {
-                    IconButton(onClick = { navController?.popBackStack() }) {
+                    IconButton(onClick = {
+                        if (fromImport) {
+                            importSessionViewModel?.clear()
+                            navController?.navigate(Routes.Home) {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        } else {
+                            navController?.popBackStack()
+                        }
+                    }) {
                         Icon(
                             imageVector = Icons.Default.ArrowBack,
                             contentDescription = "Back"
@@ -425,6 +501,11 @@ fun ReviewScanScreen(
                     }
                 },
                 actions = {
+                    if (fromImport && (importSessionViewModel?.hasPrevious == true)) {
+                        TextButton(onClick = { importSessionViewModel?.advanceToPrevious() }) {
+                            Text("Previous")
+                        }
+                    }
                     Text(
                         text = if (invoiceType == "S") "Sale" else "Purchase",
                         style = MaterialTheme.typography.bodySmall,
@@ -435,7 +516,7 @@ fun ReviewScanScreen(
         },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { paddingValues ->
-        if ((isLoading || isProcessing) && invoiceId == null) {
+        if ((isLoading || isProcessing) && invoiceId == null && !fromImport) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -609,8 +690,8 @@ fun ReviewScanScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (invoiceId == null) {
-                        // Only show Redo button when scanning (not editing)
+                    if (invoiceId == null && !fromImport) {
+                        // Only show Redo button when scanning with camera (not editing, not import)
                         OutlinedButton(
                             onClick = {
                                 if (imageUri != null) {
@@ -631,9 +712,9 @@ fun ReviewScanScreen(
                     
                     OutlinedButton(
                         onClick = {
-                            // Navigate to home screen and clear back stack
+                            if (fromImport) importSessionViewModel?.clear()
                             navController?.navigate(Routes.Home) {
-                                popUpTo(0) { inclusive = false }
+                                popUpTo(0) { inclusive = true }
                             }
                         },
                         modifier = Modifier.weight(1f)
@@ -646,8 +727,8 @@ fun ReviewScanScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (invoiceId == null && imageUri != null) {
-                        // Only show Merge button when scanning (not editing)
+                    if (invoiceId == null && imageUri != null && !fromImport) {
+                        // Only show Merge button when scanning with camera (not editing, not import)
                         OutlinedButton(
                             onClick = {
                                 // Store current form data for merging
@@ -721,23 +802,33 @@ fun ReviewScanScreen(
                                 )
                             } else {
                                 // Save new invoice
-                                // Navigate immediately for faster camera opening
-                                val shouldOpenCamera = imageUri != null
+                                val isImportFlow = fromImport && importSessionViewModel != null
+                                val shouldOpenCamera = imageUri != null && !isImportFlow
                                 if (shouldOpenCamera) {
                                     navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
                                         popUpTo("${Routes.ReviewScan}/$imageUri/$invoiceType") { inclusive = true }
                                     }
                                 }
                                 
-                                // Save and track usage in background (don't block navigation)
                                 viewModel.saveInvoice(
                                     invoice = invoice,
                                     onSuccess = {
                                         scope.launch {
-                                            // Track page usage after successful save (non-blocking)
                                             subscriptionViewModel.trackPageUsage()
-                                            // Show snackbar briefly (user might already be on camera screen)
                                             snackbarHostState.showSnackbar("Invoice saved successfully")
+                                            if (isImportFlow && importSessionViewModel != null) {
+                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                    importSessionViewModel.advanceToNext(context)
+                                                }
+                                                if (!importSessionViewModel.hasNext) {
+                                                    importSessionViewModel.clear()
+                                                    navController?.navigate(Routes.Home) {
+                                                        popUpTo(0) { inclusive = true }
+                                                    }
+                                                    snackbarHostState.showSnackbar("All invoices saved")
+                                                }
+                                                // else: stay on screen; form refills from next parsed invoice
+                                            }
                                         }
                                     },
                                     onError = { e ->
@@ -745,7 +836,6 @@ fun ReviewScanScreen(
                                         errorMessage = "Failed to save invoice: ${e.message}"
                                         scope.launch {
                                             snackbarHostState.showSnackbar("Failed to save invoice")
-                                            // Navigate back if save failed
                                             if (shouldOpenCamera) {
                                                 navController?.popBackStack()
                                             }
@@ -763,7 +853,13 @@ fun ReviewScanScreen(
                                 color = MaterialTheme.colorScheme.onPrimary
                             )
                         }
-                        Text(if (invoiceId != null) "Save Changes" else "Confirm and Save")
+                        Text(
+                            when {
+                                invoiceId != null -> "Save Changes"
+                                fromImport && (importSessionViewModel?.hasNext == true) -> "Save and next"
+                                else -> "Confirm and Save"
+                            }
+                        )
                     }
                 }
             }
