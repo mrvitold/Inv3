@@ -38,6 +38,7 @@ fun ImportPrepareScreen(
     val totalCount = importSessionViewModel.totalCount
     val invoiceType by importSessionViewModel.invoiceType.collectAsState(initial = "P")
     val extractionState by importSessionViewModel.extractionState.collectAsState(initial = ImportExtractionState.Idle)
+    val parsedInvoices by importSessionViewModel.parsedInvoices.collectAsState(initial = emptyList())
 
     LaunchedEffect(Unit) {
         if (totalCount == 0) {
@@ -54,15 +55,16 @@ fun ImportPrepareScreen(
         importSessionViewModel.runExtraction(context)
     }
 
-    LaunchedEffect(extractionState) {
-        when (extractionState) {
-            is ImportExtractionState.Done -> {
+    // Navigate to verification as soon as first invoice is ready (streaming UX)
+    LaunchedEffect(parsedInvoices, extractionState) {
+        when {
+            parsedInvoices.isNotEmpty() -> {
                 val encodedType = java.net.URLEncoder.encode(invoiceType, "UTF-8")
                 navController.navigate("${Routes.ReviewScanImport}/$encodedType") {
                     popUpTo(Routes.ImportPrepare) { inclusive = true }
                 }
             }
-            is ImportExtractionState.Error -> {
+            extractionState is ImportExtractionState.Error -> {
                 // Stay on screen; UI shows error below
             }
             else -> { }

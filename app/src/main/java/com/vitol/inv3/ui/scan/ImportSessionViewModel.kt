@@ -158,10 +158,10 @@ class ImportSessionViewModel @Inject constructor(
                         context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                     }
                     val mime = context.contentResolver.getType(uri)?.takeIf { !it.isNullOrBlank() } ?: "image/jpeg"
-                    if (bytes == null || bytes.isEmpty()) {
-                        results.add(ParsedInvoice(extractionMessage = "Could not read file. Enter details manually."))
+                    val parsed = if (bytes == null || bytes.isEmpty()) {
+                        ParsedInvoice(extractionMessage = "Could not read file. Enter details manually.")
                     } else {
-                        val parsed = azure.extractFromBytes(
+                        azure.extractFromBytes(
                             bytes,
                             mime,
                             _excludeOwnCompanyNumber,
@@ -169,10 +169,10 @@ class ImportSessionViewModel @Inject constructor(
                             _excludeOwnCompanyName,
                             invoiceType
                         )
-                        results.add(parsed)
                     }
+                    results.add(parsed)
+                    _parsedInvoices.value = results.toList()
                 }
-                _parsedInvoices.value = results
                 _extractionState.value = ImportExtractionState.Done
                 Timber.d("Import extraction done: ${results.size} invoices")
             } catch (e: Exception) {
@@ -240,6 +240,15 @@ class ImportSessionViewModel @Inject constructor(
                 Timber.w(e, "Prefetch failed for page $nextIndex")
             }
         }
+    }
+
+    /**
+     * Advance to the next page index (for Skip - no need to fetch URI).
+     * Use advanceToNext when you need the URI (e.g. after Save).
+     */
+    fun advanceToNextIndex() {
+        if (!hasNext) return
+        _currentIndex.value = _currentIndex.value + 1
     }
 
     /**

@@ -23,6 +23,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -261,6 +262,7 @@ fun ReviewScanScreen(
     var isSaving by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showCancelImportDialog by remember { mutableStateOf(false) }
     
     // Own company info for exclusion
     var ownCompanyNumber by remember { mutableStateOf<String?>(null) }
@@ -434,6 +436,8 @@ fun ReviewScanScreen(
     // Import flow: fill form from pre-extracted parsedInvoices (no processInvoice call)
     val parsedInvoices by importSessionViewModel?.parsedInvoices?.collectAsState(initial = emptyList()) ?: remember { mutableStateOf(emptyList()) }
     val importCurrentIndex by importSessionViewModel?.currentIndex?.collectAsState(initial = 0) ?: remember { mutableStateOf(0) }
+    val extractionState by importSessionViewModel?.extractionState?.collectAsState(initial = ImportExtractionState.Idle) ?: remember { mutableStateOf<ImportExtractionState>(ImportExtractionState.Idle) }
+    val isWaitingForNextInvoice = fromImport && importSessionViewModel != null && importSessionViewModel.getCurrentParsedInvoice() == null
     LaunchedEffect(fromImport, parsedInvoices, importCurrentIndex, activeCompanyId) {
         if (!fromImport || importSessionViewModel == null || invoiceId != null) return@LaunchedEffect
         val parsed = importSessionViewModel.getCurrentParsedInvoice() ?: return@LaunchedEffect
@@ -475,21 +479,28 @@ fun ReviewScanScreen(
             val totalCount = importSessionViewModel?.totalCount ?: 1
             TopAppBar(
                 title = {
-                    Text(
-                        when {
-                            invoiceId != null -> "Edit Invoice"
-                            fromImport && totalCount > 1 -> "Invoice ${currentIndex + 1} of $totalCount"
-                            else -> "Review Scanned Invoice"
+                    Column {
+                        Text(
+                            when {
+                                invoiceId != null -> "Edit Invoice"
+                                fromImport && totalCount > 1 -> "Invoice ${currentIndex + 1} of $totalCount"
+                                else -> "Review Scanned Invoice"
+                            }
+                        )
+                        if (fromImport && extractionState is ImportExtractionState.Extracting) {
+                            val state = extractionState as ImportExtractionState.Extracting
+                            Text(
+                                "${state.current} of ${state.total} analyzing…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    )
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = {
                         if (fromImport) {
-                            importSessionViewModel?.clear()
-                            navController?.navigate(Routes.Home) {
-                                popUpTo(0) { inclusive = true }
-                            }
+                            showCancelImportDialog = true
                         } else {
                             navController?.popBackStack()
                         }
@@ -516,7 +527,7 @@ fun ReviewScanScreen(
         },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { paddingValues ->
-        if ((isLoading || isProcessing) && invoiceId == null && !fromImport) {
+        if (((isLoading || isProcessing) && invoiceId == null && !fromImport) || isWaitingForNextInvoice) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -529,7 +540,14 @@ fun ReviewScanScreen(
                     CircularProgressIndicator()
                     Spacer(modifier = Modifier.padding(16.dp))
                     Text(
-                        text = if (isProcessing) "Processing invoice..." else "Loading...",
+                        text = when {
+                            isWaitingForNextInvoice -> {
+                                val total = importSessionViewModel?.totalCount ?: 1
+                                "Extracting invoice ${importCurrentIndex + 1} of $total…"
+                            }
+                            isProcessing -> "Processing invoice..."
+                            else -> "Loading..."
+                        },
                         style = MaterialTheme.typography.bodyLarge
                     )
                 }
@@ -686,79 +704,162 @@ fun ReviewScanScreen(
                 Spacer(modifier = Modifier.weight(1f))
                 
                 // Action buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (invoiceId == null && !fromImport) {
-                        // Only show Redo button when scanning with camera (not editing, not import)
-                        OutlinedButton(
-                            onClick = {
-                                if (imageUri != null) {
-                                    navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
-                                        popUpTo("${Routes.ReviewScan}/$imageUri/$invoiceType") { inclusive = true }
-                                    }
-                                } else {
-                                    navController?.popBackStack()
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Redo")
-                        }
-                    } else {
-                        Spacer(modifier = Modifier.weight(1f))
-                    }
-                    
-                    OutlinedButton(
-                        onClick = {
-                            if (fromImport) importSessionViewModel?.clear()
-                            navController?.navigate(Routes.Home) {
-                                popUpTo(0) { inclusive = true }
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
+                if (fromImport && importSessionViewModel != null) {
+                    // Import flow: Skip | Save and next | Cancel
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text("Cancel")
-                    }
-                }
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (invoiceId == null && imageUri != null && !fromImport) {
-                        // Only show Merge button when scanning with camera (not editing, not import)
+                        OutlinedButton(
+                            onClick = { showCancelImportDialog = true },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Cancel")
+                        }
                         OutlinedButton(
                             onClick = {
-                                // Store current form data for merging
-                                viewModel.setMergedFormData(
-                                    MergedFormData(
-                                        invoiceId = invoiceIdField,
-                                        date = dateField,
-                                        companyName = companyNameField,
-                                        amountWithoutVat = amountWithoutVatField,
-                                        vatAmount = vatAmountField,
-                                        vatNumber = vatNumberField,
-                                        companyNumber = companyNumberField,
-                                        vatRate = vatRateField,
-                                        taxCode = taxCodeField
-                                    )
-                                )
-                                // Merge with next page - open camera to scan next page
-                                navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
-                                    popUpTo("${Routes.ReviewScan}/$imageUri/$invoiceType") { inclusive = false }
+                                if (importSessionViewModel.hasNext) {
+                                    importSessionViewModel.advanceToNextIndex()
+                                } else {
+                                    importSessionViewModel.clear()
+                                    navController?.navigate(Routes.Home) {
+                                        popUpTo(0) { inclusive = true }
+                                    }
+                                    scope.launch { snackbarHostState.showSnackbar("Import complete") }
                                 }
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Merge with next")
+                            Text(if (importSessionViewModel.hasNext) "Skip" else "Skip and finish")
                         }
-                    } else {
-                        Spacer(modifier = Modifier.weight(1f))
+                        Button(
+                            onClick = {
+                                isSaving = true
+                                errorMessage = null
+                                val amountWithoutVat = amountWithoutVatField.replace(",", ".").toDoubleOrNull()
+                                val vatAmount = vatAmountField.replace(",", ".").toDoubleOrNull()
+                                val vatRate = vatRateField.replace(",", ".").toDoubleOrNull()
+                                val invoice = InvoiceRecord(
+                                    id = null,
+                                    invoice_id = invoiceIdField.takeIf { it.isNotBlank() },
+                                    date = dateField.takeIf { it.isNotBlank() },
+                                    company_name = companyNameField.takeIf { it.isNotBlank() },
+                                    amount_without_vat_eur = amountWithoutVat,
+                                    vat_amount_eur = vatAmount,
+                                    vat_number = vatNumberField.takeIf { it.isNotBlank() },
+                                    company_number = companyNumberField.takeIf { it.isNotBlank() },
+                                    invoice_type = invoiceType.takeIf { it.isNotBlank() },
+                                    vat_rate = vatRate,
+                                    tax_code = taxCodeField.takeIf { it.isNotBlank() }
+                                )
+                                viewModel.saveInvoice(
+                                    invoice = invoice,
+                                    onSuccess = {
+                                        isSaving = false
+                                        scope.launch {
+                                            subscriptionViewModel.trackPageUsage()
+                                            snackbarHostState.showSnackbar("Invoice saved successfully")
+                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                importSessionViewModel.advanceToNext(context)
+                                            }
+                                            if (!importSessionViewModel.hasNext) {
+                                                importSessionViewModel.clear()
+                                                navController?.navigate(Routes.Home) {
+                                                    popUpTo(0) { inclusive = true }
+                                                }
+                                                snackbarHostState.showSnackbar("All invoices saved")
+                                            }
+                                        }
+                                    },
+                                    onError = { e ->
+                                        isSaving = false
+                                        errorMessage = "Failed to save invoice: ${e.message}"
+                                        scope.launch { snackbarHostState.showSnackbar("Failed to save invoice") }
+                                    }
+                                )
+                            },
+                            enabled = !isSaving,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (isSaving) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.padding(end = 8.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            }
+                            Text(
+                                if (importSessionViewModel.hasNext) "Save and next" else "Confirm and Save"
+                            )
+                        }
                     }
-                    
-                    Button(
+                } else {
+                    // Non-import flow: Redo, Cancel, Merge, Save
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (invoiceId == null && !fromImport) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (imageUri != null) {
+                                        navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
+                                            popUpTo("${Routes.ReviewScan}/$imageUri/$invoiceType") { inclusive = true }
+                                        }
+                                    } else {
+                                        navController?.popBackStack()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Redo")
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (fromImport) importSessionViewModel?.clear()
+                                navController?.navigate(Routes.Home) {
+                                    popUpTo(0) { inclusive = true }
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Cancel")
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (invoiceId == null && imageUri != null && !fromImport) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.setMergedFormData(
+                                        MergedFormData(
+                                            invoiceId = invoiceIdField,
+                                            date = dateField,
+                                            companyName = companyNameField,
+                                            amountWithoutVat = amountWithoutVatField,
+                                            vatAmount = vatAmountField,
+                                            vatNumber = vatNumberField,
+                                            companyNumber = companyNumberField,
+                                            vatRate = vatRateField,
+                                            taxCode = taxCodeField
+                                        )
+                                    )
+                                    navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
+                                        popUpTo("${Routes.ReviewScan}/$imageUri/$invoiceType") { inclusive = false }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Merge with next")
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                        Button(
                         onClick = {
                             isSaving = true
                             errorMessage = null
@@ -864,6 +965,7 @@ fun ReviewScanScreen(
                 }
             }
         }
+        }
         
         // Date picker dialog
         if (showDatePicker) {
@@ -890,6 +992,33 @@ fun ReviewScanScreen(
             ) {
                 DatePicker(state = datePickerState)
             }
+        }
+
+        // Cancel import confirmation
+        if (showCancelImportDialog) {
+            AlertDialog(
+                onDismissRequest = { showCancelImportDialog = false },
+                title = { Text("Discard import?") },
+                text = { Text("Unsaved invoices will be lost.") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showCancelImportDialog = false
+                            importSessionViewModel?.clear()
+                            navController?.navigate(Routes.Home) {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        }
+                    ) {
+                        Text("Discard", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCancelImportDialog = false }) {
+                        Text("Stay")
+                    }
+                }
+            )
         }
     }
 }
