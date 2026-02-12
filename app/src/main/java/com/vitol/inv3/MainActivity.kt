@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -150,6 +151,7 @@ class MainActivity : ComponentActivity() {
 object Routes {
     const val Login = "login"
     const val Home = "home"
+    const val Guide = "guide"
     const val Companies = "companies"
     const val AddOwnCompany = "addOwnCompany"
     const val Exports = "exports"
@@ -205,6 +207,7 @@ fun AppNavHost(
             )
         }
         composable(Routes.Home) { HomeScreen(navController) }
+        composable(Routes.Guide) { com.vitol.inv3.ui.guide.GuideScreen(navController = navController) }
         composable(Routes.Companies) { 
             com.vitol.inv3.ui.companies.CompaniesScreen(
                 markAsOwnCompany = false,
@@ -503,19 +506,6 @@ fun HomeScreen(
                         Text(text = "Import files")
                     }
                     
-                    // Companies button
-                    Button(
-                        onClick = { navController.navigate(Routes.Companies) },
-                        modifier = Modifier.fillMaxWidth(0.6f)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Business,
-                            contentDescription = "Companies",
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                        Text(text = "Companies")
-                    }
-                    
                     // Exports button
                     Button(
                         onClick = { navController.navigate(Routes.Exports) },
@@ -527,6 +517,32 @@ fun HomeScreen(
                             modifier = Modifier.padding(end = 8.dp)
                         )
                         Text(text = "Exports")
+                    }
+                    
+                    // Guide button
+                    Button(
+                        onClick = { navController.navigate(Routes.Guide) },
+                        modifier = Modifier.fillMaxWidth(0.6f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                            contentDescription = "Guide",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(text = "Guide")
+                    }
+                    
+                    // Companies button
+                    Button(
+                        onClick = { navController.navigate(Routes.Companies) },
+                        modifier = Modifier.fillMaxWidth(0.6f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Business,
+                            contentDescription = "Companies",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(text = "Companies")
                     }
                     
                     // Settings button
