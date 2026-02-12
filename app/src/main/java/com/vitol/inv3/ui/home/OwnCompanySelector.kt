@@ -2,6 +2,10 @@ package com.vitol.inv3.ui.home
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -12,7 +16,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import com.vitol.inv3.data.local.setActiveOwnCompanyId
@@ -118,7 +127,14 @@ fun OwnCompanySelector(
                             )
                         }
                     }
-                    TextButton(onClick = { expanded = !expanded }) {
+                    TextButton(onClick = {
+                        if (activeCompanyName == null && ownCompanies.isEmpty() && !isLoading) {
+                            showAddForm = true
+                            companyToEdit = null
+                        } else {
+                            expanded = !expanded
+                        }
+                    }) {
                         Text(if (activeCompanyName == null) "Add" else "Change")
                     }
                 }
@@ -168,46 +184,21 @@ fun OwnCompanySelector(
                     ) {
                         CircularProgressIndicator()
                     }
-                } else if (showAddForm || companyToEdit != null) {
-                    // Inline add/edit form
-                    AddCompanyFormItem(
-                        companyToEdit = companyToEdit,
-                        onSave = { companyId, wasEdit ->
-                            scope.launch {
-                                if (companyId != null) {
-                                    context.setActiveOwnCompanyId(companyId)
-                                    onCompanySelected(companyId)
-                                }
-                                viewModel.loadOwnCompanies()
-                                showAddForm = false
-                                companyToEdit = null
-                                expanded = false
-                                onShowSnackbar(
-                                    if (wasEdit) "Company updated and selected" 
-                                    else "Company added and selected"
-                                )
-                            }
-                        },
-                        onCancel = {
-                            showAddForm = false
-                            companyToEdit = null
-                            if (ownCompanies.isEmpty()) {
-                                expanded = false
-                            }
-                        },
-                        viewModel = viewModel
-                    )
                 } else {
                     // Company list
                     if (ownCompanies.isEmpty()) {
                         DropdownMenuItem(
                             text = { 
                                 Text(
-                                    "No companies added yet.\nTap below to add one.",
+                                    "No companies added yet.\nTap here or below to add one.",
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                             },
-                            onClick = { }
+                            onClick = { 
+                                showAddForm = true
+                                companyToEdit = null
+                                expanded = false
+                            }
                         )
                         HorizontalDivider()
                     } else {
@@ -256,6 +247,7 @@ fun OwnCompanySelector(
                                             onClick = {
                                                 companyToEdit = company
                                                 showAddForm = false
+                                                expanded = false
                                             },
                                             modifier = Modifier.size(32.dp)
                                         ) {
@@ -291,11 +283,39 @@ fun OwnCompanySelector(
                         onClick = { 
                             showAddForm = true
                             companyToEdit = null
+                            expanded = false
                         }
                     )
                 }
             }
         }
+    }
+    
+    // Add/Edit company dialog - scrollable, doesn't close on outside tap
+    if (showAddForm || companyToEdit != null) {
+        AddCompanyDialog(
+            companyToEdit = companyToEdit,
+            onSave = { companyId, wasEdit ->
+                scope.launch {
+                    if (companyId != null) {
+                        context.setActiveOwnCompanyId(companyId)
+                        onCompanySelected(companyId)
+                    }
+                    viewModel.loadOwnCompanies()
+                    showAddForm = false
+                    companyToEdit = null
+                    onShowSnackbar(
+                        if (wasEdit) "Company updated and selected" 
+                        else "Company added and selected"
+                    )
+                }
+            },
+            onDismiss = {
+                showAddForm = false
+                companyToEdit = null
+            },
+            viewModel = viewModel
+        )
     }
     
     // Confirmation dialog for removal
@@ -340,88 +360,111 @@ fun OwnCompanySelector(
 }
 
 @Composable
-private fun AddCompanyFormItem(
+private fun AddCompanyDialog(
     companyToEdit: CompanyRecord?,
     onSave: (String?, Boolean) -> Unit,
-    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
     viewModel: OwnCompanyViewModel
 ) {
     var name by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.company_name ?: "") }
     var number by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.company_number ?: "") }
     var vat by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.vat_number ?: "") }
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val scrollState = rememberScrollState()
     
-    // Update fields when companyToEdit changes
     LaunchedEffect(companyToEdit?.id) {
         name = companyToEdit?.company_name ?: ""
         number = companyToEdit?.company_number ?: ""
         vat = companyToEdit?.vat_number ?: ""
     }
     
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
     ) {
-        Text(
-            text = if (companyToEdit != null) "Edit Company" else "Add Your Company",
-            style = MaterialTheme.typography.titleMedium
-        )
-        
-        OutlinedTextField(
-            value = name,
-            onValueChange = { name = it },
-            label = { Text("Company name") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        
-        OutlinedTextField(
-            value = number,
-            onValueChange = { number = it },
-            label = { Text("Company number") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        
-        OutlinedTextField(
-            value = vat,
-            onValueChange = { vat = it },
-            label = { Text("VAT number") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = MaterialTheme.shapes.large
         ) {
-            OutlinedButton(
-                onClick = onCancel,
-                modifier = Modifier.weight(1f)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState)
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Text("Cancel")
-            }
-            
-            Button(
-                onClick = {
-                    scope.launch {
-                        val company = CompanyRecord(
-                            id = companyToEdit?.id,
-                            company_name = name,
-                            company_number = number,
-                            vat_number = vat,
-                            is_own_company = true
-                        )
-                        val savedCompany = viewModel.saveCompany(company)
-                        onSave(savedCompany?.id, companyToEdit != null)
+                Text(
+                    text = if (companyToEdit != null) "Edit Company" else "Add Your Company",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Company name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) })
+                )
+                
+                OutlinedTextField(
+                    value = number,
+                    onValueChange = { number = it },
+                    label = { Text("Company number") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) })
+                )
+                
+                OutlinedTextField(
+                    value = vat,
+                    onValueChange = { vat = it },
+                    label = { Text("VAT number") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
+                )
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Cancel")
                     }
-                },
-                modifier = Modifier.weight(1f),
-                enabled = name.isNotBlank()
-            ) {
-                Text(if (companyToEdit != null) "Update" else "Save")
+                    
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val company = CompanyRecord(
+                                    id = companyToEdit?.id,
+                                    company_name = name,
+                                    company_number = number,
+                                    vat_number = vat,
+                                    is_own_company = true
+                                )
+                                val savedCompany = viewModel.saveCompany(company)
+                                onSave(savedCompany?.id, companyToEdit != null)
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = name.isNotBlank()
+                    ) {
+                        Text(if (companyToEdit != null) "Update" else "Save")
+                    }
+                }
             }
         }
     }
