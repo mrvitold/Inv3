@@ -34,10 +34,20 @@
 - **Name**: Max 256 characters (use `"ND"` if unknown)
 
 ### Document Totals
+
+**Purchase invoices (PurchaseDocumentTotal):**
 - **TaxableValue**: Decimal, 18 total digits, 2 fraction digits (amount without VAT)
 - **TaxCode**: Pattern `PVM[0-9]*`, 4-6 characters (e.g., "PVM1", "PVM25"), nullable
 - **TaxPercentage**: Decimal, 5 total digits, 2 fraction digits, nullable (VAT rate %, use "0" for 0%)
 - **Amount**: Decimal, 18 total digits, 2 fraction digits, nullable (VAT amount)
+- **VATPointDate2**: NOT allowed for Purchase invoices
+
+**Sales invoices (SalesDocumentTotal):**
+- **TaxableValue**: Decimal, 18 total digits, 2 fraction digits (amount without VAT)
+- **TaxCode**: Pattern `PVM[0-9]*`, 4-6 characters (e.g., "PVM1", "PVM25"), nullable
+- **TaxPercentage**: Decimal, 5 total digits, 2 fraction digits, nullable (VAT rate %, use "0" for 0%)
+- **Amount**: Decimal, 18 total digits, 2 fraction digits, nullable (VAT amount)
+- **VATPointDate2**: Required for Sales invoices (date format `YYYY-MM-DD`, use invoice date)
 
 ## Special Rules
 

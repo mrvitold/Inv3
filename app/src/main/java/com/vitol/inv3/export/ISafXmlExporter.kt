@@ -729,11 +729,12 @@ class ISafXmlExporter(private val context: Context) {
         amount.textContent = formatMonetary(invoice.vat_amount_eur ?: 0.0)
         documentTotal.appendChild(amount)
         
-        // VATPointDate2 (optional, only for Sales invoices)
+        // VATPointDate2 (required in DocumentTotal for Sales invoices only; not allowed for Purchase)
         if (!isPurchase) {
-            // VATPointDate2 can be added here if we have the data
-            // For now, we don't have this field in InvoiceRecord, so we skip it
-            // If needed in the future, add invoice.vat_point_date_2 field
+            val vatPointDate2 = doc.createElementNS(NAMESPACE, "VATPointDate2")
+            val vatPointDate2Value = formatDate(invoice.date)
+            vatPointDate2.textContent = vatPointDate2Value ?: SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+            documentTotal.appendChild(vatPointDate2)
         }
         
         documentTotals.appendChild(documentTotal)
