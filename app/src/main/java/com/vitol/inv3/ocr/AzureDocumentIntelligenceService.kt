@@ -125,10 +125,10 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 val response = httpClient.newCall(request).execute()
                 
                 if (response.code == 429) {
-                    // Rate limited - retry with exponential backoff
+                    // Rate limited - retry with backoff. Cap Retry-After at 15s to avoid very long waits
                     val retryAfter = response.header("Retry-After")?.toLongOrNull()
                     val delayMs = if (retryAfter != null) {
-                        retryAfter * 1000 // Convert seconds to milliseconds
+                        minOf(retryAfter * 1000, 15_000L) // Cap at 15 seconds
                     } else {
                         baseDelayMs * (2.0.pow(retryCount.toDouble())).toLong() // Exponential backoff
                     }
@@ -190,10 +190,10 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 val response = httpClient.newCall(request).execute()
                 
                 if (response.code == 429) {
-                    // Rate limited - retry with exponential backoff
+                    // Rate limited - retry with backoff. Cap Retry-After at 15s to avoid very long waits
                     val retryAfter = response.header("Retry-After")?.toLongOrNull()
                     val delayMs = if (retryAfter != null) {
-                        retryAfter * 1000 // Convert seconds to milliseconds
+                        minOf(retryAfter * 1000, 15_000L) // Cap at 15 seconds
                     } else {
                         2000L * (2.0.pow(attempts.toDouble())).toLong() // Exponential backoff
                     }
@@ -313,7 +313,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                     // SALES: customer = buyer (partner), vendor = seller (often own company)
                     fieldString(fields.get("CustomerName"))?.let {
                         val name = it.trim()
-                        if (name.length >= 2 && (excludeOwnCompanyName == null || !name.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                        if (name.length >= 2 && (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(name, excludeOwnCompanyName))) {
                             companyName = name
                             Timber.d("Azure: [SALES] Extracted company name from CustomerName: $name")
                         }
@@ -321,7 +321,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                     if (companyName == null) {
                         fieldString(fields.get("VendorName"))?.let {
                             val name = it.trim()
-                            if (name.length >= 2 && (excludeOwnCompanyName == null || !name.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                            if (name.length >= 2 && (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(name, excludeOwnCompanyName))) {
                                 companyName = name
                                 Timber.d("Azure: [SALES] Fallback: Extracted company name from VendorName: $name")
                             }
@@ -331,7 +331,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                     // PURCHASE: vendor = seller (partner), customer = buyer (often own company)
                     fieldString(fields.get("VendorName"))?.let {
                         val name = it.trim()
-                        if (name.length >= 2 && (excludeOwnCompanyName == null || !name.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                        if (name.length >= 2 && (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(name, excludeOwnCompanyName))) {
                             companyName = name
                             Timber.d("Azure: [PURCHASE] Extracted company name from VendorName: $name")
                         }
@@ -339,7 +339,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                     if (companyName == null) {
                         fieldString(fields.get("CustomerName"))?.let {
                             val name = it.trim()
-                            if (name.length >= 2 && (excludeOwnCompanyName == null || !name.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                            if (name.length >= 2 && (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(name, excludeOwnCompanyName))) {
                                 companyName = name
                                 Timber.d("Azure: [PURCHASE] Fallback: Extracted company name from CustomerName: $name")
                             }
@@ -568,8 +568,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         if ((companyName == null || !hasCompanyTypeSuffix(companyName)) && parsedFromText.companyName != null) {
             val extractedCompanyName = parsedFromText.companyName
             if (hasCompanyTypeSuffix(extractedCompanyName)) {
-                // Exclude own company name
-                if (excludeOwnCompanyName == null || !extractedCompanyName.equals(excludeOwnCompanyName, ignoreCase = true)) {
+                // Exclude own company name (fuzzy match handles variations like "MB Švaros frontas" vs "Švaros frontas")
+                if (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(extractedCompanyName, excludeOwnCompanyName)) {
                     companyName = extractedCompanyName
                     Timber.d("Azure: Extracted company name from text: $companyName")
                 } else {
@@ -616,7 +616,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         
         // Final fallback: try advanced company name extraction from text if still not found
         if ((companyName == null || !hasCompanyTypeSuffix(companyName)) && lines.isNotEmpty()) {
-            val extractedCompanyName = InvoiceParser.extractCompanyNameAdvanced(lines, companyNumber, vatNumber, excludeOwnCompanyNumber, invoiceType)
+            val extractedCompanyName = InvoiceParser.extractCompanyNameAdvanced(lines, companyNumber, vatNumber, excludeOwnCompanyNumber, excludeOwnCompanyName, invoiceType)
             if (extractedCompanyName != null && hasCompanyTypeSuffix(extractedCompanyName)) {
                 companyName = extractedCompanyName
                 Timber.d("Azure: Extracted company name using advanced extraction: $companyName")
@@ -639,7 +639,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 candidate = trimmed.take(3).joinToString(" ").trim()
             }
             if (!candidate.isNullOrBlank() &&
-                (excludeOwnCompanyName == null || !candidate.equals(excludeOwnCompanyName, ignoreCase = true))) {
+                (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(candidate, excludeOwnCompanyName))) {
                 companyName = candidate
                 Timber.d("Azure: Using first line(s) as company name (no structured data): $companyName")
             }
@@ -668,14 +668,16 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     
     /**
      * Checks if company name contains Lithuanian company type suffix (UAB, MB, IĮ, AB, etc.)
+     * Excludes "as" when part of "centas" (cents) - that indicates amount-in-words, not company.
      */
     private fun hasCompanyTypeSuffix(name: String?): Boolean {
         if (name.isNullOrBlank()) return false
         val lower = name.lowercase().trim()
-        return lower.contains("uab") || lower.contains("ab") || 
+        if (lower.contains("eurai") && lower.contains("centas")) return false // Amount-in-words
+        return lower.contains("uab") || lower.contains("ab") ||
                lower.contains("mb") || lower.contains("iį") ||
-               lower.contains("ltd") || lower.contains("oy") || 
-               lower.contains("as") || lower.contains("sp")
+               lower.contains("ltd") || lower.contains("oy") ||
+               (lower.contains("as") && !lower.contains("centas")) || lower.contains("sp")
     }
     
     private suspend fun readImageFromUri(uri: Uri): ByteArray = withContext(Dispatchers.IO) {

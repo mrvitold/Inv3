@@ -8,12 +8,15 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
+import com.vitol.inv3.ocr.CompanyNameUtils
+import com.vitol.inv3.ocr.InvoiceParser
 import com.vitol.inv3.ocr.ParsedInvoice
 import com.vitol.inv3.utils.ImportImageCache
 import com.vitol.inv3.utils.PdfPageResolver
@@ -172,6 +175,8 @@ class ImportSessionViewModel @Inject constructor(
                     }
                     results.add(parsed)
                     _parsedInvoices.value = results.toList()
+                    // Brief delay between pages to reduce Azure rate limiting
+                    if (i < pages.size - 1) delay(1500)
                 }
                 _extractionState.value = ImportExtractionState.Done
                 Timber.d("Import extraction done: ${results.size} invoices")
@@ -182,8 +187,105 @@ class ImportSessionViewModel @Inject constructor(
         }
     }
 
-    /** Current page's parsed invoice (for import review screen). */
-    fun getCurrentParsedInvoice(): ParsedInvoice? = _parsedInvoices.value.getOrNull(_currentIndex.value)
+    /**
+     * Returns merged parsed invoice for import review.
+     * When multiple pages exist (e.g. 2-page PDF), merges results: page 1 provides header/company
+     * fields, later pages fill amounts when page 1 has null. Prevents page 2 from overwriting
+     * page 1's company/VAT/date with wrong or empty data.
+     */
+    fun getCurrentParsedInvoice(): ParsedInvoice? {
+        val list = _parsedInvoices.value
+        if (list.isEmpty()) return null
+        if (list.size == 1) return list[0]
+        val merged = mergeParsedInvoicesForMultiPage(list)
+        Timber.d("Import merge: ${list.size} pages -> Company: ${merged.companyName}, VAT: ${merged.vatNumber}, CompanyNo: ${merged.companyNumber}, Amount: ${merged.amountWithoutVatEur}, VatAmount: ${merged.vatAmountEur}")
+        return merged
+    }
+
+    /** Normalize amount string: comma to dot for consistent display and parsing. */
+    private fun normalizeAmount(s: String?): String? =
+        s?.trim()?.takeIf { it.isNotBlank() }?.replace(',', '.')
+
+    /** Merge multiple page extractions: header from first pages, amounts from last (totals usually on last page). */
+    private fun mergeParsedInvoicesForMultiPage(pages: List<ParsedInvoice>): ParsedInvoice {
+        val excludeName = _excludeOwnCompanyName
+        val excludeVat = _excludeOwnVatNumber
+        val excludeNumber = _excludeOwnCompanyNumber
+        fun firstValidCompanyName(): String? =
+            pages.mapNotNull { it.companyName?.takeIf { n -> n.isNotBlank() } }
+                .firstOrNull { n ->
+                    val lower = n.lowercase()
+                    val notAmountInWords = !lower.contains("suma žodžiais") && !lower.contains("suma zodžiais") &&
+                        !lower.contains("suma zodziais") && !(lower.contains("eurai") && lower.contains("centas") && lower.startsWith("suma "))
+                    val notOwnCompany = excludeName == null || !CompanyNameUtils.isSameAsOwnCompanyName(n, excludeName)
+                    notAmountInWords && notOwnCompany
+                }
+        fun firstValidVatNumber(): String? =
+            pages.mapNotNull { it.vatNumber?.takeIf { s -> s.isNotBlank() } }
+                .firstOrNull { v -> excludeVat == null || !v.equals(excludeVat, ignoreCase = true) }
+        fun firstValidCompanyNumber(): String? =
+            pages.mapNotNull { it.companyNumber?.takeIf { s -> s.isNotBlank() } }
+                .firstOrNull { c -> excludeNumber == null || c.trim() != excludeNumber.trim() }
+        // Amounts/totals are usually on the last page; prefer last non-null
+        fun lastNotNullValue(selector: (ParsedInvoice) -> String?): String? =
+            pages.mapNotNull { normalizeAmount(selector(it)) }.lastOrNull()
+
+        var vatNum = firstValidVatNumber()
+        var companyNum = firstValidCompanyNumber()
+        var amountNoVat = lastNotNullValue { it.amountWithoutVatEur } ?: pages.mapNotNull { normalizeAmount(it.amountWithoutVatEur) }.firstOrNull()
+        var vatAmount = lastNotNullValue { it.vatAmountEur } ?: pages.mapNotNull { normalizeAmount(it.vatAmountEur) }.firstOrNull()
+        var vatRate = lastNotNullValue { it.vatRate } ?: pages.mapNotNull { it.vatRate?.takeIf { s -> s.isNotBlank() } }.firstOrNull()
+
+        val combinedLines = pages.flatMap { it.lines }
+        // Fallback: parse combined lines when any key field is missing
+        if (combinedLines.isNotEmpty() && (vatNum == null || companyNum == null || amountNoVat == null || vatAmount == null || vatRate == null)) {
+            val fromCombined = InvoiceParser.parse(
+                combinedLines,
+                excludeNumber,
+                excludeVat,
+                excludeName,
+                _invoiceType.value
+            )
+            if (vatNum == null && fromCombined.vatNumber != null && (excludeVat == null || !fromCombined.vatNumber.equals(excludeVat, ignoreCase = true))) {
+                vatNum = fromCombined.vatNumber
+                Timber.d("Import merge: filled VAT from combined lines: $vatNum")
+            }
+            if (companyNum == null && fromCombined.companyNumber != null && (excludeNumber == null || fromCombined.companyNumber.trim() != excludeNumber.trim())) {
+                companyNum = fromCombined.companyNumber
+                Timber.d("Import merge: filled company number from combined lines: $companyNum")
+            }
+            if (amountNoVat == null && fromCombined.amountWithoutVatEur != null) {
+                amountNoVat = normalizeAmount(fromCombined.amountWithoutVatEur)
+                Timber.d("Import merge: filled amount from combined lines: $amountNoVat")
+            }
+            if (vatAmount == null && fromCombined.vatAmountEur != null) {
+                vatAmount = normalizeAmount(fromCombined.vatAmountEur)
+                Timber.d("Import merge: filled VAT amount from combined lines: $vatAmount")
+            }
+            if (vatRate == null && fromCombined.vatRate != null) {
+                vatRate = fromCombined.vatRate.takeIf { s -> s.isNotBlank() }
+                Timber.d("Import merge: filled VAT rate from combined lines: $vatRate")
+            }
+        }
+
+        // Log per-page values for debugging
+        pages.forEachIndexed { i, p ->
+            Timber.d("Import merge page $i: amountNoVat=${p.amountWithoutVatEur}, vatAmount=${p.vatAmountEur}, vatRate=${p.vatRate}")
+        }
+
+        return ParsedInvoice(
+            invoiceId = pages.firstNotNullOfOrNull { it.invoiceId?.takeIf { s -> s.isNotBlank() } },
+            date = pages.firstNotNullOfOrNull { it.date?.takeIf { s -> s.isNotBlank() } },
+            companyName = firstValidCompanyName(),
+            amountWithoutVatEur = amountNoVat,
+            vatAmountEur = vatAmount,
+            vatNumber = vatNum,
+            companyNumber = companyNum,
+            vatRate = vatRate,
+            lines = combinedLines,
+            extractionMessage = pages.firstNotNullOfOrNull { it.extractionMessage }
+        )
+    }
 
     fun advanceToPrevious() {
         if (_currentIndex.value > 0) _currentIndex.value = _currentIndex.value - 1

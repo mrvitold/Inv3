@@ -158,6 +158,8 @@ dependencies {
 
     // Apache POI for Excel export (full version for XSSF support)
     implementation("org.apache.poi:poi-ooxml:5.3.0")
+    // Silence SLF4J "no StaticLoggerBinder" warning from POI/transitive deps
+    implementation("org.slf4j:slf4j-nop:2.0.16")
 
     // Azure Document Intelligence - REST API
     implementation("com.google.code.gson:gson:2.10.1")

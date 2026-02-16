@@ -7,7 +7,8 @@ object KeywordMapping {
         "Invoice_ID" to listOf(
             "invoice number", "saskaitos numeris", "saskaitos serija", "fakturos serija",
             "nr.", "nr ", "numeris", "serija", "serijos", "serijos kodas", "series",
-            "ssp", "saskaitos fakturos numeris", "numerio"
+            "ssp", "saskaitos fakturos numeris", "numerio",
+            "saskaita faktura", "saskaitos faktura", "pvmsaskaitafaktura"
         ),
         "Date" to listOf(
             "data", "saskaitos data", "israsymo data", "invoice date", "proforma date",
@@ -51,6 +52,16 @@ object FieldExtractors {
     private val standaloneDateRegex = Regex(
         "\\b([0-9]{4}[./-][01]?[0-9][./-][0-3]?[0-9]|[0-3]?[0-9][./-][01]?[0-9][./-][0-9]{4})\\b"
     )
+    // Lithuanian month format: "2026 m. Sausio mėn. 13 d." or "2026 m. sausio 13 d."
+    private val lithuanianMonthDateRegex = Regex(
+        "([0-9]{4})\\s*m\\.\\s*(sausio|vasario|kovo|balandžio|gegužės|birželio|liepos|rugpjūčio|rugsėjo|spalio|lapkričio|gruodžio)\\s*(?:mėn\\.?\\s*)?([0-3]?[0-9])\\s*d\\.?",
+        RegexOption.IGNORE_CASE
+    )
+    private val LITHUANIAN_MONTHS = mapOf(
+        "sausio" to "01", "vasario" to "02", "kovo" to "03", "balandžio" to "04",
+        "gegužės" to "05", "birželio" to "06", "liepos" to "07", "rugpjūčio" to "08",
+        "rugsėjo" to "09", "spalio" to "10", "lapkričio" to "11", "gruodžio" to "12"
+    )
     private val amountRegex = Regex(
         "([0-9]{1,6}(?:[\\s.,][0-9]{3})*[,\\.][0-9]{1,3}|[0-9]{1,6}[,\\.][0-9]{1,3}|[0-9]{1,6}(?:[\\s.,][0-9]{3})+[,\\.]?[0-9]{0,3})",
         RegexOption.IGNORE_CASE
@@ -71,6 +82,15 @@ object FieldExtractors {
     private val invoiceNumberPattern = Regex("(?:nr\\.?|numeris|serija)\\s*(?:[1-3][0-9]{8}|[0-9]{6})", RegexOption.IGNORE_CASE)
 
     fun tryExtractDate(line: String): String? {
+        // Try Lithuanian month format first: "2026 m. Sausio mėn. 13 d."
+        val lithuanianMatch = lithuanianMonthDateRegex.find(line)
+        if (lithuanianMatch != null) {
+            val year = lithuanianMatch.groupValues[1]
+            val monthKey = lithuanianMatch.groupValues[2].lowercase()
+            val day = lithuanianMatch.groupValues[3].padStart(2, '0')
+            val month = LITHUANIAN_MONTHS[monthKey] ?: return null
+            return "$year-$month-$day"
+        }
         // Try with context first (date/data keyword)
         val match = dateRegex.find(line)
         if (match != null) {

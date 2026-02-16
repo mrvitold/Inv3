@@ -57,6 +57,7 @@ import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.InvoiceRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
 import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
+import com.vitol.inv3.ocr.CompanyNameUtils
 import com.vitol.inv3.ocr.ParsedInvoice
 import dagger.hilt.android.lifecycle.HiltViewModel
 import androidx.lifecycle.viewModelScope
@@ -390,7 +391,7 @@ fun ReviewScanScreen(
                 Timber.d("Excluding own VAT number: $vatNumberField")
                 vatNumberField = ""
             }
-            if (processingState.ownCompanyName != null && companyNameField.equals(processingState.ownCompanyName, ignoreCase = true)) {
+            if (processingState.ownCompanyName != null && CompanyNameUtils.isSameAsOwnCompanyName(companyNameField, processingState.ownCompanyName)) {
                 Timber.d("Excluding own company name: $companyNameField")
                 companyNameField = ""
             }
@@ -405,10 +406,10 @@ fun ReviewScanScreen(
                 null
             }
             
-            // Auto-fill partner company parameters if found
+            // Auto-fill partner company parameters if found - prefer DB name for consistency (same company code = same name)
             if (partnerInvoice != null) {
                 Timber.d("Found partner company from existing invoice: ${partnerInvoice.company_name}")
-                if (companyNameField.isBlank() && !partnerInvoice.company_name.isNullOrBlank()) {
+                if (!partnerInvoice.company_name.isNullOrBlank()) {
                     companyNameField = partnerInvoice.company_name
                 }
                 if (vatNumberField.isBlank() && !partnerInvoice.vat_number.isNullOrBlank()) {
@@ -441,6 +442,7 @@ fun ReviewScanScreen(
     LaunchedEffect(fromImport, parsedInvoices, importCurrentIndex, activeCompanyId) {
         if (!fromImport || importSessionViewModel == null || invoiceId != null) return@LaunchedEffect
         val parsed = importSessionViewModel.getCurrentParsedInvoice() ?: return@LaunchedEffect
+        Timber.d("Import form fill - Company: ${parsed.companyName}, VAT: ${parsed.vatNumber}, CompanyNo: ${parsed.companyNumber}, Amount: ${parsed.amountWithoutVatEur}")
         val ownCompany = activeCompanyId?.let { viewModel.getOwnCompany(it) }
         invoiceIdField = parsed.invoiceId ?: ""
         dateField = parsed.date ?: ""
@@ -459,14 +461,14 @@ fun ReviewScanScreen(
         if (ownCompany != null) {
             if (companyNumberField == ownCompany.company_number) companyNumberField = ""
             if (vatNumberField.equals(ownCompany.vat_number, ignoreCase = true)) vatNumberField = ""
-            if (companyNameField.equals(ownCompany.company_name, ignoreCase = true)) companyNameField = ""
+            if (CompanyNameUtils.isSameAsOwnCompanyName(companyNameField, ownCompany.company_name)) companyNameField = ""
         }
         val partnerInvoice = viewModel.findPartnerCompany(
             vatNumber = vatNumberField.takeIf { it.isNotBlank() },
             companyNumber = companyNumberField.takeIf { it.isNotBlank() }
         )
         if (partnerInvoice != null) {
-            if (companyNameField.isBlank() && !partnerInvoice.company_name.isNullOrBlank()) companyNameField = partnerInvoice.company_name
+            if (!partnerInvoice.company_name.isNullOrBlank()) companyNameField = partnerInvoice.company_name
             if (vatNumberField.isBlank() && !partnerInvoice.vat_number.isNullOrBlank()) vatNumberField = partnerInvoice.vat_number
             if (companyNumberField.isBlank() && !partnerInvoice.company_number.isNullOrBlank()) companyNumberField = partnerInvoice.company_number
         }

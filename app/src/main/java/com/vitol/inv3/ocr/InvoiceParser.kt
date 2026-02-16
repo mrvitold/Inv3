@@ -142,7 +142,7 @@ object InvoiceParser {
         // Company code usually goes just after "Įmonės kodas" or "Kodas" text - this is the key insight!
         Timber.d("InvoiceParser: Pre-pass 2 - searching for company number after 'Įmonės kodas' or 'Kodas' text")
         val allCompanyNumbers = mutableListOf<Pair<String, Int>>() // (number, lineIndex)
-        val companyCodeKeywords = listOf("įmonės kodas", "imones kodas", "im. kodas", "kodas", "company code", "company number", "company_number")
+        val companyCodeKeywords = listOf("įmonės kodas", "imones kodas", "im. kodas", "im.k", "įm.k", "im.kodas", "kodas", "company code", "company number", "company_number")
         val buyerKeywords = listOf("pirkėjo", "pirkėjas", "buyer", "pirkėjo pavadinimas", "buyer name")
         val sellerKeywords = listOf("pardavėjo", "pardavėjas", "seller", "pardavėjo pavadinimas", "seller name")
         
@@ -698,6 +698,10 @@ object InvoiceParser {
                 Timber.d("Rejected section label as company name: $extractedName")
                 extractedName = null
             }
+            if (extractedName != null && isInvalidCompanyName(extractedName)) {
+                Timber.d("Rejected invalid company name (e.g. amount-in-words): $extractedName")
+                extractedName = null
+            }
             // CRITICAL: Exclude own company name - NEVER fill it (normalize to match with/without quotes)
             if (extractedName != null && excludeOwnCompanyName != null && isSameAsOwnCompanyName(extractedName, excludeOwnCompanyName)) {
                 Timber.d("Skipped own company name in second pass: $extractedName")
@@ -768,6 +772,7 @@ object InvoiceParser {
             val companyCodeKeywords = listOf(
                 "imones kodas", "imoneskodas", "imones kodas:", "imoneskodas:",
                 "im. kodas", "im.kodas", "im. kodas:", "im.kodas:",
+                "im.k", "įm.k", "im.k.",
                 "registracijos kodas", "registracijoskodas", "registracijos kodas:",
                 "registracijos numeris", "registracijosnumeris", "registracijos numeris:",
                 "imonenes registracijos numeris", "imonenesregistracijosnumeris",
@@ -1366,6 +1371,18 @@ object InvoiceParser {
         if (name.isNullOrBlank()) return true
         val lower = name.lowercase().trim()
         
+        // Reject "Suma žodžiais" / "Suma zodžiais" (amount in words - Lithuanian)
+        if (lower.contains("suma žodžiais") || lower.contains("suma zodžiais") ||
+            lower.contains("suma zodziais") || lower.contains("suma ādāais") ||
+            (lower.startsWith("suma ") && lower.contains("eurai") && lower.contains("centas"))) {
+            return true
+        }
+        // Reject amount-in-words: "X eurai ir Y centas" (e.g. "Šešiasdešimt aštuoni eurai ir 51 centas")
+        // OCR may truncate "Suma žodžiais" to "ais:" - catch by eurai+centas pattern
+        if (lower.contains("eurai") && lower.contains("centas")) {
+            return true
+        }
+        
         // Explicitly reject common invoice labels
         if (lower == "saskaita" || lower == "faktura" || lower == "invoice" ||
             lower.matches(Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier)$"))) {
@@ -1383,8 +1400,10 @@ object InvoiceParser {
         }
         
         // Must contain Lithuanian company type suffix (UAB, MB, IĮ, AB, etc.)
-        val hasCompanyType = lower.contains("uab") || lower.contains("mb") || lower.contains("iį") || 
-                            lower.contains("ab") || lower.contains("ltd") || lower.contains("as") || 
+        // Exclude "as" when it's part of "centas" (cents) - that's amount-in-words, not company
+        val hasCompanyType = lower.contains("uab") || lower.contains("mb") || lower.contains("iį") ||
+                            lower.contains("ab") || lower.contains("ltd") ||
+                            (lower.contains("as") && !lower.contains("centas")) ||
                             lower.contains("sp") || lower.contains("oy")
         
         return !hasCompanyType
@@ -1926,6 +1945,8 @@ object InvoiceParser {
         }
         
         // Second pass: Check all other label keywords
+        // For purchase invoices, NEVER extract from buyer section (pirkėjas) - that would fill user's own company
+        val buyerLabels = listOf("pirkėjas", "pirkėjo", "buyer")
         for (i in lines.indices) {
             val line = lines[i]
             val l = line.lowercase().trim()
@@ -1937,6 +1958,11 @@ object InvoiceParser {
             }
             
             if (isLabel && !priorityKeywords.any { l.contains(it) }) {
+                // For purchase invoices, skip buyer section entirely - only seller is wanted
+                if (isPurchaseInvoice && buyerLabels.any { normalizeForLabelCompare(l).contains(normalizeForLabelCompare(it)) }) {
+                    Timber.d("extractCompanyNameAdvanced: Skipping buyer label '$l' for purchase invoice")
+                    continue
+                }
                 // Check if company/VAT number appears after this label
                 val hasNumberAfter = if (companyNumber != null || vatNumber != null) {
                     val searchNumber = companyNumber ?: vatNumber
@@ -1990,16 +2016,6 @@ object InvoiceParser {
         return null
     }
     
-    /** Normalize company name for comparison so "UAB \"STATYBŲ FRONTAS\"" matches "UAB STATYBŲ FRONTAS". */
-    private fun normalizeForOwnCompanyCompare(name: String?): String {
-        if (name.isNullOrBlank()) return ""
-        return name.trim()
-            .replace(Regex("""["'\\]+"""), "")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-            .lowercase()
-    }
-    
     /** Normalize Lithuanian chars (ė, ē, į, ą, etc.) to ASCII for label matching so "PARDAVĖJAS" matches "pardavejas". */
     private fun normalizeForLabelCompare(s: String?): String {
         if (s.isNullOrBlank()) return ""
@@ -2028,14 +2044,17 @@ object InvoiceParser {
         return KNOWN_SECTION_LABELS_NORMALIZED.any { label -> n == normalizeForLabelCompare(label) }
     }
     
-    /** True if name is the same as own company (after normalizing quotes and spaces). */
-    private fun isSameAsOwnCompanyName(name: String?, ownName: String?): Boolean {
-        if (name.isNullOrBlank() || ownName.isNullOrBlank()) return false
-        return normalizeForOwnCompanyCompare(name) == normalizeForOwnCompanyCompare(ownName)
-    }
+    /** True if name is the same as own company (uses CompanyNameUtils for fuzzy matching). */
+    private fun isSameAsOwnCompanyName(name: String?, ownName: String?): Boolean =
+        CompanyNameUtils.isSameAsOwnCompanyName(name, ownName)
     
     private fun isValidCompanyNameLine(line: String, lower: String): Boolean {
         val trimmedLower = lower.trim()
+        
+        // Reject amount-in-words: "X eurai ir Y centas" (e.g. "Šešiasdešimt aštuoni eurai ir 51 centas")
+        if (trimmedLower.contains("eurai") && trimmedLower.contains("centas")) {
+            return false
+        }
         
         // Reject labels (including Lithuanian ė: PARDAVĖJAS -> pardavėjas -> normalize -> pardavejas)
         if (isKnownSectionLabel(trimmedLower)) {
@@ -2056,10 +2075,11 @@ object InvoiceParser {
         }
         
         // REQUIRE Lithuanian company type suffix (UAB, MB, IĮ, AB) - this is mandatory
-        val hasCompanyType = trimmedLower.contains("uab") || trimmedLower.contains("ab") || 
+        // Exclude "as" when part of "centas" (amount-in-words)
+        val hasCompanyType = trimmedLower.contains("uab") || trimmedLower.contains("ab") ||
                             trimmedLower.contains("mb") || trimmedLower.contains("iį") ||
-                            trimmedLower.contains("ltd") || trimmedLower.contains("oy") || 
-                            trimmedLower.contains("as") || trimmedLower.contains("sp")
+                            trimmedLower.contains("ltd") || trimmedLower.contains("oy") ||
+                            (trimmedLower.contains("as") && !trimmedLower.contains("centas")) || trimmedLower.contains("sp")
         
         // Only return true if it has company type suffix
         return hasCompanyType

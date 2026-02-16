@@ -82,8 +82,8 @@ class SubscriptionViewModel @Inject constructor(
             }
         }
         
-        // Query purchases on init (automatic restoration)
-        billingManager.queryPurchases()
+        // BillingManager queries purchases when it connects (onBillingSetupFinished).
+        // Don't call queryPurchases() here - client may not be ready yet.
     }
     
     fun checkCanScan(): Boolean {

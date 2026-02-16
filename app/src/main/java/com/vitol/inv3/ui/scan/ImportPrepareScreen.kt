@@ -55,10 +55,10 @@ fun ImportPrepareScreen(
         importSessionViewModel.runExtraction(context)
     }
 
-    // Navigate to verification as soon as first invoice is ready (streaming UX)
+    // Navigate when ALL pages are extracted (smooth 2-page invoice: merged result from start)
     LaunchedEffect(parsedInvoices, extractionState) {
         when {
-            parsedInvoices.isNotEmpty() -> {
+            extractionState is ImportExtractionState.Done && parsedInvoices.isNotEmpty() -> {
                 val encodedType = java.net.URLEncoder.encode(invoiceType, "UTF-8")
                 navController.navigate("${Routes.ReviewScanImport}/$encodedType") {
                     popUpTo(Routes.ImportPrepare) { inclusive = true }
