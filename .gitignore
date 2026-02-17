@@ -9,6 +9,8 @@ local.properties
 captures/
 *.apk
 *.ap_*
+*.aab
+app/release/
 
 # Keystore files
 *.jks
@@ -66,6 +68,7 @@ gradle.properties
 
 # Credentials files (Google, Azure, etc.)
 app/src/main/assets/documentai-credentials.json
+support/credentials/
 app/src/main/assets/*credentials*.json
 app/src/main/assets/*azure*.json
 

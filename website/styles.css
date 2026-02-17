@@ -1,0 +1,270 @@
+:root {
+    --color-primary: #2E3440;
+    --color-primary-light: #3B4252;
+    --color-background: #ECEFF4;
+    --color-surface: #FFFFFF;
+    --color-text: #2E3440;
+    --color-text-muted: #4C566A;
+    --color-accent: #5E81AC;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    --radius: 12px;
+    --shadow: 0 4px 20px rgba(46, 52, 64, 0.08);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background: var(--color-background);
+    color: var(--color-text);
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.header {
+    background: var(--color-surface);
+    box-shadow: var(--shadow);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.nav {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 1rem 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    text-decoration: none;
+    color: var(--color-text);
+    font-weight: 700;
+    font-size: 1.25rem;
+}
+
+.logo-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+}
+
+.lang-switcher {
+    display: flex;
+    gap: 0.25rem;
+}
+
+.lang-btn {
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--color-primary);
+    background: transparent;
+    color: var(--color-text);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.2s, color 0.2s;
+}
+
+.lang-btn:hover {
+    background: var(--color-primary-light);
+    color: white;
+}
+
+.lang-btn.active {
+    background: var(--color-primary);
+    color: white;
+}
+
+main {
+    flex: 1;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    width: 100%;
+}
+
+.hero {
+    text-align: center;
+    padding: 3rem 0;
+}
+
+.hero-icon {
+    width: 96px;
+    height: 96px;
+    margin-bottom: 1rem;
+    border-radius: 20px;
+}
+
+.hero-title {
+    font-size: 2.5rem;
+    font-weight: 800;
+    margin: 0 0 0.5rem;
+    color: var(--color-primary);
+}
+
+.hero-tagline {
+    font-size: 1.25rem;
+    color: var(--color-accent);
+    font-weight: 600;
+    margin: 0 0 1rem;
+}
+
+.hero-desc {
+    font-size: 1rem;
+    color: var(--color-text-muted);
+    max-width: 500px;
+    margin: 0 auto;
+}
+
+.section-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 2.5rem 0 1.5rem;
+    color: var(--color-primary);
+}
+
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.25rem;
+}
+
+.feature-card {
+    background: var(--color-surface);
+    padding: 1.5rem;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.feature-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(46, 52, 64, 0.12);
+}
+
+.feature-icon {
+    font-size: 2rem;
+    display: block;
+    margin-bottom: 0.75rem;
+}
+
+.feature-card h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0 0 0.5rem;
+    color: var(--color-primary);
+}
+
+.feature-card p {
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+    margin: 0;
+}
+
+.vmi-workflow {
+    padding: 2rem 0;
+}
+
+.vmi-desc {
+    color: var(--color-text-muted);
+    margin: 0 0 1.5rem;
+    max-width: 600px;
+}
+
+.vmi-image-wrap {
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    margin-bottom: 1rem;
+    max-width: 800px;
+}
+
+.vmi-screenshot {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+.vmi-caption {
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+    margin: 0;
+}
+
+.download {
+    text-align: center;
+    padding: 2rem 0;
+}
+
+.download-desc {
+    margin: 0 0 1rem;
+    color: var(--color-text-muted);
+}
+
+.play-badge {
+    display: inline-block;
+    transition: opacity 0.2s;
+}
+
+.play-badge:hover {
+    opacity: 0.85;
+}
+
+.download-note {
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+    margin: 1rem 0 0;
+}
+
+.privacy, .contact {
+    padding: 1.5rem 0;
+}
+
+.privacy-desc, .contact-desc {
+    color: var(--color-text-muted);
+    margin: 0 0 1rem;
+}
+
+.privacy-link, .contact-email {
+    color: var(--color-accent);
+    font-weight: 500;
+    text-decoration: none;
+}
+
+.privacy-link:hover, .contact-email:hover {
+    text-decoration: underline;
+}
+
+.footer {
+    text-align: center;
+    padding: 2rem 1.5rem;
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    font-size: 0.875rem;
+    margin-top: auto;
+}
+
+.footer p {
+    margin: 0;
+}
+
+@media (max-width: 600px) {
+    .hero-title {
+        font-size: 2rem;
+    }
+
+    .feature-grid {
+        grid-template-columns: 1fr;
+    }
+}

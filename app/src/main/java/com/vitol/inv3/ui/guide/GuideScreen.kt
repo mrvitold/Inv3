@@ -100,7 +100,7 @@ fun GuideScreen(navController: NavController) {
                 title = "Submit to i.SAF",
                 icon = null,
                 content = "1. Export XML from the app (Share or Save)\n2. Log in to the VMI i.SAF portal (vmi.lt)\n3. Go to i.SAF → Įkelti rinkmeną (Upload file)\n4. Drag and drop the XML file or tap Pasirinkite rinkmeną iš kompiuterio to select it\n5. The file will appear in the list once accepted",
-                imageResId = R.drawable.guide_isaf_upload
+                imageResId = null  // guide_isaf_upload.png removed - use valid PNG if re-adding
             )
         }
     }

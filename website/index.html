@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Inv3 - Invoice scanning with VMI (i.SAF) XML export. Scan, review, and export invoices to Excel or XML.">
+    <link rel="icon" href="favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="icon-192.png" sizes="192x192">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <title>Inv3 - Invoice Scanning App</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="header">
+        <nav class="nav">
+            <a href="#" class="logo">
+                <img src="icon-192.png" alt="Inv3" class="logo-icon">
+                <span class="logo-text" data-i18n="app_name">Inv3</span>
+            </a>
+            <div class="lang-switcher">
+                <button class="lang-btn active" data-lang="en" aria-label="English">EN</button>
+                <button class="lang-btn" data-lang="lt" aria-label="Lietuvių">LT</button>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <img src="icon-192.png" alt="Inv3" class="hero-icon">
+            <h1 class="hero-title" data-i18n="app_name">Inv3</h1>
+            <p class="hero-tagline" data-i18n="tagline">Invoice scanning made simple</p>
+            <p class="hero-desc" data-i18n="description">Scan invoices with your camera, review them in a queue, organize by companies, and export when you need. All in one app.</p>
+        </section>
+
+        <section class="features">
+            <h2 class="section-title" data-i18n="features_title">Features</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <span class="feature-icon">📄</span>
+                    <h3 data-i18n="feature_scan">Scan Invoice</h3>
+                    <p data-i18n="feature_scan_desc">Capture invoices with your camera and digitize them instantly.</p>
+                </div>
+                <div class="feature-card">
+                    <span class="feature-icon">📋</span>
+                    <h3 data-i18n="feature_queue">Review Queue</h3>
+                    <p data-i18n="feature_queue_desc">Review and approve scanned invoices before they're saved.</p>
+                </div>
+                <div class="feature-card">
+                    <span class="feature-icon">📤</span>
+                    <h3 data-i18n="feature_exports">Exports</h3>
+                    <p data-i18n="feature_exports_desc">Export invoice data in Excel or XML format.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="vmi-workflow">
+            <h2 class="section-title" data-i18n="vmi_title">Where Inv3 data goes</h2>
+            <p class="vmi-desc" data-i18n="vmi_desc">Export your invoices from Inv3 in VMI (i.SAF) XML format, then upload the file to the State Tax Inspectorate (VMI) portal. No need to enter each invoice manually.</p>
+            <div class="vmi-image-wrap">
+                <img src="vmi-screenshot.png" alt="VMI i.SAF file upload" class="vmi-screenshot">
+            </div>
+            <p class="vmi-caption" data-i18n="vmi_caption">VMI i.SAF – upload your XML file with invoice data</p>
+        </section>
+
+        <section class="download">
+            <h2 class="section-title" data-i18n="download_title">Get Inv3</h2>
+            <p class="download-desc" data-i18n="download_desc">Coming soon to Google Play</p>
+            <p class="download-note" data-i18n="download_note">The app will be available for download once it is published on the Play Store.</p>
+        </section>
+
+        <section class="privacy">
+            <h2 class="section-title" data-i18n="privacy_title">Privacy Policy</h2>
+            <p class="privacy-desc" data-i18n="privacy_desc">We respect your privacy. Our app processes invoice data locally on your device. For full details, see our privacy policy.</p>
+            <a href="https://github.com/mrvitold/Inv3/blob/master/PRIVACY_POLICY.md" class="privacy-link" target="_blank" rel="noopener noreferrer" data-i18n="privacy_link">View Privacy Policy</a>
+        </section>
+
+        <section class="contact">
+            <h2 class="section-title" data-i18n="contact_title">Contact & Support</h2>
+            <p class="contact-desc" data-i18n="contact_desc">Have questions or feedback? We'd love to hear from you.</p>
+            <a href="mailto:svarosfrontas@gmail.com" class="contact-email" data-i18n="contact_email">svarosfrontas@gmail.com</a>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <p data-i18n="footer">© 2025 Inv3. Invoice scanning made simple.</p>
+    </footer>
+
+    <script src="translations.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
