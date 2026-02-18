@@ -25,6 +25,8 @@ class SubscriptionViewModel @Inject constructor(
     private val _subscriptionStatus = MutableStateFlow<SubscriptionStatus?>(null)
     val subscriptionStatus: StateFlow<SubscriptionStatus?> = _subscriptionStatus.asStateFlow()
     
+    private var lastPlanFromBilling: SubscriptionPlan? = null
+    
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
     
@@ -53,22 +55,38 @@ class SubscriptionViewModel @Inject constructor(
                 val invoiceLimit = plan.getInvoiceLimit(subscriptionStartDate)
                 val isFirstMonth = plan == SubscriptionPlan.FREE &&
                     (System.currentTimeMillis() - subscriptionStartDate) < 30L * 24 * 60 * 60 * 1000
-                val invoicesRemaining = maxOf(0, invoiceLimit - invoicesUsed)
+                val safeInvoicesUsed = invoicesUsed.coerceAtLeast(0)
+                val invoicesRemaining = maxOf(0, invoiceLimit - safeInvoicesUsed)
 
                 SubscriptionStatus(
                     plan = plan,
                     isActive = isActive,
-                    invoicesUsed = invoicesUsed,
+                    invoicesUsed = safeInvoicesUsed,
                     invoicesRemaining = invoicesRemaining,
                     invoiceLimit = invoiceLimit,
                     resetDate = resetDate,
                     isFirstMonth = isFirstMonth
                 )
             }.collect { status ->
+                // When plan changes (e.g. upgrade/restore), reset usage so counter reflects new plan
+                val prevPlan = lastPlanFromBilling
+                val planChanged = prevPlan != null && status.plan != prevPlan
+                // Also reset when usage exceeds limit (stale data from previous plan, e.g. FREE)
+                val usageExceedsLimit = status.plan != SubscriptionPlan.FREE &&
+                    status.invoicesUsed > status.invoiceLimit
+
+                if (planChanged || usageExceedsLimit) {
+                    viewModelScope.launch {
+                        Timber.d("Resetting usage: planChanged=$planChanged, usageExceedsLimit=$usageExceedsLimit (${status.invoicesUsed}/${status.invoiceLimit})")
+                        usageTracker.setSubscriptionStartDate(System.currentTimeMillis())
+                        usageTracker.resetUsage()
+                    }
+                }
+                lastPlanFromBilling = status.plan
+
                 _subscriptionStatus.value = status
-                
+
                 // Sync subscription plan/status to Supabase when it changes
-                // (UsageTracker now handles syncing pages_used and reset_date)
                 syncToSupabase(status)
             }
         }

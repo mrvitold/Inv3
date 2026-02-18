@@ -14,6 +14,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import android.content.Intent
+import android.net.Uri
 import com.vitol.inv3.billing.SubscriptionPlan
 import java.text.SimpleDateFormat
 import java.util.*
@@ -162,6 +164,30 @@ fun SubscriptionScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Refresh Subscription Status")
+            }
+
+            // Manage subscription in Play Store - for changing or cancelling plans
+            if (subscriptionStatus?.plan != SubscriptionPlan.FREE) {
+                OutlinedButton(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            data = Uri.parse("https://play.google.com/store/account/subscriptions")
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        try {
+                            context.startActivity(intent)
+                        } catch (_: Exception) { }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Manage subscription in Google Play")
+                }
+                Text(
+                    text = "Change or cancel your plan in Google Play",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
             
             Spacer(modifier = Modifier.height(32.dp))

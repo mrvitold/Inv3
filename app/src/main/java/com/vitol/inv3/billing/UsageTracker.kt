@@ -43,13 +43,14 @@ class UsageTracker @Inject constructor(
             val supabaseUsage = supabaseRepository.getUsageCount()
             if (supabaseUsage != null) {
                 val (pagesUsed, resetDate) = supabaseUsage
+                val safePagesUsed = pagesUsed.coerceAtLeast(0)
                 dataStore.edit { preferences ->
-                    preferences[PAGES_USED_KEY] = pagesUsed
+                    preferences[PAGES_USED_KEY] = safePagesUsed
                     if (resetDate != null) {
                         preferences[RESET_DATE_KEY] = resetDate
                     }
                 }
-                Timber.d("Initialized usage tracker from Supabase: pagesUsed=$pagesUsed, resetDate=$resetDate")
+                Timber.d("Initialized usage tracker from Supabase: pagesUsed=$safePagesUsed, resetDate=$resetDate")
             } else {
                 // Fallback to local storage if Supabase is unavailable
                 Timber.d("Supabase unavailable, using local storage")
@@ -200,7 +201,7 @@ class UsageTracker @Inject constructor(
     /**
      * Flow of pages used for reactive UI updates.
      */
-    fun getPagesUsedFlow(): Flow<Int> = dataStore.data.map { it[PAGES_USED_KEY] ?: 0 }
+    fun getPagesUsedFlow(): Flow<Int> = dataStore.data.map { (it[PAGES_USED_KEY] ?: 0).coerceAtLeast(0) }
     
     /**
      * Flow of reset date for reactive UI updates.

@@ -21,14 +21,14 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.vitol.inv3"
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.vitol.inv3"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 3
-        versionName = "1.0.3"
+        targetSdk = 34
+        versionCode = 4
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -75,7 +75,7 @@ android {
 
     buildFeatures {
         compose = true
-        buildConfig = true
+        buildConfig = true  // Explicit: avoids deprecated android.defaults.buildfeatures.buildconfig
     }
 
     composeOptions {

@@ -175,16 +175,25 @@ fun AppNavHost(
 ) {
     val authState by authManager.authState.collectAsState(initial = AuthState.Loading)
     
-    // Navigate to login when unauthenticated
+    // Navigate based on auth state (single source of truth - prevents duplicate navigation)
     LaunchedEffect(authState) {
-        if (authState is AuthState.Unauthenticated && navController.currentDestination?.route != Routes.Login) {
-            navController.navigate(Routes.Login) {
-                popUpTo(0) { inclusive = true }
+        val currentRoute = navController.currentDestination?.route
+        when (authState) {
+            is AuthState.Unauthenticated -> {
+                if (currentRoute != Routes.Login) {
+                    navController.navigate(Routes.Login) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                }
             }
-        } else if (authState is AuthState.Authenticated && navController.currentDestination?.route == Routes.Login) {
-            navController.navigate(Routes.Home) {
-                popUpTo(Routes.Login) { inclusive = true }
+            is AuthState.Authenticated -> {
+                if (currentRoute == Routes.Login) {
+                    navController.navigate(Routes.Home) {
+                        popUpTo(Routes.Login) { inclusive = true }
+                    }
+                }
             }
+            else -> { /* Loading - no navigation */ }
         }
     }
     

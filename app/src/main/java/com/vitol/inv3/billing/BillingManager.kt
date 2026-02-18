@@ -15,7 +15,10 @@ class BillingManager @Inject constructor(
     private val context: Context
 ) {
     private var billingClient: BillingClient? = null
-    
+    private var _activePurchase: Purchase? = null
+    /** True when last launchBillingFlow was a plan-change (replacement) attempt. */
+    private var _lastLaunchWasReplacement = false
+
     private val _subscriptionStatus = MutableStateFlow<SubscriptionStatus?>(null)
     val subscriptionStatus: StateFlow<SubscriptionStatus?> = _subscriptionStatus.asStateFlow()
     
@@ -36,9 +39,11 @@ class BillingManager @Inject constructor(
         billingClient = BillingClient.newBuilder(context)
             .setListener { billingResult, purchases ->
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && purchases != null) {
+                    _lastLaunchWasReplacement = false
                     handlePurchases(purchases)
                 } else if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
                     handleBillingError(billingResult.responseCode, billingResult.debugMessage)
+                    _lastLaunchWasReplacement = false
                 }
             }
             .enablePendingPurchases()
@@ -121,6 +126,8 @@ class BillingManager @Inject constructor(
              purchase.products.contains(SubscriptionPlan.ACCOUNTING.planId))
         }
 
+        _activePurchase = activeSubscription
+
         val plan = when {
             activeSubscription?.products?.contains(SubscriptionPlan.ACCOUNTING.planId) == true -> SubscriptionPlan.ACCOUNTING
             activeSubscription?.products?.contains(SubscriptionPlan.PRO.planId) == true -> SubscriptionPlan.PRO
@@ -195,15 +202,48 @@ class BillingManager @Inject constructor(
                 }
                 
                 if (productDetails != null) {
-                    val productDetailsParamsList = listOf(
-                        BillingFlowParams.ProductDetailsParams.newBuilder()
-                            .setProductDetails(productDetails)
-                            .build()
-                    )
-                    
-                    val billingFlowParams = BillingFlowParams.newBuilder()
-                        .setProductDetailsParamsList(productDetailsParamsList)
-                        .build()
+                    // Billing Library 7+ requires offer token for subscriptions
+                    val offerToken = productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
+                    if (offerToken == null) {
+                        Timber.e("No subscription offer found for ${plan.planId}")
+                        _errorMessage.value = "Subscription not configured. Please try again later."
+                        callback(
+                            BillingResult.newBuilder()
+                                .setResponseCode(BillingClient.BillingResponseCode.ITEM_UNAVAILABLE)
+                                .setDebugMessage("No subscription offer for ${plan.planId}")
+                                .build()
+                        )
+                        return@queryProductDetailsAsync
+                    }
+                    val productDetailsParamsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
+                        .setProductDetails(productDetails)
+                        .setOfferToken(offerToken)
+
+                    val billingFlowParamsBuilder = BillingFlowParams.newBuilder()
+                        .setProductDetailsParamsList(listOf(productDetailsParamsBuilder.build()))
+
+                    // For plan change (upgrade/downgrade): pass existing subscription for replacement.
+                    // Requires all plans (basic_monthly, pro_monthly, accounting_monthly) to be in the
+                    // SAME subscription group in Google Play Console. Otherwise replacement fails with Code 7.
+                    val activePurchase = _activePurchase
+                    val currentPlanId = activePurchase?.products?.firstOrNull()
+                    if (activePurchase != null && currentPlanId != null && currentPlanId != plan.planId) {
+                        try {
+                            val subscriptionUpdateParams = BillingFlowParams.SubscriptionUpdateParams.newBuilder()
+                                .setOldPurchaseToken(activePurchase.purchaseToken)
+                                .setSubscriptionReplacementMode(
+                                    BillingFlowParams.SubscriptionUpdateParams.ReplacementMode.WITH_TIME_PRORATION
+                                )
+                                .build()
+                            billingFlowParamsBuilder.setSubscriptionUpdateParams(subscriptionUpdateParams)
+                            _lastLaunchWasReplacement = true
+                            Timber.d("Subscription replacement: $currentPlanId -> ${plan.planId}")
+                        } catch (e: Exception) {
+                            Timber.e(e, "Failed to set subscription update params")
+                        }
+                    }
+
+                    val billingFlowParams = billingFlowParamsBuilder.build()
                     
                     val response = billingClient.launchBillingFlow(activity, billingFlowParams)
                     
@@ -217,7 +257,11 @@ class BillingManager @Inject constructor(
                         }
                         BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED -> {
                             Timber.d("User already owns this subscription")
-                            _errorMessage.value = "You already have an active subscription"
+                            _errorMessage.value = if (_lastLaunchWasReplacement) {
+                                "Plan change failed. Open Google Play to manage your subscription (cancel, then subscribe to a new plan)."
+                            } else {
+                                "You already have an active subscription."
+                            }
                             queryPurchases() // Refresh status
                         }
                         else -> {
@@ -228,7 +272,7 @@ class BillingManager @Inject constructor(
                     callback(response)
                 } else {
                     Timber.e("Product details not found for ${plan.planId}")
-                    _errorMessage.value = "Product not found. Please try again later."
+                    _errorMessage.value = "Product not found. Install the app from Google Play (internal testing) and ensure subscriptions are active in Play Console."
                     callback(
                         BillingResult.newBuilder()
                             .setResponseCode(BillingClient.BillingResponseCode.ITEM_UNAVAILABLE)
@@ -256,7 +300,14 @@ class BillingManager @Inject constructor(
                 "This subscription is temporarily unavailable. Please try again later."
             }
             BillingClient.BillingResponseCode.DEVELOPER_ERROR -> {
-                "Configuration error. Please contact support."
+                "Billing configuration error. Make sure the app is installed from Google Play (internal testing) and subscriptions are set up in Play Console."
+            }
+            BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED -> {
+                if (_lastLaunchWasReplacement) {
+                    "Plan change failed. To switch plans: open Google Play, cancel your current subscription, then subscribe to the new plan here. Or ensure all plans are in the same subscription group in Play Console."
+                } else {
+                    "You already have an active subscription."
+                }
             }
             else -> {
                 "Unable to process purchase. Error code: $responseCode"

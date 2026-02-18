@@ -51,11 +51,12 @@ fun LoginScreen(
         BuildConfig.GOOGLE_OAUTH_CLIENT_ID.isNotBlank()
     }
 
-    // Navigate to home when authenticated
+    // Clear loading state when authenticated; navigation is handled by AppNavHost (authState)
     LaunchedEffect(uiState.isAuthenticated) {
         if (uiState.isAuthenticated) {
             isGoogleSignInInProgress = false
-            onNavigateToHome()
+            // Navigation to home is triggered by AppNavHost's LaunchedEffect(authState)
+            // to avoid duplicate navigation and "Ignoring popBackStack" warning
         }
     }
 

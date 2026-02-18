@@ -42,12 +42,27 @@ fun UsageIndicator(
                     fontWeight = FontWeight.Bold
                 )
                 
-                if (subscriptionStatus.plan != com.vitol.inv3.billing.SubscriptionPlan.FREE) {
-                    Text(
-                        text = subscriptionStatus.plan.price,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (subscriptionStatus.plan != com.vitol.inv3.billing.SubscriptionPlan.FREE) {
+                        Text(
+                            text = subscriptionStatus.plan.price,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        TextButton(
+                            onClick = onUpgradeClick,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.height(28.dp)
+                        ) {
+                            Text(
+                                text = "Change",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
                 }
             }
             

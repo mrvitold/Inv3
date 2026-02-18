@@ -6,7 +6,7 @@
 
 ### App
 - **Package:** com.vitol.inv3
-- **Version:** 1.0.3 (versionCode 3)
+- **Version:** 1.0.4 (versionCode 4)
 - **Status:** Internal testing on Google Play Console
 - **Build:** Release AAB at `app/release/app-release.aab` (build via Android Studio)
 
@@ -72,6 +72,13 @@
 | Azure setup | [AZURE_SETUP.md](AZURE_SETUP.md) |
 
 ---
+
+## Release 1.0.4 (2026-02-18)
+
+**Release notes for Play Console:**
+- Google Sign-In: fixed navigation after successful login
+- Subscriptions: added offer token for Billing Library 7 compatibility
+- Improved billing error messages
 
 ## Release 1.0.3 (2026-02-18)
 
