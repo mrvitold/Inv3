@@ -2,6 +2,7 @@ package com.vitol.inv3.ui.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vitol.inv3.billing.SubscriptionLimitsProvider
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -14,7 +15,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class OwnCompanyViewModel @Inject constructor(
-    private val repo: SupabaseRepository
+    private val repo: SupabaseRepository,
+    private val limitsProvider: SubscriptionLimitsProvider
 ) : ViewModel() {
     
     private val _ownCompanies = MutableStateFlow<List<CompanyRecord>>(emptyList())
@@ -22,7 +24,10 @@ class OwnCompanyViewModel @Inject constructor(
     
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
-    
+
+    val maxOwnCompanies: Int
+        get() = limitsProvider.getMaxOwnCompanies()
+
     fun loadOwnCompanies() {
         viewModelScope.launch {
             _isLoading.value = true
@@ -38,14 +43,27 @@ class OwnCompanyViewModel @Inject constructor(
         }
     }
     
-    suspend fun saveCompany(company: CompanyRecord): CompanyRecord? {
+    sealed class SaveCompanyResult {
+        data class Success(val company: CompanyRecord) : SaveCompanyResult()
+        data object LimitReached : SaveCompanyResult()
+        data object Error : SaveCompanyResult()
+    }
+
+    suspend fun saveCompany(company: CompanyRecord): SaveCompanyResult {
+        if (company.is_own_company) {
+            val ownCompanies = repo.getAllOwnCompanies()
+            val isEditingExistingOwn = company.id != null && ownCompanies.any { it.id == company.id }
+            if (!isEditingExistingOwn && !limitsProvider.canAddOwnCompany(ownCompanies.size)) {
+                return SaveCompanyResult.LimitReached
+            }
+        }
         return try {
             val saved = repo.upsertCompany(company)
             loadOwnCompanies()
-            saved
+            saved?.let { SaveCompanyResult.Success(it) } ?: SaveCompanyResult.Error
         } catch (e: Exception) {
             Timber.e(e, "Failed to save company")
-            null
+            SaveCompanyResult.Error
         }
     }
     

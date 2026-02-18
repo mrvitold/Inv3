@@ -53,8 +53,13 @@ fun UsageIndicator(
             
             // Usage progress
             Column {
+                val usageText = if (subscriptionStatus.isFirstMonth) {
+                    "First month: ${subscriptionStatus.invoicesUsed}/${subscriptionStatus.invoiceLimit} invoices"
+                } else {
+                    "Invoices used: ${subscriptionStatus.invoicesUsed}/${subscriptionStatus.invoiceLimit}"
+                }
                 Text(
-                    text = "Pages used: ${subscriptionStatus.pagesUsed}/${subscriptionStatus.plan.pagesPerMonth}",
+                    text = usageText,
                     style = MaterialTheme.typography.bodyMedium
                 )
                 
@@ -62,16 +67,16 @@ fun UsageIndicator(
                 
                 LinearProgressIndicator(
                     progress = {
-                        if (subscriptionStatus.plan.pagesPerMonth > 0) {
-                            subscriptionStatus.pagesUsed.toFloat() / subscriptionStatus.plan.pagesPerMonth.toFloat()
+                        if (subscriptionStatus.invoiceLimit > 0) {
+                            subscriptionStatus.invoicesUsed.toFloat() / subscriptionStatus.invoiceLimit.toFloat()
                         } else {
                             0f
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
                     color = when {
-                        subscriptionStatus.pagesRemaining < 10 -> MaterialTheme.colorScheme.error
-                        subscriptionStatus.pagesRemaining < subscriptionStatus.plan.pagesPerMonth * 0.2 -> MaterialTheme.colorScheme.tertiary
+                        subscriptionStatus.invoicesRemaining < 10 -> MaterialTheme.colorScheme.error
+                        subscriptionStatus.invoicesRemaining < subscriptionStatus.invoiceLimit * 0.2 -> MaterialTheme.colorScheme.tertiary
                         else -> MaterialTheme.colorScheme.primary
                     }
                 )
@@ -86,7 +91,7 @@ fun UsageIndicator(
             
             // Upgrade button for free users or users near limit
             if (subscriptionStatus.plan == com.vitol.inv3.billing.SubscriptionPlan.FREE || 
-                subscriptionStatus.pagesRemaining < 10) {
+                subscriptionStatus.invoicesRemaining < 10) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Button(
                     onClick = onUpgradeClick,
@@ -99,7 +104,7 @@ fun UsageIndicator(
                     Text(if (subscriptionStatus.plan == com.vitol.inv3.billing.SubscriptionPlan.FREE) {
                         "Upgrade Plan"
                     } else {
-                        "Upgrade for More Pages"
+                        "Upgrade for More Invoices"
                     })
                 }
             }

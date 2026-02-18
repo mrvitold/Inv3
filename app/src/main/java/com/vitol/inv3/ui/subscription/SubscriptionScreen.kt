@@ -2,6 +2,8 @@ package com.vitol.inv3.ui.subscription
 
 import android.app.Activity
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
@@ -26,8 +28,21 @@ fun SubscriptionScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let { error ->
+            snackbarHostState.showSnackbar(
+                message = error,
+                actionLabel = "Dismiss",
+                withDismissAction = true
+            )
+            viewModel.clearBillingError()
+        }
+    }
     
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Subscription Plans") },
@@ -43,9 +58,14 @@ fun SubscriptionScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
             // Current plan status
             subscriptionStatus?.let { status ->
                 Card(
@@ -66,7 +86,7 @@ fun SubscriptionScreen(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = "Pages used: ${status.pagesUsed}/${status.plan.pagesPerMonth}",
+                            text = "Invoices used: ${status.invoicesUsed}/${status.invoiceLimit}",
                             style = MaterialTheme.typography.bodyLarge
                         )
                         Text(
@@ -122,8 +142,19 @@ fun SubscriptionScreen(
                     }
                 }
             )
+
+            SubscriptionPlanCard(
+                plan = SubscriptionPlan.ACCOUNTING,
+                isCurrentPlan = subscriptionStatus?.plan == SubscriptionPlan.ACCOUNTING,
+                isLoading = isLoading,
+                onClick = {
+                    if (context is Activity) {
+                        viewModel.purchasePlan(context, SubscriptionPlan.ACCOUNTING)
+                    }
+                }
+            )
             
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(24.dp))
             
             // Refresh button
             OutlinedButton(
@@ -131,6 +162,9 @@ fun SubscriptionScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Refresh Subscription Status")
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
             }
         }
     }
@@ -168,7 +202,7 @@ private fun SubscriptionPlanCard(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "${plan.pagesPerMonth} pages per month",
+                        text = plan.invoicesDisplayText,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }

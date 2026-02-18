@@ -28,7 +28,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.CameraAlt
@@ -226,6 +225,11 @@ fun AppNavHost(
                         if (companyId != null) {
                             context.setActiveOwnCompanyId(companyId)
                         }
+                    }
+                },
+                onCompanyLimitReached = {
+                    navController.navigate(Routes.Subscription) {
+                        popUpTo(Routes.AddOwnCompany) { inclusive = true }
                     }
                 }
             ) 
@@ -530,19 +534,6 @@ fun HomeScreen(
                             modifier = Modifier.padding(end = 8.dp)
                         )
                         Text(text = "Guide")
-                    }
-                    
-                    // Companies button
-                    Button(
-                        onClick = { navController.navigate(Routes.Companies) },
-                        modifier = Modifier.fillMaxWidth(0.6f)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Business,
-                            contentDescription = "Companies",
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                        Text(text = "Companies")
                     }
                     
                     // Settings button

@@ -47,18 +47,22 @@ class SubscriptionViewModel @Inject constructor(
                 usageTracker.getPagesUsedFlow(),
                 usageTracker.getResetDateFlow(),
                 usageTracker.getSubscriptionStartDateFlow()
-            ) { billingStatus, pagesUsed, resetDate, _ ->
+            ) { billingStatus, invoicesUsed, resetDate, subscriptionStartDate ->
                 val plan = billingStatus?.plan ?: SubscriptionPlan.FREE
                 val isActive = billingStatus?.isActive ?: (plan == SubscriptionPlan.FREE)
-                
-                val pagesRemaining = plan.pagesPerMonth - pagesUsed
-                
+                val invoiceLimit = plan.getInvoiceLimit(subscriptionStartDate)
+                val isFirstMonth = plan == SubscriptionPlan.FREE &&
+                    (System.currentTimeMillis() - subscriptionStartDate) < 30L * 24 * 60 * 60 * 1000
+                val invoicesRemaining = maxOf(0, invoiceLimit - invoicesUsed)
+
                 SubscriptionStatus(
                     plan = plan,
                     isActive = isActive,
-                    pagesUsed = pagesUsed,
-                    pagesRemaining = maxOf(0, pagesRemaining),
-                    resetDate = resetDate
+                    invoicesUsed = invoicesUsed,
+                    invoicesRemaining = invoicesRemaining,
+                    invoiceLimit = invoiceLimit,
+                    resetDate = resetDate,
+                    isFirstMonth = isFirstMonth
                 )
             }.collect { status ->
                 _subscriptionStatus.value = status
@@ -92,10 +96,9 @@ class SubscriptionViewModel @Inject constructor(
     
     fun canScanPages(pageCount: Int): Boolean {
         val status = _subscriptionStatus.value
-        // If status is null, assume FREE plan with 20 pages (default for new users)
+        // If status is null, assume FREE plan with 30 invoices first month (default for new users)
         if (status == null) {
-            // Default to FREE plan: 20 pages per month
-            return pageCount <= 20
+            return pageCount <= 30
         }
         return status.canScanPages(pageCount)
     }
@@ -130,6 +133,10 @@ class SubscriptionViewModel @Inject constructor(
         viewModelScope.launch {
             billingManager.queryPurchases()
         }
+    }
+    
+    fun clearBillingError() {
+        billingManager.clearError()
     }
     
     private suspend fun syncToSupabase(status: SubscriptionStatus) {

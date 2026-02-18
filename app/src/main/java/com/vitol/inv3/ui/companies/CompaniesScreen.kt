@@ -36,6 +36,7 @@ import androidx.navigation.NavController
 import com.vitol.inv3.Routes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vitol.inv3.billing.SubscriptionLimitsProvider
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -51,6 +52,7 @@ import javax.inject.Inject
 fun CompaniesScreen(
     markAsOwnCompany: Boolean = false,
     onCompanySaved: ((String?) -> Unit)? = null,
+    onCompanyLimitReached: (() -> Unit)? = null,
     navController: NavController? = null,
     viewModel: CompaniesViewModel = hiltViewModel()
 ) {
@@ -61,6 +63,7 @@ fun CompaniesScreen(
     // CompaniesViewModel.load() already filters to partner companies (user-specific, is_own_company = false)
     val companies by viewModel.items.collectAsState()
     var companyToDelete by remember { mutableStateOf<CompanyRecord?>(null) }
+    var showCompanyLimitDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.load() }
 
@@ -115,21 +118,50 @@ fun CompaniesScreen(
         OutlinedTextField(value = vat, onValueChange = { vat = it }, label = { Text("VAT number") })
         Button(onClick = {
             val company = CompanyRecord(
-                company_name = name, 
-                company_number = number, 
+                company_name = name,
+                company_number = number,
                 vat_number = vat,
                 is_own_company = markAsOwnCompany
             )
-            viewModel.upsert(company) { savedCompanyId ->
-                // Call callback with saved company ID
-                onCompanySaved?.invoke(savedCompanyId)
-                // If marking as own company, navigate back
-                if (markAsOwnCompany) {
-                    navController?.popBackStack()
+            viewModel.upsert(company,
+                onCompanySaved = { savedCompanyId ->
+                    onCompanySaved?.invoke(savedCompanyId)
+                    if (markAsOwnCompany) {
+                        navController?.popBackStack()
+                    }
+                },
+                onLimitReached = {
+                    showCompanyLimitDialog = true
                 }
-            }
+            )
             name = ""; number = ""; vat = ""
         }) { Text("Save") }
+    }
+
+    // Company limit reached dialog
+    if (showCompanyLimitDialog && markAsOwnCompany) {
+        AlertDialog(
+            onDismissRequest = { showCompanyLimitDialog = false },
+            title = { Text("Company Limit Reached") },
+            text = {
+                Text("Your plan allows ${viewModel.maxOwnCompanies} own companies. Upgrade to add more.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showCompanyLimitDialog = false
+                        onCompanyLimitReached?.invoke()
+                    }
+                ) {
+                    Text("Upgrade")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showCompanyLimitDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // Confirmation dialog for deletion
@@ -164,10 +196,14 @@ fun CompaniesScreen(
 @HiltViewModel
 class CompaniesViewModel @Inject constructor(
     private val repo: SupabaseRepository,
-    private val client: io.github.jan.supabase.SupabaseClient?
+    private val client: io.github.jan.supabase.SupabaseClient?,
+    private val limitsProvider: SubscriptionLimitsProvider
 ) : ViewModel() {
     private val _items = MutableStateFlow<List<CompanyRecord>>(emptyList())
     val items: StateFlow<List<CompanyRecord>> = _items.asStateFlow()
+
+    val maxOwnCompanies: Int
+        get() = limitsProvider.getMaxOwnCompanies()
 
     fun load() {
         viewModelScope.launch {
@@ -183,15 +219,26 @@ class CompaniesViewModel @Inject constructor(
         }
     }
 
-    fun upsert(company: CompanyRecord, onComplete: (String?) -> Unit = {}) {
+    fun upsert(
+        company: CompanyRecord,
+        onCompanySaved: (String?) -> Unit = {},
+        onLimitReached: () -> Unit = {}
+    ) {
         viewModelScope.launch {
+            if (company.is_own_company) {
+                val ownCompanies = repo.getAllOwnCompanies()
+                val isEditingExistingOwn = company.id != null && ownCompanies.any { it.id == company.id }
+                if (!isEditingExistingOwn && !limitsProvider.canAddOwnCompany(ownCompanies.size)) {
+                    onLimitReached()
+                    return@launch
+                }
+            }
             val savedCompany = repo.upsertCompany(company)
             load()
-            // If marking as own company and company already existed, ensure it's marked
             if (company.is_own_company && savedCompany != null) {
                 ensureMarkedAsOwn(savedCompany.company_name, savedCompany.company_number, savedCompany.vat_number)
             }
-            onComplete(savedCompany?.id)
+            onCompanySaved(savedCompany?.id)
         }
     }
 

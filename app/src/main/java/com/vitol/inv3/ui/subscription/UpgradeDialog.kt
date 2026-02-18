@@ -31,7 +31,7 @@ fun UpgradeDialog(
             ) {
                 if (subscriptionStatus != null) {
                     Text(
-                        text = "You've used all ${subscriptionStatus.plan.pagesPerMonth} pages in your ${subscriptionStatus.plan.name} plan.",
+                        text = "You've used all ${subscriptionStatus.invoiceLimit} invoices in your ${subscriptionStatus.plan.name} plan.",
                         style = MaterialTheme.typography.bodyLarge
                     )
                     Text(
@@ -40,7 +40,7 @@ fun UpgradeDialog(
                     )
                 } else {
                     Text(
-                        text = "You've reached your page limit. Upgrade to continue scanning invoices:",
+                        text = "You've reached your invoice limit. Upgrade to continue scanning invoices:",
                         style = MaterialTheme.typography.bodyLarge
                     )
                 }
@@ -59,6 +59,13 @@ fun UpgradeDialog(
                     plan = SubscriptionPlan.PRO,
                     isCurrentPlan = subscriptionStatus?.plan == SubscriptionPlan.PRO,
                     onClick = { onUpgradeClick(SubscriptionPlan.PRO) }
+                )
+
+                // Accounting Plan
+                SubscriptionPlanCard(
+                    plan = SubscriptionPlan.ACCOUNTING,
+                    isCurrentPlan = subscriptionStatus?.plan == SubscriptionPlan.ACCOUNTING,
+                    onClick = { onUpgradeClick(SubscriptionPlan.ACCOUNTING) }
                 )
             }
         },
@@ -101,7 +108,7 @@ private fun SubscriptionPlanCard(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "${plan.pagesPerMonth} pages/month",
+                    text = plan.invoicesDisplayText,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }

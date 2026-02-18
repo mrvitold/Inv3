@@ -76,18 +76,20 @@ fun LoginScreen(
                     viewModel.setError("Failed to get ID token from Google. Please try again.")
                 }
             } catch (e: ApiException) {
-                Timber.e(e, "Google sign in failed with ApiException: statusCode=${e.statusCode}")
-                val errorMessage = when (e.statusCode) {
-                    12501 -> "Google sign in was cancelled"
-                    10 -> {
-                        "Google sign in configuration error. " +
-                        "Please verify:\n" +
-                        "1. GOOGLE_OAUTH_CLIENT_ID is set correctly in gradle.properties\n" +
-                        "2. SHA-1 fingerprint is registered in Google Cloud Console\n" +
-                        "3. Client ID is the Web Client ID (not Android Client ID)"
+                Timber.e(e, "Google sign in failed with ApiException: statusCode=${e.statusCode}, message=${e.message}")
+                val isOAuthNotRegistered = e.statusCode == 10 ||
+                    (e.message?.contains("not registered", ignoreCase = true) == true)
+                val errorMessage = when {
+                    e.statusCode == 12501 -> "Google sign in was cancelled"
+                    isOAuthNotRegistered -> {
+                        "App not registered for Google Sign-In.\n\n" +
+                        "Add your SHA-1 fingerprint to Firebase Console:\n" +
+                        "Project settings → Your apps → com.vitol.inv3 → Add fingerprint\n\n" +
+                        "Get SHA-1: keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android\n\n" +
+                        "See docs/GOOGLE_SIGNIN_SETUP.md for details."
                     }
-                    7 -> "Network error. Please check your internet connection and try again."
-                    8 -> "Internal error. Please try again later."
+                    e.statusCode == 7 -> "Network error. Please check your internet connection and try again."
+                    e.statusCode == 8 -> "Internal error. Please try again later."
                     else -> "Google sign in failed: ${e.message ?: "Unknown error (code: ${e.statusCode})"}"
                 }
                 viewModel.setError(errorMessage)

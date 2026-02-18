@@ -69,6 +69,14 @@ class UsageTracker @Inject constructor(
      */
     suspend fun trackPageUsage() {
         ensurePeriodReset()
+        // Set subscription start date for new FREE users on first usage (for first-month limit logic)
+        dataStore.edit { preferences ->
+            if (preferences[SUBSCRIPTION_START_DATE_KEY] == null) {
+                val now = System.currentTimeMillis()
+                preferences[SUBSCRIPTION_START_DATE_KEY] = now
+                preferences[RESET_DATE_KEY] = now + (30L * 24 * 60 * 60 * 1000)
+            }
+        }
         var newPagesUsed = 0
         dataStore.edit { preferences ->
             val current = preferences[PAGES_USED_KEY] ?: 0

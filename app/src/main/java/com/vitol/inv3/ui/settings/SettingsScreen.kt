@@ -121,7 +121,7 @@ fun SettingsScreen(
                     )
                     subscriptionStatus?.let { status ->
                         Text(
-                            text = "${status.plan.name} - ${status.pagesUsed}/${status.plan.pagesPerMonth} pages used",
+                            text = "${status.plan.name} - ${status.invoicesUsed}/${status.invoiceLimit} invoices used",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                         )

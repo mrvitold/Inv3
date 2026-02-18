@@ -116,29 +116,35 @@ class BillingManager @Inject constructor(
     private fun updateSubscriptionStatus(purchases: List<Purchase>) {
         val activeSubscription = purchases.firstOrNull { purchase ->
             purchase.purchaseState == Purchase.PurchaseState.PURCHASED &&
-            (purchase.products.contains(SubscriptionPlan.BASIC.planId) || 
-             purchase.products.contains(SubscriptionPlan.PRO.planId))
+            (purchase.products.contains(SubscriptionPlan.BASIC.planId) ||
+             purchase.products.contains(SubscriptionPlan.PRO.planId) ||
+             purchase.products.contains(SubscriptionPlan.ACCOUNTING.planId))
         }
-        
+
         val plan = when {
+            activeSubscription?.products?.contains(SubscriptionPlan.ACCOUNTING.planId) == true -> SubscriptionPlan.ACCOUNTING
             activeSubscription?.products?.contains(SubscriptionPlan.PRO.planId) == true -> SubscriptionPlan.PRO
             activeSubscription?.products?.contains(SubscriptionPlan.BASIC.planId) == true -> SubscriptionPlan.BASIC
             else -> SubscriptionPlan.FREE
         }
-        
+
         // FREE plan is always active (no subscription needed)
         // Paid plans are active only if there's an active subscription
         val isActive = plan == SubscriptionPlan.FREE || activeSubscription != null
-        
+        val now = System.currentTimeMillis()
+        val invoiceLimit = plan.getInvoiceLimit(now)
+
         // This will be combined with usage tracker in ViewModel
         _subscriptionStatus.value = SubscriptionStatus(
             plan = plan,
             isActive = isActive,
-            pagesUsed = 0, // Will be updated from UsageTracker
-            pagesRemaining = plan.pagesPerMonth,
-            resetDate = System.currentTimeMillis() // Will be updated from UsageTracker
+            invoicesUsed = 0, // Will be updated from UsageTracker
+            invoicesRemaining = invoiceLimit,
+            invoiceLimit = invoiceLimit,
+            resetDate = now, // Will be updated from UsageTracker
+            isFirstMonth = false
         )
-        
+
         Timber.d("Subscription status updated: ${plan.planId}, active: ${activeSubscription != null}")
     }
     
@@ -176,27 +182,16 @@ class BillingManager @Inject constructor(
         
         billingClient.queryProductDetailsAsync(productDetailsParams) { billingResult, productDetailsResult ->
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && productDetailsResult != null) {
-                // In billing-ktx 7.1.1, access productDetailsList using reflection
-                // The property name might be different in different versions
-                val productDetails = try {
-                    // Try getProductDetailsList() method first
-                    val method = productDetailsResult.javaClass.getMethod("getProductDetailsList")
-                    val list = method.invoke(productDetailsResult) as? List<*>
-                    list?.firstOrNull() as? ProductDetails
-                } catch (e: NoSuchMethodException) {
-                    // If method doesn't exist, try accessing as a field/property
-                    try {
-                        val field = productDetailsResult.javaClass.getDeclaredField("productDetailsList")
-                        field.isAccessible = true
-                        val list = field.get(productDetailsResult) as? List<*>
-                        list?.firstOrNull() as? ProductDetails
-                    } catch (e2: Exception) {
-                        Timber.e(e2, "Failed to access productDetailsList via reflection")
+                // Handle both List (billing-ktx) and QueryProductDetailsResult (standard API)
+                val productDetails = when {
+                    productDetailsResult is List<*> -> (productDetailsResult as List<*>).firstOrNull() as? ProductDetails
+                    else -> try {
+                        val method = productDetailsResult.javaClass.getMethod("getProductDetailsList")
+                        (method.invoke(productDetailsResult) as? List<*>)?.firstOrNull() as? ProductDetails
+                    } catch (e: Exception) {
+                        Timber.e(e, "Failed to get product details from result")
                         null
                     }
-                } catch (e: Exception) {
-                    Timber.e(e, "Failed to access productDetailsList")
-                    null
                 }
                 
                 if (productDetails != null) {

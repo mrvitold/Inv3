@@ -41,6 +41,7 @@ fun OwnCompanySelector(
     var showAddForm by remember { mutableStateOf(false) }
     var companyToEdit by remember { mutableStateOf<CompanyRecord?>(null) }
     var companyToRemove by remember { mutableStateOf<CompanyRecord?>(null) }
+    var showCompanyLimitDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val ownCompanies by viewModel.ownCompanies.collectAsState()
@@ -305,7 +306,7 @@ fun OwnCompanySelector(
                     showAddForm = false
                     companyToEdit = null
                     onShowSnackbar(
-                        if (wasEdit) "Company updated and selected" 
+                        if (wasEdit) "Company updated and selected"
                         else "Company added and selected"
                     )
                 }
@@ -314,10 +315,37 @@ fun OwnCompanySelector(
                 showAddForm = false
                 companyToEdit = null
             },
+            onLimitReached = { showCompanyLimitDialog = true },
             viewModel = viewModel
         )
     }
     
+    // Company limit reached dialog
+    if (showCompanyLimitDialog) {
+        AlertDialog(
+            onDismissRequest = { showCompanyLimitDialog = false },
+            title = { Text("Company Limit Reached") },
+            text = {
+                Text("Your plan allows ${viewModel.maxOwnCompanies} own companies. Upgrade to add more.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showCompanyLimitDialog = false
+                        navController?.navigate(com.vitol.inv3.Routes.Subscription)
+                    }
+                ) {
+                    Text("Upgrade")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showCompanyLimitDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     // Confirmation dialog for removal
     companyToRemove?.let { company ->
         AlertDialog(
@@ -364,6 +392,7 @@ private fun AddCompanyDialog(
     companyToEdit: CompanyRecord?,
     onSave: (String?, Boolean) -> Unit,
     onDismiss: () -> Unit,
+    onLimitReached: () -> Unit,
     viewModel: OwnCompanyViewModel
 ) {
     var name by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.company_name ?: "") }
@@ -455,8 +484,18 @@ private fun AddCompanyDialog(
                                     vat_number = vat,
                                     is_own_company = true
                                 )
-                                val savedCompany = viewModel.saveCompany(company)
-                                onSave(savedCompany?.id, companyToEdit != null)
+                                when (val result = viewModel.saveCompany(company)) {
+                                    is OwnCompanyViewModel.SaveCompanyResult.Success -> {
+                                        onSave(result.company.id, companyToEdit != null)
+                                    }
+                                    is OwnCompanyViewModel.SaveCompanyResult.LimitReached -> {
+                                        onDismiss()
+                                        onLimitReached()
+                                    }
+                                    is OwnCompanyViewModel.SaveCompanyResult.Error -> {
+                                        onSave(null, companyToEdit != null)
+                                    }
+                                }
                             }
                         },
                         modifier = Modifier.weight(1f),
