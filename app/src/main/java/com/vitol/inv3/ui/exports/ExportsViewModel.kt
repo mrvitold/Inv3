@@ -45,6 +45,15 @@ class ExportsViewModel @Inject constructor(
     private val _expandedSalesPurchase = MutableStateFlow<Set<String>>(emptySet())
     val expandedSalesPurchase: StateFlow<Set<String>> = _expandedSalesPurchase.asStateFlow()
 
+    private val _selectedOwnCompanyId = MutableStateFlow<String?>(null)
+    val selectedOwnCompanyId: StateFlow<String?> = _selectedOwnCompanyId.asStateFlow()
+
+    /** Invoices filtered by selected own company. When null, shows empty list. */
+    private val filteredInvoices: List<InvoiceRecord>
+        get() = _selectedOwnCompanyId.value?.let { companyId ->
+            _invoices.value.filter { it.own_company_id == companyId }
+        } ?: emptyList()
+
     // Cache validation results to avoid recalculating
     private val _validationResults = MutableStateFlow<Map<String, InvoiceValidationResult>>(emptyMap())
     private val validationResults: Map<String, InvoiceValidationResult>
@@ -61,7 +70,7 @@ class ExportsViewModel @Inject constructor(
                 val allInvoices = repo.getAllInvoices()
                 _invoices.value = allInvoices
                 validateAllInvoices(allInvoices)
-                calculateMonthlySummaries(allInvoices)
+                calculateMonthlySummaries(filteredInvoices)
             } catch (e: Exception) {
                 Timber.e(e, "Failed to load invoices")
             } finally {
@@ -88,9 +97,14 @@ class ExportsViewModel @Inject constructor(
         return validationResults[invoiceId]?.errors ?: emptyList()
     }
 
+    fun setSelectedOwnCompanyId(companyId: String?) {
+        _selectedOwnCompanyId.value = companyId
+        calculateMonthlySummaries(filteredInvoices)
+    }
+
     fun setSelectedYear(year: Int) {
         _selectedYear.value = year
-        calculateMonthlySummaries(_invoices.value)
+        calculateMonthlySummaries(filteredInvoices)
     }
 
     private fun calculateMonthlySummaries(invoices: List<InvoiceRecord>) {
@@ -219,7 +233,7 @@ class ExportsViewModel @Inject constructor(
     }
 
     fun getInvoicesForMonth(month: String): List<InvoiceRecord> {
-        return _invoices.value.filter { invoice ->
+        return filteredInvoices.filter { invoice ->
             val dateStr = invoice.date
             if (!dateStr.isNullOrBlank()) {
                 try {
@@ -306,7 +320,7 @@ class ExportsViewModel @Inject constructor(
 
     fun getAvailableYears(): List<Int> {
         val years = mutableSetOf<Int>()
-        _invoices.value.forEach { invoice ->
+        filteredInvoices.forEach { invoice ->
             val dateStr = invoice.date
             if (!dateStr.isNullOrBlank()) {
                 try {
@@ -349,7 +363,7 @@ class ExportsViewModel @Inject constructor(
     }
 
     fun getAllInvoicesForYear(year: Int): List<InvoiceRecord> {
-        return _invoices.value.filter { invoice ->
+        return filteredInvoices.filter { invoice ->
             val dateStr = invoice.date
             if (!dateStr.isNullOrBlank()) {
                 try {

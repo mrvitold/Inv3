@@ -268,6 +268,8 @@ fun ReviewScanScreen(
     // Own company info for exclusion
     var ownCompanyNumber by remember { mutableStateOf<String?>(null) }
     var ownCompanyVatNumber by remember { mutableStateOf<String?>(null) }
+    // Store loaded invoice for edit mode (to preserve own_company_id on update)
+    var existingInvoiceForEdit by remember { mutableStateOf<InvoiceRecord?>(null) }
     
     // Form fields
     var invoiceIdField by remember { mutableStateOf("") }
@@ -309,6 +311,7 @@ fun ReviewScanScreen(
             try {
                 val existingInvoice = viewModel.loadInvoice(invoiceId)
                 if (existingInvoice != null) {
+                    existingInvoiceForEdit = existingInvoice
                     invoiceIdField = existingInvoice.invoice_id ?: ""
                     dateField = existingInvoice.date ?: ""
                     companyNameField = existingInvoice.company_name ?: ""
@@ -752,7 +755,8 @@ fun ReviewScanScreen(
                                     company_number = companyNumberField.takeIf { it.isNotBlank() },
                                     invoice_type = invoiceType.takeIf { it.isNotBlank() },
                                     vat_rate = vatRate,
-                                    tax_code = taxCodeField.takeIf { it.isNotBlank() }
+                                    tax_code = taxCodeField.takeIf { it.isNotBlank() },
+                                    own_company_id = activeCompanyId
                                 )
                                 viewModel.saveInvoice(
                                     invoice = invoice,
@@ -882,7 +886,9 @@ fun ReviewScanScreen(
                                 company_number = companyNumberField.takeIf { it.isNotBlank() },
                                 invoice_type = invoiceType.takeIf { it.isNotBlank() },
                                 vat_rate = vatRate,
-                                tax_code = taxCodeField.takeIf { it.isNotBlank() }
+                                tax_code = taxCodeField.takeIf { it.isNotBlank() },
+                                own_company_id = if (invoiceId != null && invoiceId.isNotBlank())
+                                    existingInvoiceForEdit?.own_company_id else activeCompanyId
                             )
                             
                             if (invoiceId != null && invoiceId.isNotBlank()) {

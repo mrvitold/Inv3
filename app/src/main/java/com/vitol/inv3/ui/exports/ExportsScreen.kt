@@ -65,6 +65,7 @@ import com.vitol.inv3.export.ExportInvoice
 import com.vitol.inv3.export.ISafXmlExporter
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
 import com.vitol.inv3.data.remote.CompanyRecord
+import com.vitol.inv3.ui.home.OwnCompanyViewModel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import java.text.NumberFormat
@@ -73,7 +74,8 @@ import java.util.Locale
 @Composable
 fun ExportsScreen(
     navController: androidx.navigation.NavController? = null,
-    viewModel: ExportsViewModel = hiltViewModel()
+    viewModel: ExportsViewModel = hiltViewModel(),
+    ownCompanyViewModel: OwnCompanyViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val monthlySummaries by viewModel.monthlySummaries.collectAsState()
@@ -83,6 +85,31 @@ fun ExportsScreen(
     val expandedCompanies by viewModel.expandedCompanies.collectAsState()
     val expandedSalesPurchase by viewModel.expandedSalesPurchase.collectAsState()
     val availableYears = viewModel.getAvailableYears()
+    
+    val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
+    val activeCompanyId by activeCompanyIdFlow.collectAsState(initial = null)
+    val ownCompanies by ownCompanyViewModel.ownCompanies.collectAsState()
+    var selectedExportCompanyId by remember { mutableStateOf<String?>(null) }
+    
+    LaunchedEffect(Unit) {
+        ownCompanyViewModel.loadOwnCompanies()
+    }
+    LaunchedEffect(activeCompanyId, ownCompanies) {
+        when {
+            ownCompanies.size == 1 -> {
+                selectedExportCompanyId = ownCompanies.first().id
+                viewModel.setSelectedOwnCompanyId(selectedExportCompanyId)
+            }
+            activeCompanyId != null -> {
+                selectedExportCompanyId = activeCompanyId
+                viewModel.setSelectedOwnCompanyId(activeCompanyId)
+            }
+            else -> {
+                selectedExportCompanyId = null
+                viewModel.setSelectedOwnCompanyId(null)
+            }
+        }
+    }
     
     var exportDialogState by remember { mutableStateOf<ExportDialogState?>(null) }
     var invoiceToDelete by remember { mutableStateOf<com.vitol.inv3.data.remote.InvoiceRecord?>(null) }
@@ -108,6 +135,7 @@ fun ExportsScreen(
             invoices = state.invoices,
             invoiceRecords = state.invoiceRecords,
             month = state.month,
+            selectedCompanyId = selectedExportCompanyId,
             onDismiss = { exportDialogState = null },
             onRefresh = { viewModel.loadInvoices() },
             repo = repo
@@ -309,6 +337,23 @@ fun ExportsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        if (ownCompanies.size > 1) {
+            CompanyFilterDropdown(
+                ownCompanies = ownCompanies,
+                selectedCompanyId = selectedExportCompanyId,
+                onCompanySelected = {
+                    selectedExportCompanyId = it
+                    viewModel.setSelectedOwnCompanyId(it)
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else if (ownCompanies.isEmpty()) {
+            Text(
+                text = "Add your company on the Home screen first to export invoices.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -452,6 +497,50 @@ fun YearFilterDropdown(
                     text = { Text(year.toString()) },
                     onClick = {
                         onYearSelected(year)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CompanyFilterDropdown(
+    ownCompanies: List<CompanyRecord>,
+    selectedCompanyId: String?,
+    onCompanySelected: (String?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedCompany = ownCompanies.find { it.id == selectedCompanyId }
+    val displayText = selectedCompany?.company_name ?: "Select company"
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = displayText,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Export for company") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor()
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            ownCompanies.forEach { company ->
+                DropdownMenuItem(
+                    text = { Text(company.company_name ?: company.company_number ?: "Unknown") },
+                    onClick = {
+                        onCompanySelected(company.id)
                         expanded = false
                     }
                 )
@@ -819,21 +908,20 @@ fun ExportDialog(
     invoices: List<ExportInvoice>,
     invoiceRecords: List<com.vitol.inv3.data.remote.InvoiceRecord>,
     month: String,
+    selectedCompanyId: String?,
     onDismiss: () -> Unit,
     onRefresh: () -> Unit,
     repo: com.vitol.inv3.data.remote.SupabaseRepository
 ) {
     var isSaving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
-    val activeCompanyId by activeCompanyIdFlow.collectAsState(initial = null)
     var ownCompany by remember { mutableStateOf<CompanyRecord?>(null) }
     
-    // Load own company
-    LaunchedEffect(activeCompanyId) {
-        if (activeCompanyId != null) {
+    // Load own company from selected company for export
+    LaunchedEffect(selectedCompanyId) {
+        if (selectedCompanyId != null) {
             ownCompany = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                repo.getCompanyById(activeCompanyId!!)
+                repo.getCompanyById(selectedCompanyId)
             }
         } else {
             ownCompany = null
@@ -871,7 +959,7 @@ fun ExportDialog(
                         onClick = {
                             isSaving = true
                             val exporter = ExcelExporter(context)
-                            val result = exporter.saveToDownloads(invoices, month)
+                            val result = exporter.saveToDownloads(invoices, month, ownCompany)
                             isSaving = false
                             onDismiss()
                             if (result != null) {
@@ -895,7 +983,7 @@ fun ExportDialog(
                     OutlinedButton(
                         onClick = {
                             val exporter = ExcelExporter(context)
-                            val uri = exporter.export(invoices, month)
+                            val uri = exporter.export(invoices, month, ownCompany)
                             val share = Intent(Intent.ACTION_SEND).apply {
                                 type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                 putExtra(Intent.EXTRA_STREAM, uri)

@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import com.vitol.inv3.data.remote.CompanyRecord
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
 import java.io.FileOutputStream
@@ -28,19 +29,26 @@ data class ExportInvoice(
 )
 
 class ExcelExporter(private val context: Context) {
-    fun export(invoices: List<ExportInvoice>, month: String? = null): Uri {
+    fun export(invoices: List<ExportInvoice>, month: String? = null, company: CompanyRecord? = null): Uri {
         val wb = XSSFWorkbook()
         val sheet = wb.createSheet("Invoices")
+
+        var dataStartRow = 0
+        if (company != null) {
+            val companyRow = sheet.createRow(0)
+            companyRow.createCell(0).setCellValue("Export for: ${company.company_name ?: company.company_number ?: "Unknown"}")
+            dataStartRow = 1
+        }
 
         // Column order: Date, Invoice_ID, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number, Invoice_Type, Tax_Code
         val header = listOf(
             "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number", "Invoice_Type", "Tax_Code"
         )
-        val headerRow = sheet.createRow(0)
+        val headerRow = sheet.createRow(dataStartRow)
         header.forEachIndexed { idx, title -> headerRow.createCell(idx).setCellValue(title) }
 
         invoices.forEachIndexed { i, inv ->
-            val row = sheet.createRow(i + 1)
+            val row = sheet.createRow(dataStartRow + i + 1)
             row.createCell(0).setCellValue(inv.date ?: "") // Date
             row.createCell(1).setCellValue(inv.invoiceId ?: "")
             row.createCell(2).setCellValue(inv.companyName ?: "")
@@ -71,19 +79,26 @@ class ExcelExporter(private val context: Context) {
         )
     }
 
-    fun saveToDownloads(invoices: List<ExportInvoice>, month: String? = null): String? {
+    fun saveToDownloads(invoices: List<ExportInvoice>, month: String? = null, company: CompanyRecord? = null): String? {
         val wb = XSSFWorkbook()
         val sheet = wb.createSheet("Invoices")
+
+        var dataStartRow = 0
+        if (company != null) {
+            val companyRow = sheet.createRow(0)
+            companyRow.createCell(0).setCellValue("Export for: ${company.company_name ?: company.company_number ?: "Unknown"}")
+            dataStartRow = 1
+        }
 
         // Column order: Date, Invoice_ID, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number, Invoice_Type, Tax_Code
         val header = listOf(
             "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number", "Invoice_Type", "Tax_Code"
         )
-        val headerRow = sheet.createRow(0)
+        val headerRow = sheet.createRow(dataStartRow)
         header.forEachIndexed { idx, title -> headerRow.createCell(idx).setCellValue(title) }
 
         invoices.forEachIndexed { i, inv ->
-            val row = sheet.createRow(i + 1)
+            val row = sheet.createRow(dataStartRow + i + 1)
             row.createCell(0).setCellValue(inv.date ?: "") // Date
             row.createCell(1).setCellValue(inv.invoiceId ?: "")
             row.createCell(2).setCellValue(inv.companyName ?: "")
