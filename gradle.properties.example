@@ -14,6 +14,12 @@ android.suppressUnsupportedCompileSdk=35
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
 AZURE_DOCUMENT_INTELLIGENCE_API_KEY=your-api-key-here
 
+# Google OAuth - Android client ID for Google Sign-In
+# GOOGLE_OAUTH_CLIENT_ID = debug/upload keystore client (Android Studio)
+# GOOGLE_OAUTH_CLIENT_ID_RELEASE = Play App Signing client (Play Store builds)
+GOOGLE_OAUTH_CLIENT_ID=your-android-client-id.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_ID_RELEASE=your-play-signing-client-id.apps.googleusercontent.com
+
 # Project-wide Gradle settings.
 # IDE (e.g. Android Studio) users:
 # Gradle settings configured through the IDE *will override*

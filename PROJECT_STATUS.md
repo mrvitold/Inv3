@@ -6,7 +6,7 @@
 
 ### App
 - **Package:** com.vitol.inv3
-- **Version:** 1.0.4 (versionCode 4)
+- **Version:** 1.07 (versionCode 7)
 - **Status:** Internal testing on Google Play Console
 - **Build:** Release AAB at `app/release/app-release.aab` (build via Android Studio)
 

@@ -5,7 +5,7 @@
 | Item | Value | Status |
 |------|-------|--------|
 | **App package** | `com.vitol.inv3` | ✓ Set in build.gradle.kts |
-| **gradle.properties** | `GOOGLE_OAUTH_CLIENT_ID=592279498858-rhi4cfmq7hkddfqjkfalbb7b72g8s5ee.apps.googleusercontent.com` | ✓ Configured |
+| **gradle.properties** | `GOOGLE_OAUTH_CLIENT_ID` (debug) + `GOOGLE_OAUTH_CLIENT_ID_RELEASE` (Play Store) | ✓ Configured |
 | **Supabase** | Client ID and Client Secret configured | ✓ From your screenshot |
 | **Supabase callback URL** | `https://azbyzwdthelztfuybxmg.supabase.co/auth/v1/callback` | ✓ |
 
@@ -22,13 +22,13 @@
 5. Add: `https://azbyzwdthelztfuybxmg.supabase.co/auth/v1/callback`
 6. Click **Save**
 
-### 2. Android Client "LT Invoice Scanner" – Verify Package and SHA-1
+### 2. Android Clients – Two clients for debug vs Play Store
 
-1. In **Credentials**, open **LT Invoice Scanner** (Android type)
-2. Confirm:
-   - **Package name:** `com.vitol.inv3`
-   - **SHA-1 certificate fingerprint:** `9E:32:EF:8A:BB:42:8F:49:BD:D9:84:DD:34:29:4B:84:FE:62:87:57`
-3. If SHA-1 is missing or different, add/update it and save
+**Client 1 (debug/upload keystore):** Package `com.vitol.inv3`, SHA-1 for debug/upload keystore  
+**Client 2 (Play App Signing):** Package `com.vitol.inv3`, SHA-1 from Play Console → App signing → App signing key certificate
+
+- Debug builds (Android Studio) use `GOOGLE_OAUTH_CLIENT_ID` (Client 1)
+- Release builds (Play Store) use `GOOGLE_OAUTH_CLIENT_ID_RELEASE` (Client 2)
 
 ---
 

@@ -21,14 +21,14 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.vitol.inv3"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.vitol.inv3"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 4
-        versionName = "1.0.4"
+        targetSdk = 35
+        versionCode = 7
+        versionName = "1.07"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -63,6 +63,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Use Play App Signing client ID for release (Google Sign-In works from Play Store)
+            buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"${project.findProperty("GOOGLE_OAUTH_CLIENT_ID_RELEASE") ?: project.findProperty("GOOGLE_OAUTH_CLIENT_ID") ?: ""}\"")
             // Only apply signing config if keystore.properties exists
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
