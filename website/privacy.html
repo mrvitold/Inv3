@@ -3,16 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="refresh" content="0;url=https://github.com/mrvitold/Inv3/blob/master/PRIVACY_POLICY.md">
-    <meta name="description" content="Inv3 Privacy Policy - Redirecting to full policy">
+    <meta name="description" content="Inv3 Privacy Policy - How we collect, use, and protect your data">
     <link rel="icon" href="favicon.ico" sizes="any">
     <link rel="icon" type="image/png" href="icon-192.png" sizes="192x192">
     <link rel="apple-touch-icon" href="apple-touch-icon.png">
     <title>Privacy Policy - Inv3</title>
     <link rel="stylesheet" href="styles.css">
     <style>
-        .privacy-redirect { max-width: 500px; margin: 4rem auto; padding: 2rem; text-align: center; }
-        .privacy-redirect a { color: var(--color-accent); font-weight: 500; }
+        .privacy-page { max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+        .privacy-page h1 { font-size: 1.75rem; margin: 0 0 0.5rem; color: var(--color-primary); }
+        .privacy-page .meta { color: var(--color-text-muted); font-size: 0.9rem; margin-bottom: 2rem; }
+        .privacy-page h2 { font-size: 1.2rem; margin: 2rem 0 0.75rem; color: var(--color-primary); }
+        .privacy-page h3 { font-size: 1rem; margin: 1.25rem 0 0.5rem; color: var(--color-primary); }
+        .privacy-page p, .privacy-page li { color: var(--color-text-muted); margin: 0 0 0.75rem; }
+        .privacy-page ul { padding-left: 1.5rem; margin: 0 0 1rem; }
+        .privacy-page a { color: var(--color-accent); text-decoration: none; }
+        .privacy-page a:hover { text-decoration: underline; }
+        .privacy-page strong { color: var(--color-text); }
+        .privacy-back { display: inline-block; margin-bottom: 1.5rem; color: var(--color-accent); font-weight: 500; text-decoration: none; }
+        .privacy-back:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -29,13 +38,152 @@
         </nav>
     </header>
 
-    <main class="privacy-redirect">
-        <p>Redirecting to Privacy Policy...</p>
-        <p><a href="https://github.com/mrvitold/Inv3/blob/master/PRIVACY_POLICY.md" id="policy-link">View Privacy Policy on GitHub</a></p>
+    <main class="privacy-page">
+        <a href="index.html" class="privacy-back" data-i18n="back_home">← Back to home</a>
+
+        <h1 data-i18n="privacy_title">Privacy Policy</h1>
+        <p class="meta" data-i18n="privacy_last_updated">Last updated: January 2026</p>
+
+        <h2>Introduction</h2>
+        <p>Inv3 ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our mobile application Inv3 (the "App"). Please read this Privacy Policy carefully. If you do not agree with the terms of this Privacy Policy, please do not access or use the App.</p>
+
+        <h2>Information We Collect</h2>
+
+        <h3>1. Account Information</h3>
+        <p>When you create an account or sign in, we collect:</p>
+        <ul>
+            <li><strong>Email Address</strong>: Required for account creation and authentication</li>
+            <li><strong>Password</strong>: Encrypted and stored securely (for email/password authentication)</li>
+            <li><strong>Display Name</strong>: Optional, provided by you or derived from your email</li>
+            <li><strong>Full Name</strong>: Optional, provided during account setup or via Google Sign-In</li>
+            <li><strong>User Preferences</strong>: Settings and preferences you configure within the App</li>
+        </ul>
+
+        <h3>2. Authentication Data</h3>
+        <ul>
+            <li><strong>Session Tokens</strong>: Stored locally on your device to maintain your login session</li>
+            <li><strong>User ID</strong>: Unique identifier associated with your account</li>
+            <li><strong>Google Account Information</strong>: If you choose to sign in with Google, we receive your email address and name from Google</li>
+        </ul>
+
+        <h3>3. Invoice Data</h3>
+        <p>When you use the App to scan or process invoices, we collect:</p>
+        <ul>
+            <li><strong>Invoice Images</strong>: Photos or images of invoices you capture using the camera or import from your device</li>
+            <li><strong>Extracted Invoice Information</strong>: Invoice number/ID, invoice date, company name, VAT number, company registration number, invoice amounts (with and without VAT), VAT rate, tax codes, invoice type (Purchase/Sales)</li>
+        </ul>
+
+        <h3>4. Company Data</h3>
+        <p>We store information about companies associated with invoices: company name, company registration number, VAT registration number, and company templates and recognition patterns (to improve invoice processing accuracy).</p>
+
+        <h3>5. Device Information</h3>
+        <p>We may collect certain information automatically when you use the App: device type and operating system version, app version, usage statistics and crash reports (to improve app stability), and IP address (for authentication and security purposes).</p>
+
+        <h2>How We Use Your Information</h2>
+        <p>We use the information we collect for the following purposes:</p>
+        <ul>
+            <li><strong>To Provide and Maintain the App</strong>: Process your invoices, store your data, and provide core functionality</li>
+            <li><strong>To Authenticate Your Account</strong>: Verify your identity and maintain secure access to your account</li>
+            <li><strong>To Process Invoices</strong>: Use optical character recognition (OCR) and machine learning to extract data from invoice images</li>
+            <li><strong>To Improve the App</strong>: Analyze usage patterns to enhance features and fix bugs</li>
+            <li><strong>To Communicate with You</strong>: Send important updates, security alerts, and support responses</li>
+            <li><strong>To Ensure Security</strong>: Detect and prevent fraud, unauthorized access, and other security issues</li>
+        </ul>
+
+        <h2>Third-Party Services</h2>
+        <p>We use the following third-party services that may collect or process your data:</p>
+
+        <h3>1. Supabase (Backend Services)</h3>
+        <p><strong>Purpose</strong>: Database storage, user authentication, and cloud synchronization.<br>
+        <strong>Data Processed</strong>: All account information, invoice data, and company records.<br>
+        <strong>Privacy Policy</strong>: <a href="https://supabase.com/privacy" target="_blank" rel="noopener noreferrer">https://supabase.com/privacy</a><br>
+        <strong>Location</strong>: Data is stored in Supabase's cloud infrastructure.</p>
+
+        <h3>2. Azure Document Intelligence (Microsoft)</h3>
+        <p><strong>Purpose</strong>: Optical character recognition (OCR) to extract text and data from invoice images.<br>
+        <strong>Data Processed</strong>: Invoice images you upload for processing.<br>
+        <strong>Privacy Policy</strong>: <a href="https://privacy.microsoft.com/privacystatement" target="_blank" rel="noopener noreferrer">https://privacy.microsoft.com/privacystatement</a><br>
+        <strong>Location</strong>: Images are sent to Microsoft Azure servers for processing.<br>
+        <strong>Retention</strong>: Microsoft may retain processed images temporarily for service improvement.</p>
+
+        <h3>3. Google Sign-In</h3>
+        <p><strong>Purpose</strong>: Authentication service to allow you to sign in with your Google account.<br>
+        <strong>Data Processed</strong>: Email address and name.<br>
+        <strong>Privacy Policy</strong>: <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">https://policies.google.com/privacy</a><br>
+        <strong>Location</strong>: Data is processed by Google's authentication services.</p>
+
+        <h3>4. Google ML Kit</h3>
+        <p><strong>Purpose</strong>: On-device text recognition from invoice images.<br>
+        <strong>Data Processed</strong>: Invoice images (processed entirely on your device).<br>
+        <strong>Privacy Policy</strong>: <a href="https://developers.google.com/ml-kit/terms" target="_blank" rel="noopener noreferrer">https://developers.google.com/ml-kit/terms</a><br>
+        <strong>Location</strong>: Processing occurs locally on your device; no data is sent to Google.</p>
+
+        <h2>Data Storage and Security</h2>
+        <p><strong>Cloud Storage</strong>: Your invoice data, company records, and account information are stored securely in Supabase's cloud database.</p>
+        <p><strong>Local Storage</strong>: Session tokens and user preferences are stored locally on your device using Android's secure storage mechanisms.</p>
+        <p><strong>Image Processing</strong>: Invoice images are temporarily sent to Azure Document Intelligence for OCR processing. Images are not permanently stored by Azure after processing completes.</p>
+        <p>We implement appropriate technical and organizational measures to protect your data, including encryption (TLS/SSL), secure authentication, and access controls. However, no method of transmission over the internet or electronic storage is 100% secure.</p>
+
+        <h2>Data Retention</h2>
+        <ul>
+            <li><strong>Account Data</strong>: Retained for as long as your account is active</li>
+            <li><strong>Invoice Data</strong>: Retained until you delete it or close your account</li>
+            <li><strong>Session Tokens</strong>: Stored locally on your device and automatically cleared when you sign out</li>
+            <li><strong>Deleted Accounts</strong>: Data associated with deleted accounts is permanently removed within 30 days, except where retention is required by law</li>
+        </ul>
+
+        <h2>Your Rights and Choices</h2>
+        <p>You have the following rights regarding your personal data:</p>
+        <ul>
+            <li><strong>Access</strong>: Request access to your personal data stored in the App</li>
+            <li><strong>Correction</strong>: Update or correct inaccurate information through the App settings</li>
+            <li><strong>Deletion</strong>: Delete your account and associated data by contacting us or using the account deletion feature</li>
+            <li><strong>Data Export</strong>: Export your invoice data in Excel format using the App's export feature</li>
+            <li><strong>Opt-Out</strong>: You can stop using the App and delete your account at any time</li>
+        </ul>
+        <p>To exercise these rights, please contact us using the information provided in the "Contact Us" section below.</p>
+
+        <h2>Children's Privacy</h2>
+        <p>The App is not intended for children under the age of 13. We do not knowingly collect personal information from children under 13. If you are a parent or guardian and believe your child has provided us with personal information, please contact us immediately.</p>
+
+        <h2>International Data Transfers</h2>
+        <p>Your data may be transferred to and processed in countries other than your country of residence. These countries may have data protection laws that differ from those in your country. By using the App, you consent to the transfer of your data to these countries. Supabase servers may be located in various regions; Azure Document Intelligence servers are in Microsoft Azure data centers globally; Google services operate globally.</p>
+
+        <h2>Changes to This Privacy Policy</h2>
+        <p>We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy in the App, updating the "Last Updated" date, and sending you an email notification (if you have provided an email address). You are advised to review this Privacy Policy periodically. Changes are effective when posted.</p>
+
+        <h2>Permissions Used by the App</h2>
+        <p>The App requests the following permissions:</p>
+        <ul>
+            <li><strong>Camera</strong>: Required to capture photos of invoices for processing</li>
+            <li><strong>Read Media Images</strong>: Required to import invoice images from your device's photo gallery</li>
+            <li><strong>Internet</strong>: Required for cloud synchronization, authentication, and OCR processing</li>
+        </ul>
+        <p>These permissions are essential for the App's core functionality. We do not use these permissions for any other purpose.</p>
+
+        <h2>Data Sharing and Disclosure</h2>
+        <p>We do not sell, trade, or rent your personal information to third parties. We may share your information only in the following circumstances:</p>
+        <ul>
+            <li><strong>Service Providers</strong>: With third-party service providers (Supabase, Azure, Google) who assist us in operating the App</li>
+            <li><strong>Legal Requirements</strong>: When required by law, court order, or government regulation</li>
+            <li><strong>Protection of Rights</strong>: To protect our rights, property, or safety, or that of our users</li>
+            <li><strong>Business Transfers</strong>: In connection with a merger, acquisition, or sale of assets (with notice to users)</li>
+        </ul>
+
+        <h2>Contact Us</h2>
+        <p>If you have questions, concerns, or requests regarding this Privacy Policy or our data practices, please contact us:</p>
+        <p><strong>Email</strong>: <a href="mailto:svarosfrontas@gmail.com">svarosfrontas@gmail.com</a><br>
+        <strong>Address</strong>: Mūrinė g. 45, Vilnius, 11107, Lithuania</p>
+
+        <h2>Compliance</h2>
+        <p>This Privacy Policy is designed to comply with the General Data Protection Regulation (GDPR) for users in the European Union, the California Consumer Privacy Act (CCPA) for users in California, and other applicable data protection laws.</p>
     </main>
 
-    <script>
-        window.location.replace("https://github.com/mrvitold/Inv3/blob/master/PRIVACY_POLICY.md");
-    </script>
+    <footer class="footer">
+        <p data-i18n="footer">© 2025 Inv3. Invoice scanning made simple.</p>
+    </footer>
+
+    <script src="translations.js"></script>
+    <script src="app.js"></script>
 </body>
 </html>
