@@ -34,16 +34,21 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -86,21 +91,54 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 val navController = rememberNavController()
                 val viewModel: MainActivityViewModel = hiltViewModel()
-                
+                val scope = rememberCoroutineScope()
+                val lifecycleOwner = LocalLifecycleOwner.current
+                val context = LocalContext.current
+                val activity = context as? ComponentActivity
+
+                // Handle new intents (e.g. when user taps app icon to return) - avoids setContent in
+                // onNewIntent which would replace UI with empty content and cause black screen
+                activity?.let { act ->
+                    DisposableEffect(act) {
+                        val listener: (android.content.Intent) -> Unit = { intent ->
+                            scope.launch {
+                                handleIntent(intent, viewModel.authManager)
+                            }
+                        }
+                        act.addOnNewIntentListener(listener)
+                        onDispose { act.removeOnNewIntentListener(listener) }
+                    }
+                }
+
+                // Force recomposition when returning from background - fixes black screen on some
+                // devices (e.g. Vivo) where the window surface is destroyed when backgrounded
+                var resumeKey by remember { mutableStateOf(0) }
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            resumeKey++
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
+
                 // Handle deep links on creation
                 LaunchedEffect(Unit) {
                     handleIntent(intent, viewModel.authManager)
                 }
-                
+
                 // Refresh session when app comes to foreground (to work around free plan limitations)
                 LaunchedEffect(Unit) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                         viewModel.authManager.refreshSessionIfNeeded()
                     }
                 }
-                
-                Surface(color = MaterialTheme.colorScheme.background) {
-                    AppNavHost(navController, viewModel.authManager)
+
+                key(resumeKey) {
+                    Surface(color = MaterialTheme.colorScheme.background) {
+                        AppNavHost(navController, viewModel.authManager)
+                    }
                 }
             }
         }
@@ -122,13 +160,9 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // Handle deep link in composable context
-        setContent {
-            val viewModel: MainActivityViewModel = hiltViewModel()
-            LaunchedEffect(intent) {
-                handleIntent(intent, viewModel.authManager)
-            }
-        }
+        // Do NOT call setContent here - it would replace the entire UI with empty content
+        // (the old code only had LaunchedEffect, which renders nothing) causing a black screen.
+        // Intent handling is done via addOnNewIntentListener in the composable below.
     }
     
     private suspend fun handleIntent(intent: android.content.Intent?, authManager: AuthManager) {
