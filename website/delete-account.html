@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Request account deletion - Inv3">
+    <link rel="icon" href="favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="icon-192.png" sizes="192x192">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <title>Request Account Deletion - Inv3</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .delete-page { max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
+        .delete-page h1 { font-size: 1.75rem; margin: 0 0 0.5rem; color: var(--color-primary); }
+        .delete-page h2 { font-size: 1.2rem; margin: 2rem 0 0.75rem; color: var(--color-primary); }
+        .delete-page p, .delete-page li { color: var(--color-text-muted); margin: 0 0 0.75rem; }
+        .delete-page ol { padding-left: 1.5rem; margin: 0 0 1rem; }
+        .delete-page a { color: var(--color-accent); text-decoration: none; }
+        .delete-page a:hover { text-decoration: underline; }
+        .delete-back { display: inline-block; margin-bottom: 1.5rem; color: var(--color-accent); font-weight: 500; text-decoration: none; }
+        .delete-back:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <nav class="nav">
+            <a href="index.html" class="logo">
+                <img src="icon-192.png" alt="Inv3" class="logo-icon">
+                <span class="logo-text" data-i18n="app_name">Inv3</span>
+            </a>
+            <div class="lang-switcher">
+                <button class="lang-btn active" data-lang="en" aria-label="English">EN</button>
+                <button class="lang-btn" data-lang="lt" aria-label="Lietuvių">LT</button>
+            </div>
+        </nav>
+    </header>
+
+    <main class="delete-page">
+        <a href="index.html" class="delete-back" data-i18n="back_home">← Back to home</a>
+
+        <h1>Request Account Deletion</h1>
+        <p>To delete your Inv3 account and all associated data, you can:</p>
+        <ol>
+            <li><strong>From the app:</strong> Open Inv3 → Settings → Delete My Account</li>
+            <li><strong>By email:</strong> Send a request to <a href="mailto:svarosfrontas@gmail.com?subject=Account%20Deletion%20Request">svarosfrontas@gmail.com</a> with the subject "Account Deletion Request"</li>
+        </ol>
+        <p>We will process your request and permanently delete your data within 30 days.</p>
+        <p><a href="privacy.html">View our Privacy Policy</a></p>
+    </main>
+
+    <footer class="footer">
+        <p data-i18n="footer">© 2025 Inv3. Invoice scanning made simple.</p>
+    </footer>
+
+    <script src="translations.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
