@@ -84,9 +84,8 @@ fun LoginScreen(
                     e.statusCode == 12501 -> "Google sign in was cancelled"
                     isOAuthNotRegistered -> {
                         "App not registered for Google Sign-In.\n\n" +
-                        "Add your SHA-1 fingerprint to Firebase Console:\n" +
-                        "Project settings → Your apps → com.vitol.inv3 → Add fingerprint\n\n" +
-                        "Get SHA-1: keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android\n\n" +
+                        "For Play Store builds: Add Play App Signing SHA-1 from Play Console → Release → Setup → App Integrity to Google Cloud Console (APIs & Services → Credentials → Android client for com.vitol.inv3).\n\n" +
+                        "For debug builds: Add debug SHA-1 to the same Android client.\n\n" +
                         "See docs/GOOGLE_SIGNIN_SETUP.md for details."
                     }
                     e.statusCode == 7 -> "Network error. Please check your internet connection and try again."

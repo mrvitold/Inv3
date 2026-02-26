@@ -27,8 +27,8 @@ android {
         applicationId = "com.vitol.inv3"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.07"
+        versionCode = 8
+        versionName = "1.08"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -63,8 +63,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Use Play App Signing client ID for release (Google Sign-In works from Play Store)
-            buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"${project.findProperty("GOOGLE_OAUTH_CLIENT_ID_RELEASE") ?: project.findProperty("GOOGLE_OAUTH_CLIENT_ID") ?: ""}\"")
+            // Use same Web Client ID for release - requestIdToken() requires Web Client ID.
+            // Play Store builds work when Play App Signing SHA-1 is in Google Cloud Console (Android OAuth client).
+            buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"${project.findProperty("GOOGLE_OAUTH_CLIENT_ID") ?: ""}\"")
             // Only apply signing config if keystore.properties exists
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")

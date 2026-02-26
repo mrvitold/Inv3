@@ -1,3 +1,7 @@
+# Google Sign-In / Play Services Auth
+-keep class com.google.android.gms.auth.** { *; }
+-keep class com.google.android.gms.common.** { *; }
+
 # Keep ML Kit and CameraX related classes
 -keep class com.google.mlkit.** { *; }
 -keep class androidx.camera.** { *; }
