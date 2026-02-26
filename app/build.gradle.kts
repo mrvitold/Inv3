@@ -27,9 +27,9 @@ android {
         applicationId = "com.vitol.inv3"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.09"
-        ndkVersion = "27.0.12077973"
+        versionCode = 10
+        versionName = "1.10"
+        ndkVersion = "28.1.13356709"  // NDK r28: 16 KB page size support on by default
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -66,7 +66,7 @@ android {
             )
             // Include native debug symbols for Play Console crash/ANR reports
             ndk {
-                debugSymbolLevel = "FULL"
+                debugSymbolLevel = "SYMBOL_TABLE"
             }
             // Use same Web Client ID for release - requestIdToken() requires Web Client ID.
             // Play Store builds work when Play App Signing SHA-1 is in Google Cloud Console (Android OAuth client).
