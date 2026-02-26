@@ -27,8 +27,9 @@ android {
         applicationId = "com.vitol.inv3"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.08"
+        versionCode = 9
+        versionName = "1.09"
+        ndkVersion = "27.0.12077973"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -63,6 +64,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Include native debug symbols for Play Console crash/ANR reports
+            ndk {
+                debugSymbolLevel = "FULL"
+            }
             // Use same Web Client ID for release - requestIdToken() requires Web Client ID.
             // Play Store builds work when Play App Signing SHA-1 is in Google Cloud Console (Android OAuth client).
             buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"${project.findProperty("GOOGLE_OAUTH_CLIENT_ID") ?: ""}\"")
@@ -90,6 +95,10 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/INDEX.LIST"
             excludes += "/META-INF/DEPENDENCIES"
+        }
+        // 16 KB page size: compress native libs for compatibility with 16 KB devices (Android 15+)
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 

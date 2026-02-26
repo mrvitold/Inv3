@@ -1,4 +1,4 @@
-# Google Play Publish Checklist – Inv3 v1.08
+# Google Play Publish Checklist – Inv3 v1.09
 
 Use this checklist before publishing to production.
 
@@ -8,7 +8,7 @@ Use this checklist before publishing to production.
 
 | Item | Status |
 |------|--------|
-| versionCode 8, versionName "1.08" | ✓ |
+| versionCode 9, versionName "1.09" | ✓ |
 | targetSdk 35 (required by Play) | ✓ |
 | Release signing (keystore.properties) | ✓ |
 | ProGuard rules for release | ✓ |
@@ -60,7 +60,7 @@ Use this checklist before publishing to production.
 
 ### 7. Release setup
 - [ ] Upload AAB: `./gradlew bundleRelease` → `app/build/outputs/bundle/release/app-release.aab`
-- [ ] Add release notes for v1.08
+- [ ] Add release notes for v1.09
 - [ ] Promote from Internal testing → Production when ready
 
 ### 8. Optional but recommended
@@ -70,11 +70,11 @@ Use this checklist before publishing to production.
 
 ---
 
-## Release Notes for v1.08 (suggested)
+## Release Notes for v1.09 (suggested)
 
 ```
-- Fixed Google Sign-In for users who download the app from Google Play
-- Improved authentication reliability for Play Store builds
+- 16 KB memory page size support for Android 15+ devices
+- Native debug symbols for improved crash reporting
 ```
 
 ---

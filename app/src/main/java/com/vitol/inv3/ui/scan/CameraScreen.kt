@@ -13,6 +13,7 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -65,6 +66,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.text.style.TextAlign
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.File
@@ -386,6 +388,7 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
     val snackbarHostState = remember { SnackbarHostState() }
     
     var hasCameraPermission by remember { mutableStateOf(false) }
+    var permissionJustGranted by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
     
     // Camera permission launcher
@@ -393,11 +396,28 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         hasCameraPermission = isGranted
-        if (!isGranted) {
+        if (isGranted) {
+            // Some devices (e.g. Vivo) send a spurious back when permission dialog dismisses.
+            // Consume back presses briefly so the camera screen stays visible.
+            permissionJustGranted = true
+        } else {
             scope.launch {
                 snackbarHostState.showSnackbar("Camera permission is required to scan invoices")
             }
         }
+    }
+    
+    // Clear "just granted" flag after grace period so normal back works
+    LaunchedEffect(permissionJustGranted) {
+        if (permissionJustGranted) {
+            delay(800)
+            permissionJustGranted = false
+        }
+    }
+    
+    // Consume back presses right after permission granted (prevents spurious back from dialog dismiss)
+    BackHandler(enabled = permissionJustGranted) {
+        permissionJustGranted = false
     }
     
     // Check and request camera permission
