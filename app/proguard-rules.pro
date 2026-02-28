@@ -26,6 +26,10 @@
 -keep class org.apache.xmlbeans.** { *; }
 -dontwarn org.apache.poi.**
 
+# Log4j - Keep from obfuscation (POI transitive dep; uses reflection for FlowMessageFactory)
+# Without this, R8 obfuscates Log4j internals and causes NoSuchMethodException at runtime
+-keep class org.apache.logging.log4j.** { *; }
+
 # Apache POI - Suppress warnings for desktop Java classes not available on Android
 -dontwarn aQute.bnd.annotation.baseline.BaselineIgnore
 -dontwarn aQute.bnd.annotation.spi.ServiceConsumer
