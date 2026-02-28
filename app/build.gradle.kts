@@ -169,6 +169,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
     // Excel export uses CSV (opens in Excel/Sheets) - no POI (incompatible with Android)
+    // SLF4J no-op binding (required by transitive deps; prevents R8 "missing StaticLoggerBinder" error)
+    implementation("org.slf4j:slf4j-nop:2.0.16")
 
     // Azure Document Intelligence - REST API
     implementation("com.google.code.gson:gson:2.10.1")

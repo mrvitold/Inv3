@@ -22,6 +22,7 @@
 -renamesourcefileattribute SourceFile
 
 # Apache POI removed - Excel export now uses CSV (opens in Excel/Sheets)
+-dontwarn org.slf4j.impl.StaticLoggerBinder
 
 # Additional missing classes for other deps (JavaParser, Maven, Ant, Saxon, etc.)
 -dontwarn com.github.javaparser.ParseResult
