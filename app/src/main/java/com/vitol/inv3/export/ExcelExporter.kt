@@ -7,10 +7,8 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import com.vitol.inv3.data.remote.CompanyRecord
-import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
-import java.io.FileOutputStream
-import java.io.OutputStream
+import java.io.OutputStreamWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -28,50 +26,64 @@ data class ExportInvoice(
     val taxCode: String? = null // PVM1, PVM2, PVM25, etc.
 )
 
+/**
+ * Exports invoices to CSV format (opens in Excel, Google Sheets, etc.).
+ * Uses semicolon delimiter and UTF-8 BOM for European Excel compatibility.
+ */
 class ExcelExporter(private val context: Context) {
-    fun export(invoices: List<ExportInvoice>, month: String? = null, company: CompanyRecord? = null): Uri {
-        val wb = XSSFWorkbook()
-        val sheet = wb.createSheet("Invoices")
 
-        var dataStartRow = 0
-        if (company != null) {
-            val companyRow = sheet.createRow(0)
-            companyRow.createCell(0).setCellValue("Export for: ${company.company_name ?: company.company_number ?: "Unknown"}")
-            dataStartRow = 1
-        }
+    private companion object {
+        const val DELIMITER = ";"
+        const val UTF8_BOM = "\uFEFF"
+    }
 
-        // Column order: Date, Invoice_ID, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number, Invoice_Type, Tax_Code
-        val header = listOf(
-            "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number", "Invoice_Type", "Tax_Code"
-        )
-        val headerRow = sheet.createRow(dataStartRow)
-        header.forEachIndexed { idx, title -> headerRow.createCell(idx).setCellValue(title) }
-
-        invoices.forEachIndexed { i, inv ->
-            val row = sheet.createRow(dataStartRow + i + 1)
-            row.createCell(0).setCellValue(inv.date ?: "") // Date
-            row.createCell(1).setCellValue(inv.invoiceId ?: "")
-            row.createCell(2).setCellValue(inv.companyName ?: "")
-            row.createCell(3).setCellValue(inv.amountWithoutVatEur ?: 0.0)
-            row.createCell(4).setCellValue(inv.vatAmountEur ?: 0.0)
-            row.createCell(5).setCellValue(inv.vatNumber ?: "")
-            row.createCell(6).setCellValue(inv.companyNumber ?: "")
-            row.createCell(7).setCellValue(inv.invoiceType ?: "") // Invoice Type (P/S)
-            row.createCell(8).setCellValue(inv.taxCode ?: "") // Tax Code (PVM1, PVM2, etc.)
-        }
-
-        // Use month-specific filename if provided, otherwise use timestamp
-        val fileName = if (month != null) {
-            "invoices_$month.xlsx"
+    private fun escapeCsvField(value: String): String {
+        return if (value.contains(DELIMITER) || value.contains('"') || value.contains('\n')) {
+            "\"${value.replace("\"", "\"\"")}\""
         } else {
-            val ts = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
-            "invoices_$ts.xlsx"
+            value
         }
-        
+    }
+
+    private fun buildCsvContent(invoices: List<ExportInvoice>, company: CompanyRecord?): String {
+        val sb = StringBuilder()
+        sb.append(UTF8_BOM)
+        if (company != null) {
+            sb.append(escapeCsvField("Export for: ${company.company_name ?: company.company_number ?: "Unknown"}"))
+            sb.append("\n")
+        }
+        val header = listOf(
+            "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR",
+            "VAT_number", "Company_number", "Invoice_Type", "Tax_Code"
+        )
+        sb.append(header.joinToString(DELIMITER) { escapeCsvField(it) })
+        sb.append("\n")
+        invoices.forEach { inv ->
+            val row = listOf(
+                inv.date ?: "",
+                inv.invoiceId ?: "",
+                inv.companyName ?: "",
+                (inv.amountWithoutVatEur ?: 0.0).toString(),
+                (inv.vatAmountEur ?: 0.0).toString(),
+                inv.vatNumber ?: "",
+                inv.companyNumber ?: "",
+                inv.invoiceType ?: "",
+                inv.taxCode ?: ""
+            )
+            sb.append(row.joinToString(DELIMITER) { escapeCsvField(it) })
+            sb.append("\n")
+        }
+        return sb.toString()
+    }
+
+    fun export(invoices: List<ExportInvoice>, month: String? = null, company: CompanyRecord? = null): Uri {
+        val fileName = if (month != null) "invoices_$month.csv" else {
+            val ts = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+            "invoices_$ts.csv"
+        }
+        val content = buildCsvContent(invoices, company)
         val outFile = File(context.cacheDir, fileName)
-        FileOutputStream(outFile).use { wb.write(it) }
-        wb.close()
-        // Use FileProvider for Android 7.0+ compatibility
+        OutputStreamWriter(outFile.outputStream(), Charsets.UTF_8).use { it.write(content) }
         return androidx.core.content.FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
@@ -80,82 +92,41 @@ class ExcelExporter(private val context: Context) {
     }
 
     fun saveToDownloads(invoices: List<ExportInvoice>, month: String? = null, company: CompanyRecord? = null): String? {
-        val wb = XSSFWorkbook()
-        val sheet = wb.createSheet("Invoices")
-
-        var dataStartRow = 0
-        if (company != null) {
-            val companyRow = sheet.createRow(0)
-            companyRow.createCell(0).setCellValue("Export for: ${company.company_name ?: company.company_number ?: "Unknown"}")
-            dataStartRow = 1
-        }
-
-        // Column order: Date, Invoice_ID, Company_name, Amount_without_VAT_EUR, VAT_amount_EUR, VAT_number, Company_number, Invoice_Type, Tax_Code
-        val header = listOf(
-            "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR", "VAT_number", "Company_number", "Invoice_Type", "Tax_Code"
-        )
-        val headerRow = sheet.createRow(dataStartRow)
-        header.forEachIndexed { idx, title -> headerRow.createCell(idx).setCellValue(title) }
-
-        invoices.forEachIndexed { i, inv ->
-            val row = sheet.createRow(dataStartRow + i + 1)
-            row.createCell(0).setCellValue(inv.date ?: "") // Date
-            row.createCell(1).setCellValue(inv.invoiceId ?: "")
-            row.createCell(2).setCellValue(inv.companyName ?: "")
-            row.createCell(3).setCellValue(inv.amountWithoutVatEur ?: 0.0)
-            row.createCell(4).setCellValue(inv.vatAmountEur ?: 0.0)
-            row.createCell(5).setCellValue(inv.vatNumber ?: "")
-            row.createCell(6).setCellValue(inv.companyNumber ?: "")
-            row.createCell(7).setCellValue(inv.invoiceType ?: "") // Invoice Type (P/S)
-            row.createCell(8).setCellValue(inv.taxCode ?: "") // Tax Code (PVM1, PVM2, etc.)
-        }
-
-        // Use month-specific filename if provided, otherwise use timestamp
-        val fileName = if (month != null) {
-            "invoices_$month.xlsx"
-        } else {
+        val fileName = if (month != null) "invoices_$month.csv" else {
             val ts = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
-            "invoices_$ts.xlsx"
+            "invoices_$ts.csv"
         }
+        val content = buildCsvContent(invoices, company)
 
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Android 10+ - Use MediaStore API
                 val contentValues = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                    put(MediaStore.Downloads.MIME_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    put(MediaStore.Downloads.MIME_TYPE, "text/csv")
                     put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 }
                 val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
                 if (uri != null) {
-                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                        wb.write(outputStream)
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        OutputStreamWriter(out, Charsets.UTF_8).use { it.write(content) }
                     }
-                    wb.close()
                     Timber.d("File saved to Downloads: $fileName")
                     "Saved to Downloads/$fileName"
                 } else {
-                    wb.close()
                     Timber.e("Failed to create file in Downloads")
                     null
                 }
             } else {
-                // Android 9 and below - Use direct file access
                 val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (!downloadsDir.exists()) {
-                    downloadsDir.mkdirs()
-                }
+                if (!downloadsDir.exists()) downloadsDir.mkdirs()
                 val file = File(downloadsDir, fileName)
-                FileOutputStream(file).use { wb.write(it) }
-                wb.close()
+                OutputStreamWriter(file.outputStream(), Charsets.UTF_8).use { it.write(content) }
                 Timber.d("File saved to Downloads: ${file.absolutePath}")
                 "Saved to Downloads/$fileName"
             }
         } catch (e: Exception) {
             Timber.e(e, "Failed to save file to Downloads")
-            wb.close()
             null
         }
     }
 }
-

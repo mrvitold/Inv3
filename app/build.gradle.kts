@@ -27,8 +27,8 @@ android {
         applicationId = "com.vitol.inv3"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "1.11"
+        versionCode = 12
+        versionName = "1.12"
         ndkVersion = "28.1.13356709"  // NDK r28: 16 KB page size support on by default
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -168,10 +168,7 @@ dependencies {
     // Serialization (compatible with Kotlin 1.9.25)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
-    // Apache POI for Excel export (full version for XSSF support)
-    implementation("org.apache.poi:poi-ooxml:5.3.0")
-    // Silence SLF4J "no StaticLoggerBinder" warning from POI/transitive deps
-    implementation("org.slf4j:slf4j-nop:2.0.16")
+    // Excel export uses CSV (opens in Excel/Sheets) - no POI (incompatible with Android)
 
     // Azure Document Intelligence - REST API
     implementation("com.google.code.gson:gson:2.10.1")

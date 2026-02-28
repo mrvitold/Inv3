@@ -985,11 +985,11 @@ fun ExportDialog(
                             val exporter = ExcelExporter(context)
                             val uri = exporter.export(invoices, month, ownCompany)
                             val share = Intent(Intent.ACTION_SEND).apply {
-                                type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                type = "text/csv"
                                 putExtra(Intent.EXTRA_STREAM, uri)
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
-                            context.startActivity(Intent.createChooser(share, "Share $month.xlsx"))
+                            context.startActivity(Intent.createChooser(share, "Share $month.csv"))
                             onDismiss()
                         },
                         enabled = !isSaving,
