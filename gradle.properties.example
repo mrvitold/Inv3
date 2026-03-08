@@ -8,6 +8,10 @@ android.defaults.buildfeatures.buildconfig=true
 android.defaults.buildfeatures.compose=true
 android.suppressUnsupportedCompileSdk=35
 
+# Supabase (required for auth)
+SUPABASE_URL=https://your-project.supabase.co/
+SUPABASE_ANON_KEY=your-anon-key-here
+
 # Azure Document Intelligence credentials
 # Copy this file to gradle.properties and add your actual credentials
 # SECURITY: Never commit gradle.properties with real credentials to git

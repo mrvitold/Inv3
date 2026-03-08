@@ -27,8 +27,8 @@ android {
         applicationId = "com.vitol.inv3"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.12"
+        versionCode = 13
+        versionName = "1.13"
         ndkVersion = "28.1.13356709"  // NDK r28: 16 KB page size support on by default
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -168,7 +168,12 @@ dependencies {
     // Serialization (compatible with Kotlin 1.9.25)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
-    // Excel export uses CSV (opens in Excel/Sheets) - no POI (incompatible with Android)
+    // Apache POI for Excel (.xlsx) export
+    implementation("org.apache.poi:poi:5.2.5")
+    implementation("org.apache.poi:poi-ooxml:5.2.5") {
+        exclude(group = "org.apache.logging.log4j")
+        exclude(group = "commons-logging")
+    }
     // SLF4J no-op binding (required by transitive deps; prevents R8 "missing StaticLoggerBinder" error)
     implementation("org.slf4j:slf4j-nop:2.0.16")
 

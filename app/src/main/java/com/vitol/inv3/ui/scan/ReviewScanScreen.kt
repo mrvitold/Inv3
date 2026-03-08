@@ -3,6 +3,9 @@ package com.vitol.inv3.ui.scan
 import android.content.Context
 import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -45,9 +49,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.vitol.inv3.Routes
@@ -264,6 +275,8 @@ fun ReviewScanScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showCancelImportDialog by remember { mutableStateOf(false) }
+    var showInvoiceOverlay by remember { mutableStateOf(false) }
+    var overlayInvoiceUri by remember { mutableStateOf<Uri?>(null) }
     
     // Own company info for exclusion
     var ownCompanyNumber by remember { mutableStateOf<String?>(null) }
@@ -455,9 +468,17 @@ fun ReviewScanScreen(
         vatNumberField = parsed.vatNumber ?: ""
         companyNumberField = parsed.companyNumber ?: ""
         vatRateField = parsed.vatRate ?: ""
+        // Infer VAT rate from amounts when not explicitly found
+        var vatRateForTax = vatRateField.replace(",", ".").toDoubleOrNull()
+        if (vatRateForTax == null && amountWithoutVatField.isNotBlank() && vatAmountField.isNotBlank()) {
+            val amountVal = amountWithoutVatField.replace(",", ".").toDoubleOrNull()
+            val vatVal = vatAmountField.replace(",", ".").toDoubleOrNull()
+            vatRateForTax = com.vitol.inv3.export.TaxCodeDeterminer.calculateVatRate(amountVal, vatVal)
+            if (vatRateForTax != null) vatRateField = vatRateForTax.toInt().toString()
+        }
         val invoiceText = parsed.lines.joinToString(" ")
         val detectedTaxCode = com.vitol.inv3.export.TaxCodeDeterminer.determineTaxCode(
-            vatRateField.toDoubleOrNull(),
+            vatRateForTax,
             invoiceText
         )
         if (detectedTaxCode.isNotBlank()) taxCodeField = detectedTaxCode
@@ -522,6 +543,26 @@ fun ReviewScanScreen(
                             Text("Previous")
                         }
                     }
+                    if (fromImport && importSessionViewModel != null && extractionState is ImportExtractionState.Done) {
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    try {
+                                        val uri = importSessionViewModel!!.getUriForCurrentPage(context)
+                                        overlayInvoiceUri = uri
+                                        showInvoiceOverlay = true
+                                    } catch (e: Exception) {
+                                        Timber.w(e, "Failed to get invoice URI for preview")
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Image,
+                                contentDescription = "View original invoice"
+                            )
+                        }
+                    }
                     Text(
                         text = if (invoiceType == "S") "Sale" else "Purchase",
                         style = MaterialTheme.typography.bodySmall,
@@ -532,6 +573,7 @@ fun ReviewScanScreen(
         },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { paddingValues ->
+        Box(modifier = Modifier.fillMaxSize()) {
         if (((isLoading || isProcessing) && invoiceId == null && !fromImport) || isWaitingForNextInvoice) {
             Box(
                 modifier = Modifier
@@ -974,6 +1016,16 @@ fun ReviewScanScreen(
             }
         }
         }
+            if (showInvoiceOverlay && overlayInvoiceUri != null) {
+                InvoicePreviewOverlay(
+                    uri = overlayInvoiceUri!!,
+                    onDismiss = {
+                        showInvoiceOverlay = false
+                        overlayInvoiceUri = null
+                    }
+                )
+            }
+        }
         
         // Date picker dialog
         if (showDatePicker) {
@@ -1026,6 +1078,55 @@ fun ReviewScanScreen(
                         Text("Stay")
                     }
                 }
+            )
+        }
+    }
+}
+
+/**
+ * Full-screen overlay showing the original invoice at 2x zoom.
+ * User can pan by dragging. Tap anywhere (without holding) to dismiss and return to verification.
+ */
+@Composable
+private fun InvoicePreviewOverlay(
+    uri: Uri,
+    onDismiss: () -> Unit
+) {
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        offset += dragAmount
+                    },
+                    onDragEnd = { onDismiss() },
+                    onDragCancel = { onDismiss() }
+                )
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { onDismiss() })
+            }
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = 2f
+                    scaleY = 2f
+                    translationX = offset.x
+                    translationY = offset.y
+                    clip = true
+                }
+        ) {
+            AsyncImage(
+                model = uri,
+                contentDescription = "Original invoice",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
             )
         }
     }

@@ -6,6 +6,26 @@ package com.vitol.inv3.ocr
  * so "MB Švaros frontas" matches "Švaros frontas" and "UAB STATYBŲ FRONTAS" matches "Statybu frontas".
  */
 object CompanyNameUtils {
+    /**
+     * Normalize quotes in company names so "UAB "Augvitra'" becomes "UAB "Augvitra"".
+     * OCR often produces mixed typographic quotes; standardize to ASCII double quote.
+     * Only replaces trailing single quotes (closing quote), not apostrophes in names like O'Brien.
+     */
+    fun normalizeCompanyNameQuotes(name: String?): String {
+        if (name.isNullOrBlank()) return name ?: ""
+        var s = name
+            .replace('\u201C', '"')  // " left double
+            .replace('\u201D', '"')  // " right double
+        // Fix mismatched closing quote: "Name' -> "Name" (only trailing, preserves O'Brien)
+        if (s.contains('"') && s.length > 1) {
+            val last = s.last()
+            if (last == '\'' || last == '\u2018' || last == '\u2019') {
+                s = s.dropLast(1) + '"'
+            }
+        }
+        return s
+    }
+
     /** Legal form prefixes/suffixes to strip for core name comparison (Lithuanian and common). */
     private val LEGAL_FORMS = Regex(
         """\b(uab|ab|mb|iį|všį|vsi|ltd|oy|as|sp|uždaroji\s+akcinė\s+bendrovė|akcinė\s+bendrovė)\b""",

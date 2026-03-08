@@ -207,9 +207,22 @@ main {
     padding: 2rem 0;
 }
 
-.download-desc {
+.download-link {
+    display: inline-block;
     margin: 0 0 1rem;
-    color: var(--color-text-muted);
+    line-height: 0;
+}
+
+.play-badge-img {
+    height: 52px;
+    width: auto;
+    display: block;
+    transition: opacity 0.2s, transform 0.2s;
+}
+
+.download-link:hover .play-badge-img {
+    opacity: 0.9;
+    transform: translateY(-2px);
 }
 
 .play-badge {

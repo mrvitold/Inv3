@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="lt">
+<head>
+  <meta charset="UTF-8">
+  <title>Inv3 Feature Graphic Generator</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+      padding: 20px;
+      background: #333;
+    }
+    .preview {
+      background: #fff;
+      padding: 10px;
+      display: inline-block;
+      border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    #canvas { display: block; }
+    .controls { margin-top: 16px; }
+    button {
+      padding: 12px 24px;
+      font-size: 16px;
+      background: #2e7d32;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    button:hover { background: #1b5e20; }
+  </style>
+</head>
+<body>
+  <div class="preview">
+    <canvas id="canvas" width="1024" height="500"></canvas>
+  </div>
+  <div class="controls">
+    <button onclick="download()">Download feature_graphic_1024x500.png</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Gradient background (green theme)
+    const gradient = ctx.createLinearGradient(0, 0, 1024, 500);
+    gradient.addColorStop(0, '#c8e6c9');
+    gradient.addColorStop(0.5, '#81c784');
+    gradient.addColorStop(1, '#2e7d32');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 1024, 500);
+
+    // Left: rounded square "icon" area
+    const iconSize = 180;
+    const iconX = 80;
+    const iconY = (500 - iconSize) / 2;
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    roundRect(ctx, iconX, iconY, iconSize, iconSize, 24);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // Simple document + scan icon (simplified)
+    ctx.fillStyle = '#1b5e20';
+    ctx.fillRect(iconX + 40, iconY + 35, 60, 75);
+    ctx.strokeStyle = '#1b5e20';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(iconX + 55, iconY + 130);
+    ctx.lineTo(iconX + 85, iconY + 130);
+    ctx.lineTo(iconX + 95, iconY + 150);
+    ctx.lineTo(iconX + 65, iconY + 150);
+    ctx.closePath();
+    ctx.stroke();
+
+    // Main title "Inv3"
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 72px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Inv3', 300, 200);
+
+    // Subtitle
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.font = '32px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillText('Sąskaitų skenavimas ir XML generavimas i.SAF', 300, 280);
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    function download() {
+      const link = document.createElement('a');
+      link.download = 'feature_graphic_1024x500.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+  </script>
+</body>
+</html>

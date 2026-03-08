@@ -2,6 +2,7 @@ package com.vitol.inv3
 
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,16 +40,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -77,9 +74,12 @@ import timber.log.Timber
 import java.net.URLDecoder
 import javax.inject.Inject
 
+private const val NAV_STATE_KEY = "nav_state"
+
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: MainActivityViewModel
+    private var navControllerRef: NavHostController? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,12 +87,22 @@ class MainActivity : ComponentActivity() {
         // Initialize ViewModel for lifecycle-aware access in onResume
         viewModel = androidx.lifecycle.ViewModelProvider(this)[MainActivityViewModel::class.java]
         
+        val restoredNavState = savedInstanceState?.getBundle(NAV_STATE_KEY)
+        
         setContent {
             MaterialTheme {
                 val navController = rememberNavController()
+                navControllerRef = navController
+                // Restore navigation state once before NavHost sets graph - required when activity
+                // is recreated (e.g. after file picker opens and system destroys activity)
+                if (restoredNavState != null) {
+                    remember(restoredNavState) {
+                        navController.restoreState(restoredNavState)
+                        Unit
+                    }
+                }
                 val viewModel: MainActivityViewModel = hiltViewModel()
                 val scope = rememberCoroutineScope()
-                val lifecycleOwner = LocalLifecycleOwner.current
                 val context = LocalContext.current
                 val activity = context as? ComponentActivity
 
@@ -110,19 +120,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Force recomposition when returning from background - fixes black screen on some
-                // devices (e.g. Vivo) where the window surface is destroyed when backgrounded
-                var resumeKey by remember { mutableStateOf(0) }
-                DisposableEffect(lifecycleOwner) {
-                    val observer = LifecycleEventObserver { _, event ->
-                        if (event == Lifecycle.Event.ON_RESUME) {
-                            resumeKey++
-                        }
-                    }
-                    lifecycleOwner.lifecycle.addObserver(observer)
-                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-                }
-
                 // Handle deep links on creation
                 LaunchedEffect(Unit) {
                     handleIntent(intent, viewModel.authManager)
@@ -135,12 +132,21 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                key(resumeKey) {
-                    Surface(color = MaterialTheme.colorScheme.background) {
-                        AppNavHost(navController, viewModel.authManager)
-                    }
+                // Note: key(resumeKey) was removed - it recreated NavHost on every resume (e.g. when
+                // returning from file picker), which reset the back stack and sent users to Home.
+                // Nav state save/restore handles activity recreation. If black screen returns on
+                // some devices, we need a fix that doesn't recreate the NavHost.
+                Surface(color = MaterialTheme.colorScheme.background) {
+                    AppNavHost(navController, viewModel.authManager)
                 }
             }
+        }
+    }
+    
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        navControllerRef?.saveState()?.let { navState ->
+            outState.putBundle(NAV_STATE_KEY, navState)
         }
     }
     
@@ -450,6 +456,13 @@ fun HomeScreen(
     // Get subscription status for limit checks and upgrade dialog
     val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState()
 
+    /** True if user has an active own company with company_number and company_name filled. */
+    fun isOwnCompanyFilled(): Boolean {
+        val id = activeCompanyId ?: return false
+        val company = ownCompanies.find { it.id == id } ?: return false
+        return !company.company_number.isNullOrBlank() && !company.company_name.isNullOrBlank()
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -518,6 +531,10 @@ fun HomeScreen(
                     // Scan with Camera button
                     Button(
                         onClick = { 
+                            if (!isOwnCompanyFilled()) {
+                                Toast.makeText(context, "Fill your company data first", Toast.LENGTH_LONG).show()
+                                return@Button
+                            }
                             if (subscriptionStatus?.canScan == true) {
                                 navController.navigate(Routes.SelectInvoiceType)
                             } else {
@@ -537,6 +554,10 @@ fun HomeScreen(
                     // Import files button
                     Button(
                         onClick = { 
+                            if (!isOwnCompanyFilled()) {
+                                Toast.makeText(context, "Fill your company data first", Toast.LENGTH_LONG).show()
+                                return@Button
+                            }
                             if (subscriptionStatus?.canScan == true) {
                                 navController.navigate(Routes.SelectImportType)
                             } else {

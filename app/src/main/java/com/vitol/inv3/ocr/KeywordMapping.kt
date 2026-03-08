@@ -53,14 +53,15 @@ object FieldExtractors {
         "\\b([0-9]{4}[./-][01]?[0-9][./-][0-3]?[0-9]|[0-3]?[0-9][./-][01]?[0-9][./-][0-9]{4})\\b"
     )
     // Lithuanian month format: "2026 m. Sausio mėn. 13 d." or "2026 m. sausio 13 d."
+    // OCR variant: "lapkričio" -> "lapkri io" (č read as space)
     private val lithuanianMonthDateRegex = Regex(
-        "([0-9]{4})\\s*m\\.\\s*(sausio|vasario|kovo|balandžio|gegužės|birželio|liepos|rugpjūčio|rugsėjo|spalio|lapkričio|gruodžio)\\s*(?:mėn\\.?\\s*)?([0-3]?[0-9])\\s*d\\.?",
+        "([0-9]{4})\\s*m\\.\\s*(sausio|vasario|kovo|balandžio|gegužės|birželio|liepos|rugpjūčio|rugsėjo|spalio|lapkri[tc]?i?o?|lapkri\\s+io|gruodžio)\\s*(?:mėn\\.?\\s*)?([0-3]?[0-9])\\s*d\\.?",
         RegexOption.IGNORE_CASE
     )
     private val LITHUANIAN_MONTHS = mapOf(
         "sausio" to "01", "vasario" to "02", "kovo" to "03", "balandžio" to "04",
         "gegužės" to "05", "birželio" to "06", "liepos" to "07", "rugpjūčio" to "08",
-        "rugsėjo" to "09", "spalio" to "10", "lapkričio" to "11", "gruodžio" to "12"
+        "rugsėjo" to "09", "spalio" to "10", "lapkričio" to "11", "lapkri io" to "11", "gruodžio" to "12"
     )
     private val amountRegex = Regex(
         "([0-9]{1,6}(?:[\\s.,][0-9]{3})*[,\\.][0-9]{1,3}|[0-9]{1,6}[,\\.][0-9]{1,3}|[0-9]{1,6}(?:[\\s.,][0-9]{3})+[,\\.]?[0-9]{0,3})",
@@ -69,6 +70,8 @@ object FieldExtractors {
     // Lithuanian VAT number: MUST start with "LT" followed by digits (e.g., LT100008777514)
     // If there's no "LT" prefix, it's NOT a VAT number
     private val vatNumberRegex = Regex("\\b(LT[0-9A-Z]{8,12})\\b", RegexOption.IGNORE_CASE)
+    // OCR often misreads "LT" as "ILT" - fallback pattern
+    private val vatNumberOcrFallbackRegex = Regex("\\b(ILT|I\\s*LT)([0-9A-Z]{8,12})\\b", RegexOption.IGNORE_CASE)
     // Lithuanian company number: 9 digits starting with 1, 2, 3, or 4
     // Lithuanian company number: 9 digits starting with 1, 2, or 3, OR 6 digits (any starting digit)
     // No spaces or dashes allowed
@@ -140,15 +143,24 @@ object FieldExtractors {
         if (match != null) {
             val vatValue = match.groupValues.getOrNull(1)
             if (vatValue != null) {
-                // Normalize: remove spaces, uppercase
                 val normalizedVat = vatValue.replace(" ", "").uppercase()
-                // Normalize exclude value for comparison (remove spaces)
                 val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
-                // Exclude own company VAT number
                 if (normalizedExclude != null && normalizedVat.equals(normalizedExclude, ignoreCase = true)) {
-                    return null // This is own company VAT number, skip it
+                    return null
                 }
-                // Return normalized (no spaces, uppercase)
+                return normalizedVat
+            }
+        }
+        // OCR often misreads "LT" as "ILT" - try fallback
+        val ocrMatch = vatNumberOcrFallbackRegex.find(line)
+        if (ocrMatch != null) {
+            val digits = ocrMatch.groupValues.getOrNull(2)
+            if (digits != null) {
+                val normalizedVat = "LT${digits.replace(" ", "").uppercase()}"
+                val normalizedExclude = excludeOwnVatNumber?.replace(" ", "")?.uppercase()
+                if (normalizedExclude != null && normalizedVat.equals(normalizedExclude, ignoreCase = true)) {
+                    return null
+                }
                 return normalizedVat
             }
         }

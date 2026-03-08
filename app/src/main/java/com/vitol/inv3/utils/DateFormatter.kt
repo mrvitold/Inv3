@@ -21,6 +21,29 @@ object DateFormatter {
             return if (isValidDate(trimmed)) trimmed else null
         }
         
+        // Try Lithuanian format: "2025 m. lapkri io 7 d." or "2026 m. Sausio mėn. 13 d."
+        // OCR often reads "č" as space: "lapkričio" -> "lapkri io"
+        val lithuanianMonthRegex = Regex(
+            "([0-9]{4})\\s*m\\.\\s*(sausio|vasario|kovo|balandžio|gegužės|birželio|liepos|rugpjūčio|rugsėjo|spalio|lapkri[tc]?i?o?|lapkri\\s+io|gruodžio)\\s*(?:mėn\\.?\\s*)?([0-3]?[0-9])\\s*d\\.?",
+            RegexOption.IGNORE_CASE
+        )
+        val lithuanianMatch = lithuanianMonthRegex.find(trimmed)
+        if (lithuanianMatch != null) {
+            val year = lithuanianMatch.groupValues[1]
+            var monthKey = lithuanianMatch.groupValues[2].lowercase().replace("\\s+".toRegex(), " ")
+            if (monthKey == "lapkri io") monthKey = "lapkričio"
+            val day = lithuanianMatch.groupValues[3].padStart(2, '0')
+            val monthMap = mapOf(
+                "sausio" to "01", "vasario" to "02", "kovo" to "03", "balandžio" to "04",
+                "gegužės" to "05", "birželio" to "06", "liepos" to "07", "rugpjūčio" to "08",
+                "rugsėjo" to "09", "spalio" to "10", "lapkričio" to "11", "gruodžio" to "12"
+            )
+            val month = monthMap[monthKey]
+            if (month != null && day.toIntOrNull() in 1..31) {
+                return "$year-$month-$day"
+            }
+        }
+        
         // Try common date formats
         val dateFormats = listOf(
             "dd.MM.yyyy",

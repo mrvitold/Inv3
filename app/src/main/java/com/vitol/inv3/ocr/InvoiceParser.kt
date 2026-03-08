@@ -499,8 +499,8 @@ object InvoiceParser {
                     val labelPattern = Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier)$", RegexOption.IGNORE_CASE)
                     
                     // For purchase invoices, also check if this line contains "Tiekėjas" and extract from next line
-                    // Handle Lithuanian characters: "tiekėjas" contains 'ė', so use case-insensitive contains
-                    val containsTiekejas = l.contains("tiekėjas", ignoreCase = true) || l.contains("tiekejas", ignoreCase = true)
+                    // Handle Lithuanian characters and OCR variants: "tiekėjas", "tiekejas", "tiek jas" (OCR)
+                    val containsTiekejas = l.contains("tiekėjas", ignoreCase = true) || l.contains("tiekejas", ignoreCase = true) || l.contains("tiek jas", ignoreCase = true)
                     if (isPurchaseInvoice && containsTiekejas && l.length <= 25) {
                         // Look for company name in next 1-3 lines after "Tiekėjas"
                         for (offset in 1..3) {
@@ -1230,12 +1230,15 @@ object InvoiceParser {
             }
         }
 
-        Timber.d("InvoiceParser.parse completed - InvoiceID: '$invoiceId', Date: '$date', CompanyName: '$finalCompanyName', " +
+        // Ensure date is always YYYY-MM-DD format
+        val normalizedDate = date?.let { com.vitol.inv3.utils.DateFormatter.formatDateForDatabase(it) } ?: date
+        
+        Timber.d("InvoiceParser.parse completed - InvoiceID: '$invoiceId', Date: '$normalizedDate', CompanyName: '$finalCompanyName', " +
                 "AmountNoVat: '$amountNoVat', VatAmount: '$vatAmount', VatNumber: '$vatNumber', CompanyNumber: '$companyNumber', VatRate: '$vatRate'")
         return ParsedInvoice(
             invoiceId = invoiceId,
-            date = date,
-            companyName = finalCompanyName,
+            date = normalizedDate,
+            companyName = finalCompanyName?.let { CompanyNameUtils.normalizeCompanyNameQuotes(it) },
             amountWithoutVatEur = amountNoVat,
             vatAmountEur = vatAmount,
             vatNumber = vatNumber,
@@ -1657,7 +1660,7 @@ object InvoiceParser {
                     // Only accept if it has company type suffix
                     if (hasCompanyType) {
                         val cleaned = nextLine.trim()
-                            .replace(Regex("^(imone|kompanija|bendrove|company|pvm|kodas|numeris|registracijos|saskaita|faktura|invoice|pardavejas|tiekejas)[:\\s]+", RegexOption.IGNORE_CASE), "")
+                            .replace(Regex("^(imone|kompanija|bendrove|company|pvm|kodas|numeris|registracijos|saskaita|faktura|invoice|pardav[eė]jas|tiek[eė]jas|pirk[eė]jas|gav[eė]jas)[:\\s]+", RegexOption.IGNORE_CASE), "")
                             .replace(Regex("[:\\s]+(kodas|numeris|pvm|vat|saskaita|faktura|invoice).*$", RegexOption.IGNORE_CASE), "")
                             .trim()
                         if (cleaned.isNotBlank() && cleaned.length > 5 && 
@@ -1744,9 +1747,8 @@ object InvoiceParser {
                         val candidateLine = lines[candidateIndex].trim()
                         val candidateLower = candidateLine.lowercase()
                         
-                        // Skip labels
-                        val labelPattern = Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier|imone|kompanija|bendrove|company)$", RegexOption.IGNORE_CASE)
-                        if (candidateLower.matches(labelPattern)) {
+                        // Skip labels (including with colon: "Pirkėjas:", "Pardavėjas:")
+                        if (isKnownSectionLabel(candidateLine)) {
                             continue
                         }
                         
@@ -1778,9 +1780,8 @@ object InvoiceParser {
                         val candidateLine = lines[candidateIndex].trim()
                         val candidateLower = candidateLine.lowercase()
                         
-                        // Skip labels
-                        val labelPattern = Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier|imone|kompanija|bendrove|company)$", RegexOption.IGNORE_CASE)
-                        if (candidateLower.matches(labelPattern)) {
+                        // Skip labels (including with colon: "Pirkėjas:", "Pardavėjas:")
+                        if (isKnownSectionLabel(candidateLine)) {
                             continue
                         }
                         
@@ -1875,8 +1876,11 @@ object InvoiceParser {
             for (i in lines.indices) {
                 val line = lines[i]
                 val l = line.lowercase().trim()
-                // More flexible label detection - check if line contains the keyword
-                val isLabel = l == priorityKeyword || 
+                val normL = normalizeForLabelCompare(l)
+                val normKw = normalizeForLabelCompare(priorityKeyword)
+                // More flexible label detection - use normalized compare so "Tiek jas :" (OCR) matches "tiekejas"
+                val isLabel = normL == normKw ||
+                             (normL.contains(normKw) && l.length <= 25) ||
                              (l.contains(priorityKeyword) && l.length <= 25) ||
                              l.matches(Regex(".*\\b$priorityKeyword\\b.*", RegexOption.IGNORE_CASE))
                 
@@ -1950,10 +1954,12 @@ object InvoiceParser {
         for (i in lines.indices) {
             val line = lines[i]
             val l = line.lowercase().trim()
-            // Check if this line is a label (but skip if already checked in priority pass)
+            val normL = normalizeForLabelCompare(l)
+            // Check if this line is a label (use normalized compare for OCR variants like "tiek jas")
             val isLabel = labelKeywords.any { keyword -> 
-                l == keyword || 
-                (l.contains(keyword) && l.length < 20) ||
+                normL == normalizeForLabelCompare(keyword) ||
+                (normL.contains(normalizeForLabelCompare(keyword)) && l.length < 20) ||
+                l == keyword || (l.contains(keyword) && l.length < 20) ||
                 l.matches(Regex(".*\\b$keyword\\b.*", RegexOption.IGNORE_CASE))
             }
             
@@ -2016,10 +2022,12 @@ object InvoiceParser {
         return null
     }
     
-    /** Normalize Lithuanian chars (ė, ē, į, ą, etc.) to ASCII for label matching so "PARDAVĖJAS" matches "pardavejas". */
+    /** Normalize Lithuanian chars (ė, ē, į, ą, etc.) to ASCII for label matching so "PARDAVĖJAS" matches "pardavejas".
+     * Also normalizes OCR-mangled variants where "ė" is read as space: "tiek jas" -> "tiekejas", etc. */
     private fun normalizeForLabelCompare(s: String?): String {
         if (s.isNullOrBlank()) return ""
-        return s.trim().lowercase()
+        var n = s.trim().lowercase()
+            .replace(Regex("[:\\s]+$"), "")  // Strip trailing colons and spaces (e.g. "Pirkėjas:" -> "pirkėjas")
             .replace('\u0117', 'e')  // ė
             .replace('\u0113', 'e')  // ē
             .replace('\u012f', 'i')  // į
@@ -2028,6 +2036,12 @@ object InvoiceParser {
             .replace('\u0173', 'u')  // ų
             .replace('\u016b', 'u')  // ū
             .replace(Regex("\\s+"), " ")
+        // OCR often reads "ė" as space: "Tiekėjas" -> "Tiek jas", "Pardavėjas" -> "Pardav jas"
+        n = n.replace("tiek jas", "tiekejas").replace("tiek ejas", "tiekejas")
+        n = n.replace("pardav jas", "pardavejas").replace("pardav ejas", "pardavejas")
+        n = n.replace("pirk jas", "pirkejas").replace("pirk ejas", "pirkejas")
+        n = n.replace("gav jas", "gavejas").replace("gav ejas", "gavejas")
+        return n
     }
     
     /** Known section headers that must never be used as company name (seller, buyer, etc.). */
@@ -2089,8 +2103,13 @@ object InvoiceParser {
         // Preserve quotes in company names (e.g., "UAB "Vilniaus rentvėjus"")
         var cleaned = line.trim()
         
-        // Remove label prefixes but preserve quotes
-        cleaned = cleaned.replace(Regex("^(imone|kompanija|bendrove|company|pvm|kodas|numeris|registracijos|saskaita|faktura|invoice|pardavejas|tiekejas)[:\\s]+", RegexOption.IGNORE_CASE), "")
+        // Remove label prefixes (Pardavėjas:, Pirkėjas:, Tiekėjas:, Gavėjas:, etc.)
+        // Use [eė] for Lithuanian ė; also match OCR variant "tiek jas" (space instead of ė)
+        val prefixPattern = Regex(
+            "^(imone|kompanija|bendrove|company|pvm|kodas|numeris|registracijos|saskaita|faktura|invoice|pardav[eė\\s]jas|tiek[eė\\s]jas|pirk[eė\\s]jas|gav[eė\\s]jas)[:\\s]+",
+            RegexOption.IGNORE_CASE
+        )
+        cleaned = prefixPattern.replace(cleaned, "")
         
         // Remove trailing labels and codes, but preserve quotes
         cleaned = cleaned.replace(Regex("[:\\s]+(kodas|numeris|pvm|vat|saskaita|faktura|invoice).*$", RegexOption.IGNORE_CASE), "")
@@ -2105,8 +2124,8 @@ object InvoiceParser {
         
         val cleanedLower = cleaned.lowercase()
         
-        // Reject if it's a label
-        if (cleanedLower.matches(Regex("^(pardavejas|tiekejas|gavejas|pirkėjas|seller|buyer|recipient|supplier)$"))) {
+        // Reject if it's a label (with or without trailing colon)
+        if (isKnownSectionLabel(cleaned)) {
             return null
         }
         
@@ -2121,7 +2140,7 @@ object InvoiceParser {
             !cleanedLower.contains("saskaita") &&
             !cleanedLower.contains("faktura") &&
             !cleanedLower.contains("invoice")) {
-            return cleaned
+            return CompanyNameUtils.normalizeCompanyNameQuotes(cleaned)
         }
         return null
     }

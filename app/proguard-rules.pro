@@ -21,7 +21,8 @@
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
-# Apache POI removed - Excel export now uses CSV (opens in Excel/Sheets)
+# Apache POI for Excel (.xlsx) export
+-keep class org.apache.poi.** { *; }
 -dontwarn org.slf4j.impl.StaticLoggerBinder
 
 # Additional missing classes for other deps (JavaParser, Maven, Ant, Saxon, etc.)

@@ -371,53 +371,56 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 }
                 
                 // VAT number extraction - prioritize based on invoice type
+                // Normalize OCR error "ILT" -> "LT" before validation
+                fun normalizeVatFromOcr(raw: String): String {
+                    val v = raw.trim().uppercase().replace(" ", "")
+                    return when {
+                        v.startsWith("LT") -> v
+                        v.startsWith("ILT") -> "LT" + v.removePrefix("ILT")
+                        else -> v
+                    }
+                }
                 if (isSalesInvoice) {
                     // SALES INVOICE: Extract customer VAT (buyer), exclude vendor VAT (seller = own company)
                     fieldString(fields.get("CustomerTaxId"))?.let {
-                        val vatValue = it.trim().uppercase()
-                        // Only accept if it starts with "LT" and exclude own company VAT number
+                        val vatValue = normalizeVatFromOcr(it)
                         if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
                             vatNumber = vatValue
                             Timber.d("Azure: [SALES] Extracted VAT number from CustomerTaxId: $vatNumber")
                         } else {
-                            Timber.d("Azure: [SALES] Skipped CustomerTaxId '$vatValue' (no LT prefix or matches own company)")
+                            Timber.d("Azure: [SALES] Skipped CustomerTaxId '$it' (no LT prefix or matches own company)")
                         }
                     }
-                    // Fallback to VendorTaxId only if CustomerTaxId wasn't found (shouldn't happen for sales invoices)
                     if (vatNumber == null) {
                         fieldString(fields.get("VendorTaxId"))?.let {
-                            val vatValue = it.trim().uppercase()
-                            // Exclude own company VAT number - for sales invoices, vendor is usually own company
+                            val vatValue = normalizeVatFromOcr(it)
                             if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
                                 vatNumber = vatValue
                                 Timber.d("Azure: [SALES] Fallback: Extracted VAT number from VendorTaxId: $vatNumber")
                             } else {
-                                Timber.d("Azure: [SALES] Skipped VendorTaxId '$vatValue' (no LT prefix or matches own company)")
+                                Timber.d("Azure: [SALES] Skipped VendorTaxId '$it' (no LT prefix or matches own company)")
                             }
                         }
                     }
                 } else {
                     // PURCHASE INVOICE: Extract vendor VAT (seller), exclude customer VAT (buyer = own company)
                     fieldString(fields.get("VendorTaxId"))?.let {
-                        val vatValue = it.trim().uppercase()
-                        // Only accept if it starts with "LT" and exclude own company VAT number
+                        val vatValue = normalizeVatFromOcr(it)
                         if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
                             vatNumber = vatValue
                             Timber.d("Azure: [PURCHASE] Extracted VAT number from VendorTaxId: $vatNumber")
                         } else {
-                            Timber.d("Azure: [PURCHASE] Skipped VendorTaxId '$vatValue' (no LT prefix or matches own company)")
+                            Timber.d("Azure: [PURCHASE] Skipped VendorTaxId '$it' (no LT prefix or matches own company)")
                         }
                     }
-                    // Fallback to CustomerTaxId only if VendorTaxId wasn't found
                     if (vatNumber == null) {
                         fieldString(fields.get("CustomerTaxId"))?.let {
-                            val vatValue = it.trim().uppercase()
-                            // Only accept if it starts with "LT" and exclude own company VAT number
+                            val vatValue = normalizeVatFromOcr(it)
                             if (vatValue.startsWith("LT") && (excludeOwnVatNumber == null || !vatValue.equals(excludeOwnVatNumber, ignoreCase = true))) {
                                 vatNumber = vatValue
                                 Timber.d("Azure: [PURCHASE] Fallback: Extracted VAT number from CustomerTaxId: $vatNumber")
                             } else {
-                                Timber.d("Azure: [PURCHASE] Skipped CustomerTaxId '$vatValue' (no LT prefix or matches own company)")
+                                Timber.d("Azure: [PURCHASE] Skipped CustomerTaxId '$it' (no LT prefix or matches own company)")
                             }
                         }
                     }
@@ -564,19 +567,22 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             Timber.d("Azure: Extracted VAT amount from text: $vatAmount")
         }
         
-        // Extract company name from text if not found or doesn't have company type suffix
-        if ((companyName == null || !hasCompanyTypeSuffix(companyName)) && parsedFromText.companyName != null) {
-            val extractedCompanyName = parsedFromText.companyName
-            if (hasCompanyTypeSuffix(extractedCompanyName)) {
-                // Exclude own company name (fuzzy match handles variations like "MB Švaros frontas" vs "Švaros frontas")
-                if (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(extractedCompanyName, excludeOwnCompanyName)) {
-                    companyName = extractedCompanyName
-                    Timber.d("Azure: Extracted company name from text: $companyName")
-                } else {
-                    Timber.d("Azure: Skipped company name '$extractedCompanyName' from text (matches own company name)")
-                }
+        // Prefer text-based company name over document fields (VendorName/CustomerName).
+        // Document fields can come from logo OCR; text comes from structured sections (Pardavėjas/Pirkėjas).
+        // Never use section labels (Pirkėjas:, Pardavėjas:) as company name.
+        val textCompanyName = parsedFromText.companyName
+        if (textCompanyName != null && !isSectionLabel(textCompanyName) && hasCompanyTypeSuffix(textCompanyName)) {
+            if (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(textCompanyName, excludeOwnCompanyName)) {
+                companyName = textCompanyName
+                Timber.d("Azure: Preferring company name from text over document fields: $companyName")
             } else {
-                Timber.d("Azure: Extracted company name '$extractedCompanyName' doesn't have company type suffix")
+                Timber.d("Azure: Skipped company name '$textCompanyName' from text (matches own company name)")
+            }
+        } else if (companyName == null && textCompanyName != null && !isSectionLabel(textCompanyName)) {
+            // Fallback: use text even without suffix when document fields gave nothing
+            if (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(textCompanyName, excludeOwnCompanyName)) {
+                companyName = textCompanyName
+                Timber.d("Azure: Extracted company name from text (no suffix): $companyName")
             }
         }
         
@@ -614,12 +620,17 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
         }
         
-        // Final fallback: try advanced company name extraction from text if still not found
-        if ((companyName == null || !hasCompanyTypeSuffix(companyName)) && lines.isNotEmpty()) {
+        // Advanced extraction from text (Pardavėjas/Pirkėjas sections) - prefer over document fields
+        if (lines.isNotEmpty()) {
             val extractedCompanyName = InvoiceParser.extractCompanyNameAdvanced(lines, companyNumber, vatNumber, excludeOwnCompanyNumber, excludeOwnCompanyName, invoiceType)
-            if (extractedCompanyName != null && hasCompanyTypeSuffix(extractedCompanyName)) {
+            if (extractedCompanyName != null && !isSectionLabel(extractedCompanyName) && hasCompanyTypeSuffix(extractedCompanyName) &&
+                (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(extractedCompanyName, excludeOwnCompanyName))) {
                 companyName = extractedCompanyName
-                Timber.d("Azure: Extracted company name using advanced extraction: $companyName")
+                Timber.d("Azure: Preferring company name from advanced text extraction: $companyName")
+            } else if (companyName == null && extractedCompanyName != null && !isSectionLabel(extractedCompanyName) &&
+                (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(extractedCompanyName, excludeOwnCompanyName))) {
+                companyName = extractedCompanyName
+                Timber.d("Azure: Extracted company name using advanced extraction (no suffix): $companyName")
             }
         }
         
@@ -647,15 +658,30 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         
         // Extract VAT rate from text if available
         var vatRate: String? = parsedFromText.vatRate
+        // Infer VAT rate from amounts when not explicitly found (e.g. 143.90/685.23 ≈ 21%)
+        val amtNoVat = amountNoVat
+        val vatAmt = vatAmount
+        if (vatRate.isNullOrBlank() && amtNoVat != null && vatAmt != null) {
+            val amountVal = amtNoVat.replace(",", ".").toDoubleOrNull()
+            val vatVal = vatAmt.replace(",", ".").toDoubleOrNull()
+            val inferredRate = com.vitol.inv3.export.TaxCodeDeterminer.calculateVatRate(amountVal, vatVal)
+            if (inferredRate != null) {
+                vatRate = inferredRate.toInt().toString()
+                Timber.d("Azure: Inferred VAT rate $vatRate% from amounts (amountNoVat=$amtNoVat, vatAmount=$vatAmt)")
+            }
+        }
         
-        Timber.d("Azure Extracted - InvoiceID: $invoiceId, Date: $date, Company: $companyName, " +
+        // Ensure date is always YYYY-MM-DD format
+        val normalizedDate = date?.let { com.vitol.inv3.utils.DateFormatter.formatDateForDatabase(it) } ?: date
+        
+        Timber.d("Azure Extracted - InvoiceID: $invoiceId, Date: $normalizedDate, Company: $companyName, " +
                 "AmountNoVat: $amountNoVat, VatAmount: $vatAmount, " +
                 "VatNumber: $vatNumber, CompanyNumber: $companyNumber, VatRate: $vatRate")
         
         return ParsedInvoice(
             invoiceId = invoiceId,
-            date = date,
-            companyName = companyName,
+            date = normalizedDate,
+            companyName = companyName?.let { CompanyNameUtils.normalizeCompanyNameQuotes(it) },
             amountWithoutVatEur = amountNoVat,
             vatAmountEur = vatAmount,
             vatNumber = vatNumber,
@@ -664,6 +690,17 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             lines = lines,
             extractionMessage = if (lines.isEmpty()) emptyExtractionMessage else null
         )
+    }
+    
+    /** Section labels (Pardavėjas, Pirkėjas, etc.) must never be used as company name.
+     * Includes OCR variants where "ė" is read as space: "tiek jas" -> Tiekėjas. */
+    private fun isSectionLabel(name: String?): Boolean {
+        if (name.isNullOrBlank()) return true
+        var n = name.trim().lowercase().replace(Regex("[:\\s]+$"), "").replace(Regex("\\s+"), " ")
+        // OCR often reads "ė" as space
+        n = n.replace("tiek jas", "tiekejas").replace("pardav jas", "pardavejas")
+        n = n.replace("pirk jas", "pirkejas").replace("gav jas", "gavejas")
+        return n in setOf("pardavejas", "tiekejas", "gavejas", "pirkėjas", "pirkėjo", "pirkejas", "seller", "buyer", "recipient", "supplier", "imone", "kompanija", "bendrove", "company")
     }
     
     /**
@@ -796,7 +833,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     }
     
     private fun normalizeDate(dateStr: String): String? {
-        // Azure returns dates in ISO 8601 format: "2025-01-15" or "2025-01-15T00:00:00Z"
+        // Azure returns dates in ISO 8601 or raw OCR (e.g. "2025 m. lapkri io 7 d.")
+        // Always convert to YYYY-MM-DD format
         return try {
             val cleaned = dateStr.trim()
             // If already in YYYY-MM-DD format, return as-is
@@ -805,12 +843,14 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             }
             // If has time component, extract just the date part
             if (cleaned.contains("T")) {
-                return cleaned.substring(0, 10)
+                val datePart = cleaned.substring(0, 10)
+                if (datePart.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return datePart
             }
-            cleaned
+            // Use DateFormatter for Lithuanian and other formats -> YYYY-MM-DD
+            com.vitol.inv3.utils.DateFormatter.formatDateForDatabase(cleaned)
         } catch (e: Exception) {
             Timber.w(e, "Failed to normalize date: $dateStr")
-            dateStr
+            null
         }
     }
 }

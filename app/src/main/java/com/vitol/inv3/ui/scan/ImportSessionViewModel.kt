@@ -267,6 +267,16 @@ class ImportSessionViewModel @Inject constructor(
                 Timber.d("Import merge: filled VAT rate from combined lines: $vatRate")
             }
         }
+        // Infer VAT rate from amounts when not explicitly found
+        if (vatRate.isNullOrBlank() && amountNoVat != null && vatAmount != null) {
+            val amountVal = amountNoVat.replace(",", ".").toDoubleOrNull()
+            val vatVal = vatAmount.replace(",", ".").toDoubleOrNull()
+            val inferredRate = com.vitol.inv3.export.TaxCodeDeterminer.calculateVatRate(amountVal, vatVal)
+            if (inferredRate != null) {
+                vatRate = inferredRate.toInt().toString()
+                Timber.d("Import merge: inferred VAT rate $vatRate% from amounts")
+            }
+        }
 
         // Log per-page values for debugging
         pages.forEachIndexed { i, p ->
