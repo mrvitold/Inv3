@@ -27,8 +27,8 @@ android {
         applicationId = "com.vitol.inv3"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.13"
+        versionCode = 17
+        versionName = "1.17"
         ndkVersion = "28.1.13356709"  // NDK r28: 16 KB page size support on by default
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -96,9 +96,10 @@ android {
             excludes += "/META-INF/INDEX.LIST"
             excludes += "/META-INF/DEPENDENCIES"
         }
-        // 16 KB page size: compress native libs for compatibility with 16 KB devices (Android 15+)
+        // 16 KB page size: use default uncompressed native libs (AGP 8.5.1+ aligns them on 16 KB boundary
+        // for Google Play compatibility requirement). NDK r28 compiles 16 KB-aligned by default.
         jniLibs {
-            useLegacyPackaging = true
+            useLegacyPackaging = false
         }
     }
 
@@ -107,6 +108,18 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+configurations.configureEach {
+    resolutionStrategy {
+        // Force CameraX 1.4.2+ for 16 KB page size (ML Kit/other deps may pull older versions)
+        force(
+            "androidx.camera:camera-core:1.5.3",
+            "androidx.camera:camera-camera2:1.5.3",
+            "androidx.camera:camera-lifecycle:1.5.3",
+            "androidx.camera:camera-view:1.5.3"
+        )
+    }
 }
 
 dependencies {
@@ -130,15 +143,15 @@ dependencies {
     kapt("com.google.dagger:hilt-compiler:2.52")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
-    // CameraX
-    val cameraxVersion = "1.3.4"
+    // CameraX (1.4.2+ required for 16 KB page size; 1.5.x has 16 KB-aligned native libs)
+    val cameraxVersion = "1.5.3"
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
-    implementation("androidx.camera:camera-view:1.3.4")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
 
-    // ML Kit Text Recognition v2 (Latin)
-    implementation("com.google.mlkit:text-recognition:16.0.0")
+    // ML Kit Text Recognition v2 (Latin) - 16.0.1 has 16 KB page size support
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.1.1")
@@ -168,12 +181,6 @@ dependencies {
     // Serialization (compatible with Kotlin 1.9.25)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
-    // Apache POI for Excel (.xlsx) export
-    implementation("org.apache.poi:poi:5.2.5")
-    implementation("org.apache.poi:poi-ooxml:5.2.5") {
-        exclude(group = "org.apache.logging.log4j")
-        exclude(group = "commons-logging")
-    }
     // SLF4J no-op binding (required by transitive deps; prevents R8 "missing StaticLoggerBinder" error)
     implementation("org.slf4j:slf4j-nop:2.0.16")
 

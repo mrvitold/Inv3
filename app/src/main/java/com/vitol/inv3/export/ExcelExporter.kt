@@ -7,7 +7,6 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import com.vitol.inv3.data.remote.CompanyRecord
-import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -31,48 +30,45 @@ private const val XLSX_EXT = ".xlsx"
 private const val MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 /**
- * Exports invoices to Excel (.xlsx) format using Apache POI.
+ * Exports invoices to Excel (.xlsx) format using a lightweight pure-Java writer.
+ * No Apache POI (incompatible with Android).
  */
 class ExcelExporter(private val context: Context) {
 
     /** Strip decorative quotes from company names for export (e.g. UAB "Bauen" -> UAB Bauen). */
     private fun stripDecorativeQuotes(name: String?): String {
         if (name.isNullOrBlank()) return ""
-        return name!!.replace("\"", "").trim()
+        return name.replace("\"", "").trim()
     }
 
-    private fun buildWorkbook(invoices: List<ExportInvoice>, company: CompanyRecord?): XSSFWorkbook {
-        val wb = XSSFWorkbook()
-        val sheet = wb.createSheet("Invoices")
-        var rowIdx = 0
+    private fun buildWorkbook(invoices: List<ExportInvoice>, company: CompanyRecord?): SimpleXlsxWriter {
+        val writer = SimpleXlsxWriter("Invoices")
 
         if (company != null) {
             val companyDisplay = stripDecorativeQuotes(company.company_name ?: company.company_number ?: "Unknown")
-            val row = sheet.createRow(rowIdx++)
-            row.createCell(0).setCellValue("Export for: $companyDisplay")
+            writer.addRow("Export for: $companyDisplay")
         }
 
-        val header = listOf(
+        writer.addRow(
             "Date", "Invoice_ID", "Company_name", "Amount_without_VAT_EUR", "VAT_amount_EUR",
             "VAT_number", "Company_number", "Invoice_Type", "Tax_Code"
         )
-        val headerRow = sheet.createRow(rowIdx++)
-        header.forEachIndexed { i, h -> headerRow.createCell(i).setCellValue(h) }
 
         invoices.forEach { inv ->
-            val row = sheet.createRow(rowIdx++)
-            row.createCell(0).setCellValue(inv.date ?: "")
-            row.createCell(1).setCellValue(inv.invoiceId ?: "")
-            row.createCell(2).setCellValue(stripDecorativeQuotes(inv.companyName))
-            row.createCell(3).setCellValue(inv.amountWithoutVatEur ?: 0.0)
-            row.createCell(4).setCellValue(inv.vatAmountEur ?: 0.0)
-            row.createCell(5).setCellValue(inv.vatNumber ?: "")
-            row.createCell(6).setCellValue(inv.companyNumber ?: "")
-            row.createCell(7).setCellValue(inv.invoiceType ?: "")
-            row.createCell(8).setCellValue(inv.taxCode ?: "")
+            writer.addRow(
+                inv.date ?: "",
+                inv.invoiceId ?: "",
+                stripDecorativeQuotes(inv.companyName),
+                inv.amountWithoutVatEur ?: 0.0,
+                inv.vatAmountEur ?: 0.0,
+                inv.vatNumber ?: "",
+                inv.companyNumber ?: "",
+                inv.invoiceType ?: "",
+                inv.taxCode ?: ""
+            )
         }
 
-        return wb
+        return writer
     }
 
     private fun getFileName(month: String?): String {
@@ -85,8 +81,8 @@ class ExcelExporter(private val context: Context) {
     fun export(invoices: List<ExportInvoice>, month: String? = null, company: CompanyRecord? = null): Uri {
         val fileName = getFileName(month)
         val outFile = File(context.cacheDir, fileName)
-        buildWorkbook(invoices, company).use { wb ->
-            FileOutputStream(outFile).use { wb.write(it) }
+        FileOutputStream(outFile).use { out ->
+            buildWorkbook(invoices, company).writeTo(out)
         }
         return androidx.core.content.FileProvider.getUriForFile(
             context,
@@ -108,7 +104,7 @@ class ExcelExporter(private val context: Context) {
                 val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
                 if (uri != null) {
                     context.contentResolver.openOutputStream(uri)?.use { out ->
-                        buildWorkbook(invoices, company).use { wb -> wb.write(out) }
+                        buildWorkbook(invoices, company).writeTo(out)
                     }
                     Timber.d("File saved to Downloads: $fileName")
                     "Saved to Downloads/$fileName"
@@ -121,7 +117,7 @@ class ExcelExporter(private val context: Context) {
                 if (!downloadsDir.exists()) downloadsDir.mkdirs()
                 val file = File(downloadsDir, fileName)
                 FileOutputStream(file).use { out ->
-                    buildWorkbook(invoices, company).use { wb -> wb.write(out) }
+                    buildWorkbook(invoices, company).writeTo(out)
                 }
                 Timber.d("File saved to Downloads: ${file.absolutePath}")
                 "Saved to Downloads/$fileName"
