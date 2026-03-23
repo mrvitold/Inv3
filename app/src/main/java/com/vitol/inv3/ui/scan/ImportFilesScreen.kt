@@ -92,7 +92,7 @@ fun ImportFilesScreen(
                 return@LaunchedEffect
             }
             val totalCount = pages.size
-            if (!subscriptionViewModel.canScanPages(totalCount)) {
+            if (!subscriptionViewModel.canScanPagesFresh(totalCount)) {
                 showUpgradeDialog = true
                 return@LaunchedEffect
             }

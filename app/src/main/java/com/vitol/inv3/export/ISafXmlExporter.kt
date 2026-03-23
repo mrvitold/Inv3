@@ -707,21 +707,17 @@ class ISafXmlExporter(private val context: Context) {
         taxCode.textContent = determinedTaxCode
         documentTotal.appendChild(taxCode)
         
-        // TaxPercentage (nullable, VAT rate as percentage)
+        // TaxPercentage (xs:decimal — empty element is invalid; always emit a value)
         val taxPercentage = doc.createElementNS(NAMESPACE, "TaxPercentage")
-        val vatRate = invoice.vat_rate
-        if (vatRate != null && vatRate >= 0) {
-            taxPercentage.textContent = formatQuantity(vatRate)
-        } else {
-            // Calculate from amounts if not set
-            val calculatedRate = TaxCodeDeterminer.calculateVatRate(
+        val storedRate = invoice.vat_rate?.let { VatRateValidation.sanitizeStoredPercent(it) }
+        val resolvedRate = when {
+            storedRate != null && storedRate >= 0 -> storedRate
+            else -> TaxCodeDeterminer.calculateVatRate(
                 invoice.amount_without_vat_eur,
                 invoice.vat_amount_eur
             )
-            if (calculatedRate != null) {
-                taxPercentage.textContent = formatQuantity(calculatedRate)
-            }
-        }
+        } ?: 0.0
+        taxPercentage.textContent = formatQuantity(resolvedRate)
         documentTotal.appendChild(taxPercentage)
         
         // Amount (nullable, VAT amount)

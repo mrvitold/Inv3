@@ -40,6 +40,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -219,7 +220,7 @@ fun SelectImportTypeScreen(navController: NavController) {
         when (val result = buildPagesResult) {
             is BuildPagesResult.Success -> {
                 importSessionViewModel.clearBuildPagesResult()
-                if (!subscriptionViewModel.canScanPages(result.pages.size)) {
+                if (!subscriptionViewModel.canScanPagesFresh(result.pages.size)) {
                     showUpgradeDialog = true
                 } else {
                     importSessionViewModel.startSession(result.pages, result.invoiceType)
@@ -393,6 +394,9 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val subscriptionViewModel: SubscriptionViewModel = hiltViewModel()
+    val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState(initial = null)
+    var showUpgradeDialog by remember { mutableStateOf(false) }
     
     var hasCameraPermission by remember { mutableStateOf(false) }
     var permissionJustGranted by remember { mutableStateOf(false) }
@@ -498,24 +502,42 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
                 // Show camera preview with capture button
                 CameraPreview(
                     onImageCaptured = { uri ->
-                        if (uri != null) {
-                            // URL-encode the URI string for navigation
-                            val encodedUri = java.net.URLEncoder.encode(uri.toString(), "UTF-8")
-                            val encodedInvoiceType = URLEncoder.encode(invoiceType, "UTF-8")
-                            navController.navigate("${Routes.ReviewScan}/$encodedUri/$encodedInvoiceType") {
-                                popUpTo(Routes.SelectInvoiceType) { inclusive = false }
+                        scope.launch {
+                            try {
+                                if (uri == null) {
+                                    snackbarHostState.showSnackbar("Failed to capture image")
+                                    return@launch
+                                }
+                                if (!subscriptionViewModel.canScanPagesFresh(1)) {
+                                    showUpgradeDialog = true
+                                    return@launch
+                                }
+                                val encodedUri = java.net.URLEncoder.encode(uri.toString(), "UTF-8")
+                                val encodedInvoiceType = URLEncoder.encode(invoiceType, "UTF-8")
+                                navController.navigate("${Routes.ReviewScan}/$encodedUri/$encodedInvoiceType") {
+                                    popUpTo(Routes.SelectInvoiceType) { inclusive = false }
+                                }
+                            } finally {
+                                isCapturing = false
                             }
-                        } else {
-                            scope.launch {
-                                snackbarHostState.showSnackbar("Failed to capture image")
-                            }
-                            isCapturing = false
                         }
                     },
                     isCapturing = isCapturing,
                     onCapturingChanged = { isCapturing = it }
                 )
             }
+        }
+        if (showUpgradeDialog) {
+            UpgradeDialog(
+                subscriptionStatus = subscriptionStatus,
+                onDismiss = { showUpgradeDialog = false },
+                onUpgradeClick = { _ ->
+                    showUpgradeDialog = false
+                    navController.navigate(Routes.Subscription) {
+                        popUpTo(Routes.Home) { inclusive = false }
+                    }
+                }
+            )
         }
     }
 }
@@ -606,7 +628,7 @@ fun CameraPreview(
                             // Callback already runs on main executor thread
                             Timber.d("Image capture callback: uri=$uri")
                             onImageCaptured(uri)
-                            onCapturingChanged(false)
+                            // Parent resets isCapturing after quota check / navigation (async)
                         }
                     } else {
                         Timber.w("Cannot capture: imageCapture=${capture != null}, enabled=$captureButtonEnabled")

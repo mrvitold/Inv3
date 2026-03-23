@@ -19,6 +19,7 @@ object TaxCodeDeterminer {
      * @return Tax code (e.g., "PVM1", "PVM25")
      */
     fun determineTaxCode(vatRate: Double?, invoiceText: String? = null): String {
+        val safeRate = VatRateValidation.sanitizeStoredPercent(vatRate)
         // Check for special keywords first - reverse charge VAT (PVM25)
         val text = invoiceText?.uppercase() ?: ""
         // Check for various patterns indicating reverse charge VAT (Article 96)
@@ -65,15 +66,15 @@ object TaxCodeDeterminer {
         // Map VAT rate to default tax codes
         // TODO: Refine this mapping based on PVM klasifikatorius document
         val code = when {
-            vatRate == null -> "PVM1" // Default if rate unknown
-            vatRate >= 20.0 -> "PVM1" // 21% VAT
-            vatRate >= 8.0 -> "PVM2"  // 9% VAT
-            vatRate >= 4.0 -> "PVM3"  // 5% VAT
-            vatRate >= 0.0 -> "PVM4"  // 0% VAT
+            safeRate == null -> "PVM1" // Default if rate unknown
+            safeRate >= 20.0 -> "PVM1" // 21% VAT
+            safeRate >= 8.0 -> "PVM2"  // 9% VAT
+            safeRate >= 4.0 -> "PVM3"  // 5% VAT
+            safeRate >= 0.0 -> "PVM4"  // 0% VAT
             else -> "PVM1" // Default fallback
         }
         
-        Timber.d("Tax code determined: $code (VAT rate: $vatRate%)")
+        Timber.d("Tax code determined: $code (VAT rate: $safeRate%, raw=$vatRate%)")
         return code
     }
     
@@ -85,18 +86,18 @@ object TaxCodeDeterminer {
      * @return VAT rate as percentage, or null if calculation not possible
      */
     fun calculateVatRate(amountWithoutVat: Double?, vatAmount: Double?): Double? {
-        if (amountWithoutVat == null || vatAmount == null || amountWithoutVat == 0.0) {
+        if (amountWithoutVat == null) {
             return null
         }
+        val vat = vatAmount ?: 0.0
+        if (amountWithoutVat == 0.0) {
+            return if (vat == 0.0) 0.0 else null
+        }
         
-        val rate = (vatAmount / amountWithoutVat) * 100.0
-        
-        // Round to nearest standard rate (21, 9, 5, 0)
-        val standardRates = listOf(21.0, 9.0, 5.0, 0.0)
-        val roundedRate = standardRates.minByOrNull { kotlin.math.abs(it - rate) } ?: rate
-        
-        Timber.d("Calculated VAT rate: $rate% -> rounded to: $roundedRate%")
-        return roundedRate
+        val rate = (vat / amountWithoutVat) * 100.0
+        val snapped = VatRateValidation.snapRatioPercentToStandardOrNull(rate)
+        Timber.d("Calculated VAT rate: $rate% -> snapped: $snapped%")
+        return snapped
     }
 }
 

@@ -18,6 +18,7 @@ import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
 import com.vitol.inv3.ocr.CompanyNameUtils
 import com.vitol.inv3.ocr.InvoiceParser
 import com.vitol.inv3.ocr.ParsedInvoice
+import com.vitol.inv3.export.VatRateValidation
 import com.vitol.inv3.utils.ImportImageCache
 import com.vitol.inv3.utils.PdfPageResolver
 import timber.log.Timber
@@ -291,7 +292,7 @@ class ImportSessionViewModel @Inject constructor(
             vatAmountEur = vatAmount,
             vatNumber = vatNum,
             companyNumber = companyNum,
-            vatRate = vatRate,
+            vatRate = VatRateValidation.sanitizeOcrPercentToDisplayString(vatRate),
             lines = combinedLines,
             extractionMessage = pages.firstNotNullOfOrNull { it.extractionMessage }
         )

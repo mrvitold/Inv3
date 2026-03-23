@@ -2,6 +2,7 @@ package com.vitol.inv3.ocr
 
 import android.graphics.Rect
 import com.vitol.inv3.data.local.FieldRegion
+import com.vitol.inv3.export.VatRateValidation
 import timber.log.Timber
 import kotlin.math.max
 import kotlin.math.min
@@ -1178,21 +1179,16 @@ object InvoiceParser {
                 Regex("""(\d+)\s*%\s*(?:PVM|vat)""", RegexOption.IGNORE_CASE),
                 Regex("""(?:tarifas|rate|procentas)\s*[:\s]*(\d+(?:[.,]\d+)?)\s*%?""", RegexOption.IGNORE_CASE)
             )
-            for (line in lines) {
+            vatRateLoop@ for (line in lines) {
                 for (pattern in vatRatePatterns) {
-                    val match = pattern.find(line)
-                    if (match != null) {
-                        val rateValue = match.groupValues[1].replace(",", ".")
-                        val rate = rateValue.toDoubleOrNull()
-                        if (rate != null && rate in 0.0..100.0) {
-                            vatRate = rate.toInt().toString()
-                            Timber.d("Extracted VAT rate from text: $vatRate%")
-                            break
-                        }
-                    }
-                    if (vatRate != null) break
+                    val match = pattern.find(line) ?: continue
+                    val rateValue = match.groupValues[1].replace(",", ".")
+                    val rate = rateValue.toDoubleOrNull() ?: continue
+                    val snapped = VatRateValidation.snapRatioPercentToStandardOrNull(rate) ?: continue
+                    vatRate = snapped.toInt().toString()
+                    Timber.d("Extracted VAT rate from text: $vatRate% (raw=$rate%)")
+                    break@vatRateLoop
                 }
-                if (vatRate != null) break
             }
             // Also try to calculate VAT rate from amounts if not found
             if (vatRate == null) {

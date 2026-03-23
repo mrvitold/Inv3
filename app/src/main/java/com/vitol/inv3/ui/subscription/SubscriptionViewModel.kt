@@ -10,6 +10,7 @@ import com.vitol.inv3.billing.SubscriptionStatus
 import com.vitol.inv3.billing.UsageTracker
 import com.vitol.inv3.data.remote.SupabaseRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlin.math.max
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -120,7 +121,28 @@ class SubscriptionViewModel @Inject constructor(
         }
         return status.canScanPages(pageCount)
     }
-    
+
+    /**
+     * Reads current usage from storage (not stale UI StateFlow). Use before saving a scan or opening the camera.
+     */
+    suspend fun canScanPagesFresh(pageCount: Int): Boolean {
+        if (pageCount <= 0) return true
+        val billingStatus = billingManager.subscriptionStatus.value
+        val plan = billingStatus?.plan ?: SubscriptionPlan.FREE
+        val isActive = billingStatus?.isActive ?: (plan == SubscriptionPlan.FREE)
+        if (!isActive) return false
+        usageTracker.initialize()
+        val used = usageTracker.getPagesUsed()
+        val start = usageTracker.getSubscriptionStartDate()
+        val limit = plan.getInvoiceLimit(start)
+        val remaining = max(0, limit - used)
+        return remaining >= pageCount
+    }
+
+    suspend fun trackPageUsageSync() {
+        usageTracker.trackPageUsage()
+    }
+
     fun trackPageUsage() {
         viewModelScope.launch {
             // UsageTracker now handles syncing to Supabase automatically

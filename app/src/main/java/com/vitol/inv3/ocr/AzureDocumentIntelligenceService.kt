@@ -7,6 +7,7 @@ import android.net.Uri
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.vitol.inv3.export.VatRateValidation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -260,7 +261,9 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         vatAmountEur = fromInvoice.vatAmountEur.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatAmountEur,
         vatNumber = fromInvoice.vatNumber.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatNumber,
         companyNumber = fromInvoice.companyNumber.takeIf { !it.isNullOrBlank() } ?: fromLayout.companyNumber,
-        vatRate = fromInvoice.vatRate.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatRate,
+        vatRate = VatRateValidation.sanitizeOcrPercentToDisplayString(
+            fromInvoice.vatRate.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatRate
+        ),
         lines = fromLayout.lines,
         extractionMessage = if (fromLayout.lines.isNotEmpty()) null else (fromInvoice.extractionMessage ?: fromLayout.extractionMessage)
     )
@@ -674,9 +677,11 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         // Ensure date is always YYYY-MM-DD format
         val normalizedDate = date?.let { com.vitol.inv3.utils.DateFormatter.formatDateForDatabase(it) } ?: date
         
+        val vatRateOut = VatRateValidation.sanitizeOcrPercentToDisplayString(vatRate)
+
         Timber.d("Azure Extracted - InvoiceID: $invoiceId, Date: $normalizedDate, Company: $companyName, " +
                 "AmountNoVat: $amountNoVat, VatAmount: $vatAmount, " +
-                "VatNumber: $vatNumber, CompanyNumber: $companyNumber, VatRate: $vatRate")
+                "VatNumber: $vatNumber, CompanyNumber: $companyNumber, VatRate: $vatRateOut (raw=$vatRate)")
         
         return ParsedInvoice(
             invoiceId = invoiceId,
@@ -686,7 +691,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             vatAmountEur = vatAmount,
             vatNumber = vatNumber,
             companyNumber = companyNumber,
-            vatRate = vatRate,
+            vatRate = vatRateOut,
             lines = lines,
             extractionMessage = if (lines.isEmpty()) emptyExtractionMessage else null
         )

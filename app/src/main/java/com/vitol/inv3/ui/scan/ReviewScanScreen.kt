@@ -63,10 +63,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.vitol.inv3.Routes
 import com.vitol.inv3.ui.subscription.SubscriptionViewModel
+import com.vitol.inv3.ui.subscription.UpgradeDialog
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.InvoiceRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
+import com.vitol.inv3.export.VatRateValidation
 import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
 import com.vitol.inv3.ocr.CompanyNameUtils
 import com.vitol.inv3.ocr.ParsedInvoice
@@ -76,7 +78,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.text.SimpleDateFormat
@@ -268,6 +272,8 @@ fun ReviewScanScreen(
     } else null
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showUpgradeDialog by remember { mutableStateOf(false) }
+    val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState(initial = null)
     
     var isLoading by remember { mutableStateOf(true) }
     var isProcessing by remember { mutableStateOf(false) }
@@ -332,7 +338,11 @@ fun ReviewScanScreen(
                     vatAmountField = existingInvoice.vat_amount_eur?.toString() ?: ""
                     vatNumberField = existingInvoice.vat_number ?: ""
                     companyNumberField = existingInvoice.company_number ?: ""
-                    vatRateField = existingInvoice.vat_rate?.toString() ?: ""
+                    vatRateField = existingInvoice.vat_rate?.let { raw ->
+                        VatRateValidation.sanitizeStoredPercent(raw)?.let { s ->
+                            if (kotlin.math.abs(s - s.toInt()) < 1e-6) s.toInt().toString() else s.toString()
+                        }
+                    } ?: ""
                     taxCodeField = existingInvoice.tax_code ?: "PVM1"
                     isLoading = false
                 } else {
@@ -379,7 +389,9 @@ fun ReviewScanScreen(
                 vatAmountField = if (isMerge && vatAmountField.isNotBlank()) vatAmountField else (parsedInvoice.vatAmountEur ?: "")
                 vatNumberField = if (isMerge && vatNumberField.isNotBlank()) vatNumberField else (parsedInvoice.vatNumber ?: "")
                 companyNumberField = if (isMerge && companyNumberField.isNotBlank()) companyNumberField else (parsedInvoice.companyNumber ?: "")
-                vatRateField = if (isMerge && vatRateField.isNotBlank()) vatRateField else (parsedInvoice.vatRate ?: "")
+                vatRateField = if (isMerge && vatRateField.isNotBlank()) vatRateField else (
+                    VatRateValidation.sanitizeOcrPercentToDisplayString(parsedInvoice.vatRate) ?: ""
+                )
                 
                 // If merging, restore other fields from merged data
                 if (isMerge && mergedData != null) {
@@ -467,7 +479,7 @@ fun ReviewScanScreen(
         vatAmountField = parsed.vatAmountEur ?: ""
         vatNumberField = parsed.vatNumber ?: ""
         companyNumberField = parsed.companyNumber ?: ""
-        vatRateField = parsed.vatRate ?: ""
+        vatRateField = VatRateValidation.sanitizeOcrPercentToDisplayString(parsed.vatRate) ?: ""
         // Infer VAT rate from amounts when not explicitly found
         var vatRateForTax = vatRateField.replace(",", ".").toDoubleOrNull()
         if (vatRateForTax == null && amountWithoutVatField.isNotBlank() && vatAmountField.isNotBlank()) {
@@ -781,50 +793,56 @@ fun ReviewScanScreen(
                         }
                         Button(
                             onClick = {
-                                isSaving = true
-                                errorMessage = null
-                                val amountWithoutVat = amountWithoutVatField.replace(",", ".").toDoubleOrNull()
-                                val vatAmount = vatAmountField.replace(",", ".").toDoubleOrNull()
-                                val vatRate = vatRateField.replace(",", ".").toDoubleOrNull()
-                                val invoice = InvoiceRecord(
-                                    id = null,
-                                    invoice_id = invoiceIdField.takeIf { it.isNotBlank() },
-                                    date = dateField.takeIf { it.isNotBlank() },
-                                    company_name = companyNameField.takeIf { it.isNotBlank() },
-                                    amount_without_vat_eur = amountWithoutVat,
-                                    vat_amount_eur = vatAmount,
-                                    vat_number = vatNumberField.takeIf { it.isNotBlank() },
-                                    company_number = companyNumberField.takeIf { it.isNotBlank() },
-                                    invoice_type = invoiceType.takeIf { it.isNotBlank() },
-                                    vat_rate = vatRate,
-                                    tax_code = taxCodeField.takeIf { it.isNotBlank() },
-                                    own_company_id = activeCompanyId
-                                )
-                                viewModel.saveInvoice(
-                                    invoice = invoice,
-                                    onSuccess = {
-                                        isSaving = false
-                                        scope.launch {
-                                            subscriptionViewModel.trackPageUsage()
-                                            snackbarHostState.showSnackbar("Invoice saved successfully")
-                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                                importSessionViewModel.advanceToNext(context)
-                                            }
-                                            if (!importSessionViewModel.hasNext) {
-                                                importSessionViewModel.clear()
-                                                navController?.navigate(Routes.Home) {
-                                                    popUpTo(0) { inclusive = true }
-                                                }
-                                                snackbarHostState.showSnackbar("All invoices saved")
-                                            }
-                                        }
-                                    },
-                                    onError = { e ->
-                                        isSaving = false
-                                        errorMessage = "Failed to save invoice: ${e.message}"
-                                        scope.launch { snackbarHostState.showSnackbar("Failed to save invoice") }
+                                scope.launch {
+                                    if (!subscriptionViewModel.canScanPagesFresh(1)) {
+                                        showUpgradeDialog = true
+                                        return@launch
                                     }
-                                )
+                                    isSaving = true
+                                    errorMessage = null
+                                    val amountWithoutVat = amountWithoutVatField.replace(",", ".").toDoubleOrNull()
+                                    val vatAmount = vatAmountField.replace(",", ".").toDoubleOrNull()
+                                    val vatRate = vatRateField.replace(",", ".").toDoubleOrNull()
+                                    val invoice = InvoiceRecord(
+                                        id = null,
+                                        invoice_id = invoiceIdField.takeIf { it.isNotBlank() },
+                                        date = dateField.takeIf { it.isNotBlank() },
+                                        company_name = companyNameField.takeIf { it.isNotBlank() },
+                                        amount_without_vat_eur = amountWithoutVat,
+                                        vat_amount_eur = vatAmount,
+                                        vat_number = vatNumberField.takeIf { it.isNotBlank() },
+                                        company_number = companyNumberField.takeIf { it.isNotBlank() },
+                                        invoice_type = invoiceType.takeIf { it.isNotBlank() },
+                                        vat_rate = vatRate,
+                                        tax_code = taxCodeField.takeIf { it.isNotBlank() },
+                                        own_company_id = activeCompanyId
+                                    )
+                                    viewModel.saveInvoice(
+                                        invoice = invoice,
+                                        onSuccess = {
+                                            scope.launch {
+                                                isSaving = false
+                                                subscriptionViewModel.trackPageUsageSync()
+                                                snackbarHostState.showSnackbar("Invoice saved successfully")
+                                                withContext(Dispatchers.IO) {
+                                                    importSessionViewModel.advanceToNext(context)
+                                                }
+                                                if (!importSessionViewModel.hasNext) {
+                                                    importSessionViewModel.clear()
+                                                    navController?.navigate(Routes.Home) {
+                                                        popUpTo(0) { inclusive = true }
+                                                    }
+                                                    snackbarHostState.showSnackbar("All invoices saved")
+                                                }
+                                            }
+                                        },
+                                        onError = { e ->
+                                            isSaving = false
+                                            errorMessage = "Failed to save invoice: ${e.message}"
+                                            scope.launch { snackbarHostState.showSnackbar("Failed to save invoice") }
+                                        }
+                                    )
+                                }
                             },
                             enabled = !isSaving,
                             modifier = Modifier.weight(1f)
@@ -909,76 +927,71 @@ fun ReviewScanScreen(
                         }
                         Button(
                         onClick = {
-                            isSaving = true
-                            errorMessage = null
-                            
-                            // Convert amounts properly (handle comma as decimal separator)
-                            val amountWithoutVat = amountWithoutVatField.replace(",", ".").toDoubleOrNull()
-                            val vatAmount = vatAmountField.replace(",", ".").toDoubleOrNull()
-                            val vatRate = vatRateField.replace(",", ".").toDoubleOrNull()
-                            
-                            val invoice = InvoiceRecord(
-                                id = invoiceId, // Include id for updates
-                                invoice_id = invoiceIdField.takeIf { it.isNotBlank() },
-                                date = dateField.takeIf { it.isNotBlank() },
-                                company_name = companyNameField.takeIf { it.isNotBlank() },
-                                amount_without_vat_eur = amountWithoutVat,
-                                vat_amount_eur = vatAmount,
-                                vat_number = vatNumberField.takeIf { it.isNotBlank() },
-                                company_number = companyNumberField.takeIf { it.isNotBlank() },
-                                invoice_type = invoiceType.takeIf { it.isNotBlank() },
-                                vat_rate = vatRate,
-                                tax_code = taxCodeField.takeIf { it.isNotBlank() },
-                                own_company_id = if (invoiceId != null && invoiceId.isNotBlank())
-                                    existingInvoiceForEdit?.own_company_id else activeCompanyId
-                            )
-                            
-                            if (invoiceId != null && invoiceId.isNotBlank()) {
-                                // Update existing invoice
-                                viewModel.updateInvoice(
-                                    invoice = invoice,
-                                    onSuccess = {
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("Invoice updated successfully")
-                                            navController?.popBackStack()
-                                        }
-                                    },
-                                    onError = { e ->
-                                        isSaving = false
-                                        errorMessage = "Failed to update invoice: ${e.message}"
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("Failed to update invoice")
-                                        }
-                                    }
+                            scope.launch {
+                                errorMessage = null
+                                val amountWithoutVat = amountWithoutVatField.replace(",", ".").toDoubleOrNull()
+                                val vatAmount = vatAmountField.replace(",", ".").toDoubleOrNull()
+                                val vatRate = vatRateField.replace(",", ".").toDoubleOrNull()
+                                val invoice = InvoiceRecord(
+                                    id = invoiceId,
+                                    invoice_id = invoiceIdField.takeIf { it.isNotBlank() },
+                                    date = dateField.takeIf { it.isNotBlank() },
+                                    company_name = companyNameField.takeIf { it.isNotBlank() },
+                                    amount_without_vat_eur = amountWithoutVat,
+                                    vat_amount_eur = vatAmount,
+                                    vat_number = vatNumberField.takeIf { it.isNotBlank() },
+                                    company_number = companyNumberField.takeIf { it.isNotBlank() },
+                                    invoice_type = invoiceType.takeIf { it.isNotBlank() },
+                                    vat_rate = vatRate,
+                                    tax_code = taxCodeField.takeIf { it.isNotBlank() },
+                                    own_company_id = if (invoiceId != null && invoiceId.isNotBlank())
+                                        existingInvoiceForEdit?.own_company_id else activeCompanyId
                                 )
-                            } else {
-                                // Save new invoice
-                                val isImportFlow = fromImport && importSessionViewModel != null
-                                val shouldOpenCamera = imageUri != null && !isImportFlow
-                                if (shouldOpenCamera) {
-                                    navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
-                                        popUpTo("${Routes.ReviewScan}/$imageUri/$invoiceType") { inclusive = true }
-                                    }
+                                if (invoiceId != null && invoiceId.isNotBlank()) {
+                                    isSaving = true
+                                    viewModel.updateInvoice(
+                                        invoice = invoice,
+                                        onSuccess = {
+                                            scope.launch {
+                                                isSaving = false
+                                                snackbarHostState.showSnackbar("Invoice updated successfully")
+                                                navController?.popBackStack()
+                                            }
+                                        },
+                                        onError = { e ->
+                                            isSaving = false
+                                            errorMessage = "Failed to update invoice: ${e.message}"
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Failed to update invoice")
+                                            }
+                                        }
+                                    )
+                                    return@launch
                                 }
-                                
+                                if (!subscriptionViewModel.canScanPagesFresh(1)) {
+                                    showUpgradeDialog = true
+                                    return@launch
+                                }
+                                isSaving = true
+                                val shouldOpenCamera = imageUri != null && !fromImport
                                 viewModel.saveInvoice(
                                     invoice = invoice,
                                     onSuccess = {
                                         scope.launch {
-                                            subscriptionViewModel.trackPageUsage()
+                                            subscriptionViewModel.trackPageUsageSync()
+                                            isSaving = false
                                             snackbarHostState.showSnackbar("Invoice saved successfully")
-                                            if (isImportFlow && importSessionViewModel != null) {
-                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                                    importSessionViewModel.advanceToNext(context)
-                                                }
-                                                if (!importSessionViewModel.hasNext) {
-                                                    importSessionViewModel.clear()
+                                            if (shouldOpenCamera) {
+                                                if (subscriptionViewModel.canScanPagesFresh(1)) {
+                                                    navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
+                                                        popUpTo("${Routes.ReviewScan}/$imageUri/$invoiceType") { inclusive = true }
+                                                    }
+                                                } else {
+                                                    showUpgradeDialog = true
                                                     navController?.navigate(Routes.Home) {
                                                         popUpTo(0) { inclusive = true }
                                                     }
-                                                    snackbarHostState.showSnackbar("All invoices saved")
                                                 }
-                                                // else: stay on screen; form refills from next parsed invoice
                                             }
                                         }
                                     },
@@ -987,9 +1000,6 @@ fun ReviewScanScreen(
                                         errorMessage = "Failed to save invoice: ${e.message}"
                                         scope.launch {
                                             snackbarHostState.showSnackbar("Failed to save invoice")
-                                            if (shouldOpenCamera) {
-                                                navController?.popBackStack()
-                                            }
                                         }
                                     }
                                 )
@@ -1076,6 +1086,18 @@ fun ReviewScanScreen(
                 dismissButton = {
                     TextButton(onClick = { showCancelImportDialog = false }) {
                         Text("Stay")
+                    }
+                }
+            )
+        }
+        if (showUpgradeDialog) {
+            UpgradeDialog(
+                subscriptionStatus = subscriptionStatus,
+                onDismiss = { showUpgradeDialog = false },
+                onUpgradeClick = { _ ->
+                    showUpgradeDialog = false
+                    navController?.navigate(Routes.Subscription) {
+                        popUpTo(Routes.Home) { inclusive = false }
                     }
                 }
             )
