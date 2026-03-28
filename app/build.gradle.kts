@@ -19,6 +19,9 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+val facebookAppId = (project.findProperty("FACEBOOK_APP_ID") as String?)?.trim().orEmpty()
+val facebookClientToken = (project.findProperty("FACEBOOK_CLIENT_TOKEN") as String?)?.trim().orEmpty()
+
 android {
     namespace = "com.vitol.inv3"
     compileSdk = 35
@@ -27,8 +30,8 @@ android {
         applicationId = "com.vitol.inv3"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "1.18"
+        versionCode = 19
+        versionName = "1.19"
         ndkVersion = "28.1.13356709"  // NDK r28: 16 KB page size support on by default
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -38,6 +41,10 @@ android {
         buildConfigField("String", "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "\"${project.findProperty("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT") ?: ""}\"")
         buildConfigField("String", "AZURE_DOCUMENT_INTELLIGENCE_API_KEY", "\"${project.findProperty("AZURE_DOCUMENT_INTELLIGENCE_API_KEY") ?: ""}\"")
         buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"${project.findProperty("GOOGLE_OAUTH_CLIENT_ID") ?: ""}\"")
+        buildConfigField("String", "FACEBOOK_APP_ID", "\"$facebookAppId\"")
+        buildConfigField("String", "FACEBOOK_CLIENT_TOKEN", "\"$facebookClientToken\"")
+        resValue("string", "facebook_app_id", facebookAppId)
+        resValue("string", "facebook_client_token", facebookClientToken)
     }
 
     signingConfigs {
@@ -190,6 +197,9 @@ dependencies {
 
     // Google Play Billing Library
     implementation("com.android.billingclient:billing-ktx:7.1.1")
+
+    // Meta (Facebook) App Events — optional; enable via FACEBOOK_APP_ID + FACEBOOK_CLIENT_TOKEN in gradle.properties
+    implementation("com.facebook.android:facebook-android-sdk:17.0.2")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

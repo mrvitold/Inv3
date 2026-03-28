@@ -1,12 +1,12 @@
 # Inv3 – Project Status
 
-**Last updated:** 2026-02-18
+**Last updated:** 2026-03-28
 
 ## Current State
 
 ### App
 - **Package:** com.vitol.inv3
-- **Version:** 1.09 (versionCode 9)
+- **Version:** 1.19 (versionCode 19)
 - **Status:** Internal testing on Google Play Console
 - **Build:** Release AAB at `app/release/app-release.aab` (build via Android Studio)
 
@@ -72,6 +72,12 @@
 | Azure setup | [AZURE_SETUP.md](AZURE_SETUP.md) |
 
 ---
+
+## Release 1.19 (2026-03-28)
+
+**Release notes for Play Console:**
+- Meta (Facebook) App Events: optional integration for ads measurement (`FACEBOOK_APP_ID` / `FACEBOOK_CLIENT_TOKEN` in `gradle.properties`); logs subscription events when configured
+- Fixed Facebook SDK startup when Meta credentials are present (App ID and Client token in manifest)
 
 ## Release 1.0.4 (2026-02-18)
 

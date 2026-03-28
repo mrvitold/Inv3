@@ -1,6 +1,7 @@
 package com.vitol.inv3
 
 import android.app.Application
+import com.facebook.appevents.AppEventsLogger
 import com.google.firebase.FirebaseApp
 import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.vitol.inv3.utils.CrashlyticsTree
@@ -11,7 +12,12 @@ import timber.log.Timber
 class Inv3App : Application() {
     override fun onCreate() {
         super.onCreate()
-        
+
+        // Meta SDK reads App ID + Client token from manifest; FacebookInitProvider initializes before onCreate.
+        if (BuildConfig.FACEBOOK_APP_ID.isNotEmpty() && BuildConfig.FACEBOOK_CLIENT_TOKEN.isNotEmpty()) {
+            AppEventsLogger.activateApp(this)
+        }
+
         // Initialize Firebase
         FirebaseApp.initializeApp(this)
         

@@ -1,4 +1,4 @@
-# Google Play Publish Checklist – Inv3 v1.09
+# Google Play Publish Checklist – Inv3 v1.19
 
 Use this checklist before publishing to production.
 
@@ -8,7 +8,7 @@ Use this checklist before publishing to production.
 
 | Item | Status |
 |------|--------|
-| versionCode 9, versionName "1.09" | ✓ |
+| versionCode 19, versionName "1.19" | ✓ |
 | targetSdk 35 (required by Play) | ✓ |
 | Release signing (keystore.properties) | ✓ |
 | ProGuard rules for release | ✓ |
@@ -16,7 +16,7 @@ Use this checklist before publishing to production.
 | Account deletion in Settings | ✓ |
 | Data export (Excel) | ✓ |
 | google-services.json | ✓ |
-| No ads (no ad SDK) | ✓ |
+| Meta SDK optional (App Events only; set `FACEBOOK_*` in `gradle.properties` or leave empty) | ✓ |
 
 ---
 

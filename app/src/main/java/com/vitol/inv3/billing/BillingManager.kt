@@ -3,6 +3,7 @@ package com.vitol.inv3.billing
 import android.app.Activity
 import android.content.Context
 import com.android.billingclient.api.*
+import com.vitol.inv3.analytics.MetaAppEvents
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,7 +13,8 @@ import javax.inject.Singleton
 
 @Singleton
 class BillingManager @Inject constructor(
-    private val context: Context
+    private val context: Context,
+    private val metaAppEvents: MetaAppEvents
 ) {
     private var billingClient: BillingClient? = null
     private var _activePurchase: Purchase? = null
@@ -99,6 +101,12 @@ class BillingManager @Inject constructor(
             acknowledgePurchase(purchase)
             // Notify that purchase completed
             _purchaseComplete.value = purchase
+            purchase.products.forEach { productId ->
+                val plan = SubscriptionPlan.fromPlanId(productId)
+                if (plan != SubscriptionPlan.FREE) {
+                    metaAppEvents.logSubscriptionPurchase(plan)
+                }
+            }
         }
         
         updateSubscriptionStatus(purchases)

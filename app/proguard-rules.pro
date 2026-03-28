@@ -10,6 +10,10 @@
 -dontwarn dagger.**
 -dontwarn javax.annotation.**
 
+# Meta (Facebook) App Events
+-keep class com.facebook.** { *; }
+-dontwarn com.facebook.**
+
 # Firebase Crashlytics
 -keepattributes *Annotation*
 -keepattributes SourceFile,LineNumberTable

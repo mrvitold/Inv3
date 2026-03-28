@@ -12,6 +12,17 @@ When copying the project to a new machine, copy these credentials from your lapt
 | `AZURE_DOCUMENT_INTELLIGENCE_API_KEY` | Azure Portal | ✓ Present |
 | `GOOGLE_OAUTH_CLIENT_ID` | Google Cloud Console (Web Client ID) | ✓ Present |
 
+## Optional — Meta (Facebook) App Events (Ads)
+
+Only needed if you use Meta App Events / Ads optimization toward subscriptions. See [META_ADS_MEASUREMENT.md](META_ADS_MEASUREMENT.md).
+
+| Property | Source |
+|----------|--------|
+| `FACEBOOK_APP_ID` | Meta app dashboard (numeric App ID) |
+| `FACEBOOK_CLIENT_TOKEN` | Meta app → Settings → **Client token** |
+
+If omitted, the Meta SDK stays disabled and the app behaves as before.
+
 ## Google Sign-In – Debug SHA-1 on New PC
 
 **Each PC has a different debug keystore.** The debug SHA-1 on this desktop must be added to Google Cloud Console.
