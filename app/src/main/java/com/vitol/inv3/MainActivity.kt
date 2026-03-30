@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
@@ -56,8 +57,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
+import com.vitol.inv3.data.local.getCompanySetupHomePromptAckUserId
 import com.vitol.inv3.data.local.setActiveOwnCompanyId
-import com.vitol.inv3.data.remote.SupabaseRepository
+import com.vitol.inv3.data.local.setCompanySetupHomePromptAckUserId
 import com.vitol.inv3.ui.home.OwnCompanySelector
 import com.vitol.inv3.ui.home.OwnCompanyViewModel
 import com.vitol.inv3.ui.subscription.UsageIndicator
@@ -398,8 +400,10 @@ fun HomeScreen(
     navController: NavHostController,
     ownCompanyViewModel: OwnCompanyViewModel = hiltViewModel(),
     subscriptionViewModel: SubscriptionViewModel = hiltViewModel(),
-    repo: SupabaseRepository = hiltViewModel<MainActivityViewModel>().repo
+    mainActivityViewModel: MainActivityViewModel = hiltViewModel(),
 ) {
+    val repo = mainActivityViewModel.repo
+    val authManager = mainActivityViewModel.authManager
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -418,6 +422,10 @@ fun HomeScreen(
     
     val ownCompanies by ownCompanyViewModel.ownCompanies.collectAsState()
     val isLoadingCompanies by ownCompanyViewModel.isLoading.collectAsState()
+    val currentUserId by authManager.currentUserId.collectAsState(initial = null)
+    var showCompanySetupDialog by remember { mutableStateOf(false) }
+    /** Sync guard so LaunchedEffect does not reopen the dialog before DataStore ack finishes writing. */
+    var companySetupPromptDismissed by remember(currentUserId) { mutableStateOf(false) }
     
     // Validate activeCompanyId belongs to current user and load company name
     // Also auto-select if there's only one company and none is selected
@@ -461,6 +469,23 @@ fun HomeScreen(
         val id = activeCompanyId ?: return false
         val company = ownCompanies.find { it.id == id } ?: return false
         return !company.company_number.isNullOrBlank() && !company.company_name.isNullOrBlank()
+    }
+
+    LaunchedEffect(currentUserId, isLoadingCompanies, ownCompanies, activeCompanyId) {
+        val uid = currentUserId ?: return@LaunchedEffect
+        if (companySetupPromptDismissed) return@LaunchedEffect
+        if (isLoadingCompanies) return@LaunchedEffect
+        if (ownCompanies.size == 1 && activeCompanyId == null) return@LaunchedEffect
+        if (context.getCompanySetupHomePromptAckUserId() == uid) {
+            showCompanySetupDialog = false
+            return@LaunchedEffect
+        }
+        if (isOwnCompanyFilled()) {
+            context.setCompanySetupHomePromptAckUserId(uid)
+            showCompanySetupDialog = false
+            return@LaunchedEffect
+        }
+        showCompanySetupDialog = true
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -618,7 +643,12 @@ fun HomeScreen(
         
         SnackbarHost(
             hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .navigationBarsPadding()
+                .padding(bottom = 8.dp),
         )
         
         // Version number at the bottom
@@ -646,6 +676,44 @@ fun HomeScreen(
                     showUpgradeDialog = false
                     navController.navigate(Routes.Subscription)
                 }
+            )
+        }
+
+        if (showCompanySetupDialog && currentUserId != null) {
+            val uid = currentUserId!!
+            fun acknowledgePrompt() {
+                companySetupPromptDismissed = true
+                showCompanySetupDialog = false
+                scope.launch {
+                    context.setCompanySetupHomePromptAckUserId(uid)
+                }
+            }
+            AlertDialog(
+                onDismissRequest = { acknowledgePrompt() },
+                title = { Text("Set up your company") },
+                text = {
+                    Text(
+                        "Add your company name and number so scanning and exports work correctly. " +
+                            "You can change this anytime under Your company."
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            acknowledgePrompt()
+                            navController.navigate(Routes.AddOwnCompany)
+                        },
+                    ) {
+                        Text("Set up")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { acknowledgePrompt() },
+                    ) {
+                        Text("Later")
+                    }
+                },
             )
         }
     }

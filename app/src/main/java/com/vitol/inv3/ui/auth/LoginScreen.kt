@@ -3,13 +3,17 @@ package com.vitol.inv3.ui.auth
 import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -24,6 +28,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.tasks.Task
 import com.vitol.inv3.BuildConfig
+import com.vitol.inv3.R
 import com.vitol.inv3.auth.AuthManager
 import timber.log.Timber
 
@@ -209,6 +214,65 @@ fun LoginScreen(
             }
         }
 
+        if (isGoogleSignInConfigured) {
+            Button(
+                onClick = { startGoogleSignIn() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp),
+                enabled = !uiState.isLoading && !isGoogleSignInInProgress,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color(0xFF3C4043),
+                    disabledContainerColor = Color(0xFFEEEEEE),
+                    disabledContentColor = Color(0xFF9E9E9E),
+                ),
+                border = BorderStroke(1.dp, Color(0xFFDADCE0)),
+                elevation = ButtonDefaults.buttonElevation(
+                    defaultElevation = 3.dp,
+                    pressedElevation = 1.dp,
+                    disabledElevation = 0.dp,
+                ),
+                shape = MaterialTheme.shapes.large,
+            ) {
+                if (isGoogleSignInInProgress) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color = Color(0xFF4285F4),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("Signing in...")
+                } else {
+                    Image(
+                        painter = painterResource(R.drawable.ic_google_logo),
+                        contentDescription = "Google",
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        "Sign in with Google",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(20.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                HorizontalDivider(modifier = Modifier.weight(1f))
+                Text(
+                    text = if (isSignUp) "or sign up with email" else "or continue with email",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+                HorizontalDivider(modifier = Modifier.weight(1f))
+            }
+            Spacer(modifier = Modifier.height(20.dp))
+        }
+
         OutlinedTextField(
             value = email,
             onValueChange = {
@@ -270,28 +334,48 @@ fun LoginScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        Button(
-            onClick = {
-                if (isSignUp) {
-                    if (password == confirmPassword && password.length >= 6) {
-                        viewModel.signUp(email, password)
-                    } else {
-                        viewModel.setError("Passwords must match and be at least 6 characters long")
-                    }
+        val emailAuthAction: () -> Unit = {
+            if (isSignUp) {
+                if (password == confirmPassword && password.length >= 6) {
+                    viewModel.signUp(email, password)
                 } else {
-                    viewModel.signIn(email, password)
+                    viewModel.setError("Passwords must match and be at least 6 characters long")
                 }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !uiState.isLoading && email.isNotBlank() && password.isNotBlank() && (!isSignUp || confirmPassword.isNotBlank())
-        ) {
-            if (uiState.isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
             } else {
-                Text(if (isSignUp) "Sign Up" else "Sign In")
+                viewModel.signIn(email, password)
+            }
+        }
+        val emailAuthEnabled = !uiState.isLoading && email.isNotBlank() && password.isNotBlank() &&
+            (!isSignUp || confirmPassword.isNotBlank())
+
+        if (isGoogleSignInConfigured) {
+            OutlinedButton(
+                onClick = emailAuthAction,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = emailAuthEnabled,
+            ) {
+                if (uiState.isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                    )
+                } else {
+                    Text(if (isSignUp) "Sign Up" else "Sign In")
+                }
+            }
+        } else {
+            Button(
+                onClick = emailAuthAction,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = emailAuthEnabled,
+            ) {
+                if (uiState.isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                } else {
+                    Text(if (isSignUp) "Sign Up" else "Sign In")
+                }
             }
         }
 
@@ -303,26 +387,6 @@ fun LoginScreen(
             ) {
                 Text("Forgot Password?")
             }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        HorizontalDivider(modifier = Modifier.fillMaxWidth())
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        OutlinedButton(
-            onClick = { startGoogleSignIn() },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !uiState.isLoading && !isGoogleSignInInProgress && isGoogleSignInConfigured
-        ) {
-            if (isGoogleSignInInProgress) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-            }
-            Text(if (isGoogleSignInInProgress) "Signing in..." else "Sign in with Google")
         }
 
         Spacer(modifier = Modifier.height(16.dp))
