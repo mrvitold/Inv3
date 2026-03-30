@@ -14,19 +14,41 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
+import com.vitol.inv3.R
+import com.vitol.inv3.data.local.LANGUAGE_EN
+import com.vitol.inv3.data.local.LANGUAGE_LT
+import com.vitol.inv3.data.local.applyAppLocalesForTag
+import com.vitol.inv3.data.local.getLanguageOverrideFlow
 import com.vitol.inv3.data.local.setActiveOwnCompanyId
+import com.vitol.inv3.data.local.setLanguageOverride
 import com.vitol.inv3.ui.auth.AuthViewModel
 import com.vitol.inv3.ui.subscription.SubscriptionViewModel
+import com.vitol.inv3.ui.subscription.localizedName
 import com.vitol.inv3.Routes
-import com.vitol.inv3.billing.SubscriptionPlan
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+@Composable
+private fun RowScope.LanguageChoiceButton(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit
+) {
+    val mod = Modifier.weight(1f)
+    if (selected) {
+        Button(modifier = mod, onClick = onClick) { Text(label) }
+    } else {
+        OutlinedButton(modifier = mod, onClick = onClick) { Text(label) }
+    }
+}
 
 @Composable
 fun SettingsScreen(
@@ -35,8 +57,11 @@ fun SettingsScreen(
     subscriptionViewModel: SubscriptionViewModel = hiltViewModel()
 ) {
     val uiState by authViewModel.uiState.collectAsState()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    val languageOverride by context.getLanguageOverrideFlow().collectAsState(initial = null)
+    val passwordChangedMessage = stringResource(R.string.auth_password_changed)
 
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
@@ -53,12 +78,11 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = "Settings",
+            text = stringResource(R.string.settings_title),
             style = MaterialTheme.typography.headlineLarge,
             modifier = Modifier.padding(bottom = 8.dp)
         )
 
-        // Error Message Card
         uiState.errorMessage?.let { message ->
             Card(
                 modifier = Modifier
@@ -74,7 +98,6 @@ fun SettingsScreen(
             }
         }
 
-        // Success Message Card
         uiState.successMessage?.let { message ->
             Card(
                 modifier = Modifier
@@ -90,7 +113,49 @@ fun SettingsScreen(
             }
         }
 
-        // Subscription Management Option
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = stringResource(R.string.settings_language),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val englishSelected =
+                        languageOverride == LANGUAGE_EN || languageOverride == null
+                    val lithuanianSelected = languageOverride == LANGUAGE_LT
+                    // Filled = chosen language; outlined = other option (clearer than FilterChip outline).
+                    LanguageChoiceButton(
+                        selected = englishSelected,
+                        label = stringResource(R.string.settings_language_english),
+                        onClick = {
+                            scope.launch {
+                                context.setLanguageOverride(LANGUAGE_EN)
+                                applyAppLocalesForTag(LANGUAGE_EN)
+                            }
+                        }
+                    )
+                    LanguageChoiceButton(
+                        selected = lithuanianSelected,
+                        label = stringResource(R.string.settings_language_lithuanian),
+                        onClick = {
+                            scope.launch {
+                                context.setLanguageOverride(LANGUAGE_LT)
+                                applyAppLocalesForTag(LANGUAGE_LT)
+                            }
+                        }
+                    )
+                }
+            }
+        }
+
         val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState()
         Card(
             modifier = Modifier
@@ -108,26 +173,31 @@ fun SettingsScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.Star,
-                    contentDescription = "Subscription",
+                    contentDescription = stringResource(R.string.cd_subscription),
                     modifier = Modifier.size(24.dp),
                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Subscription",
+                        text = stringResource(R.string.settings_subscription),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                     subscriptionStatus?.let { status ->
                         Text(
-                            text = "${status.plan.name} - ${status.invoicesUsed}/${status.invoiceLimit} invoices used",
+                            text = stringResource(
+                                R.string.settings_plan_usage_line,
+                                status.plan.localizedName(),
+                                status.invoicesUsed,
+                                status.invoiceLimit
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                         )
                     } ?: run {
                         Text(
-                            text = "Manage your subscription",
+                            text = stringResource(R.string.settings_manage_subscription),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                         )
@@ -136,7 +206,6 @@ fun SettingsScreen(
             }
         }
 
-        // Change Password Option
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -154,19 +223,19 @@ fun SettingsScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.Lock,
-                    contentDescription = "Change password",
+                    contentDescription = stringResource(R.string.cd_change_password),
                     modifier = Modifier.size(24.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = "Change Password",
+                        text = stringResource(R.string.settings_change_password),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Update your account password",
+                        text = stringResource(R.string.settings_change_password_sub),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -174,13 +243,11 @@ fun SettingsScreen(
             }
         }
 
-        // Log Out Option
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(enabled = !uiState.isLoading) {
                     scope.launch {
-                        // Clear active company ID when signing out
                         context.setActiveOwnCompanyId(null)
                         authViewModel.signOut()
                     }
@@ -195,19 +262,19 @@ fun SettingsScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.ExitToApp,
-                    contentDescription = "Log out",
+                    contentDescription = stringResource(R.string.cd_log_out),
                     modifier = Modifier.size(24.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = "Log Out",
+                        text = stringResource(R.string.settings_log_out),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Sign out of your account",
+                        text = stringResource(R.string.settings_log_out_sub),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -215,7 +282,6 @@ fun SettingsScreen(
             }
         }
 
-        // Delete Account Option
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -233,19 +299,19 @@ fun SettingsScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.Delete,
-                    contentDescription = "Delete account",
+                    contentDescription = stringResource(R.string.cd_delete_account),
                     modifier = Modifier.size(24.dp),
                     tint = MaterialTheme.colorScheme.onErrorContainer
                 )
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = "Delete My Account",
+                        text = stringResource(R.string.settings_delete_account),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onErrorContainer
                     )
                     Text(
-                        text = "Permanently delete your account and all data",
+                        text = stringResource(R.string.settings_delete_account_sub),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
                     )
@@ -254,7 +320,6 @@ fun SettingsScreen(
         }
     }
 
-    // Change Password Dialog
     if (showChangePasswordDialog) {
         AlertDialog(
             onDismissRequest = {
@@ -263,13 +328,13 @@ fun SettingsScreen(
                 confirmPassword = ""
                 authViewModel.clearMessages()
             },
-            title = { Text("Change Password") },
+            title = { Text(stringResource(R.string.settings_change_password)) },
             text = {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Text(
-                        text = "Enter your new password. You will be logged out after changing your password.",
+                        text = stringResource(R.string.settings_change_password_dialog_body),
                         style = MaterialTheme.typography.bodyMedium
                     )
                     OutlinedTextField(
@@ -278,7 +343,7 @@ fun SettingsScreen(
                             newPassword = it
                             authViewModel.clearMessages()
                         },
-                        label = { Text("New Password (min 6 characters)") },
+                        label = { Text(stringResource(R.string.settings_new_password_label)) },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = if (newPasswordVisibility) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -286,7 +351,7 @@ fun SettingsScreen(
                             IconButton(onClick = { newPasswordVisibility = !newPasswordVisibility }) {
                                 Icon(
                                     imageVector = if (newPasswordVisibility) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
-                                    contentDescription = "Toggle password visibility"
+                                    contentDescription = stringResource(R.string.cd_toggle_password)
                                 )
                             }
                         },
@@ -298,7 +363,7 @@ fun SettingsScreen(
                             confirmPassword = it
                             authViewModel.clearMessages()
                         },
-                        label = { Text("Confirm New Password") },
+                        label = { Text(stringResource(R.string.settings_confirm_new_password)) },
                         modifier = Modifier.fillMaxWidth(),
                         visualTransformation = if (confirmPasswordVisibility) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -306,7 +371,7 @@ fun SettingsScreen(
                             IconButton(onClick = { confirmPasswordVisibility = !confirmPasswordVisibility }) {
                                 Icon(
                                     imageVector = if (confirmPasswordVisibility) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
-                                    contentDescription = "Toggle password visibility"
+                                    contentDescription = stringResource(R.string.cd_toggle_password)
                                 )
                             }
                         },
@@ -314,14 +379,14 @@ fun SettingsScreen(
                     )
                     if (newPassword.isNotBlank() && confirmPassword.isNotBlank() && newPassword != confirmPassword) {
                         Text(
-                            text = "Passwords do not match",
+                            text = stringResource(R.string.settings_passwords_no_match),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
                     if (newPassword.isNotBlank() && newPassword.length < 6) {
                         Text(
-                            text = "Password must be at least 6 characters long",
+                            text = stringResource(R.string.settings_password_min_length),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -334,10 +399,11 @@ fun SettingsScreen(
                         if (newPassword.length >= 6 && newPassword == confirmPassword) {
                             authViewModel.changePassword(newPassword)
                         } else {
-                            authViewModel.setError("Please ensure passwords match and are at least 6 characters long.")
+                            authViewModel.setError(context.getString(R.string.auth_password_mismatch_dialog))
                         }
                     },
-                    enabled = !uiState.isLoading && newPassword.isNotBlank() && confirmPassword.isNotBlank() && newPassword == confirmPassword && newPassword.length >= 6
+                    enabled = !uiState.isLoading && newPassword.isNotBlank() && confirmPassword.isNotBlank() &&
+                        newPassword == confirmPassword && newPassword.length >= 6
                 ) {
                     if (uiState.isLoading) {
                         CircularProgressIndicator(
@@ -345,7 +411,7 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onPrimary
                         )
                     } else {
-                        Text("Change Password")
+                        Text(stringResource(R.string.settings_change_password))
                     }
                 }
             },
@@ -358,27 +424,26 @@ fun SettingsScreen(
                         authViewModel.clearMessages()
                     }
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
     }
 
-    // Delete Account Confirmation Dialog
     if (showDeleteAccountDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteAccountDialog = false },
-            title = { Text("Delete Account") },
+            title = { Text(stringResource(R.string.settings_delete_account_title)) },
             text = {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "Are you sure you want to delete your account?",
+                        text = stringResource(R.string.settings_delete_account_confirm),
                         style = MaterialTheme.typography.bodyLarge
                     )
                     Text(
-                        text = "This action cannot be undone. All your data including invoices, companies, and profile information will be permanently deleted.",
+                        text = stringResource(R.string.settings_delete_account_body),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -401,22 +466,21 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onError
                         )
                     } else {
-                        Text("Delete Account")
+                        Text(stringResource(R.string.settings_delete_account_title))
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteAccountDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
     }
 
-    // Auto-close change password dialog on success
     LaunchedEffect(uiState.successMessage) {
         val currentSuccessMessage = uiState.successMessage
-        if (currentSuccessMessage != null && showChangePasswordDialog && currentSuccessMessage.contains("Password changed")) {
+        if (currentSuccessMessage != null && showChangePasswordDialog && currentSuccessMessage == passwordChangedMessage) {
             delay(2000)
             showChangePasswordDialog = false
             newPassword = ""
@@ -425,14 +489,3 @@ fun SettingsScreen(
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-

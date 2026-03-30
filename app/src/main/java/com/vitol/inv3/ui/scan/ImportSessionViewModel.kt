@@ -21,6 +21,7 @@ import com.vitol.inv3.ocr.ParsedInvoice
 import com.vitol.inv3.export.VatRateValidation
 import com.vitol.inv3.utils.ImportImageCache
 import com.vitol.inv3.utils.PdfPageResolver
+import com.vitol.inv3.R
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -72,8 +73,8 @@ class ImportSessionViewModel @Inject constructor(
                 }
                 _buildPagesResult.value = if (pages.isEmpty()) {
                     BuildPagesResult.Error(
-                        if (uris.size == 1) "Could not read the selected file. Use an image or PDF."
-                        else "Could not read the selected files. Use images or PDFs."
+                        if (uris.size == 1) appContext.getString(R.string.import_err_read_file_single)
+                        else appContext.getString(R.string.import_err_read_files_multi)
                     )
                 } else {
                     BuildPagesResult.Success(pages, invoiceType)
@@ -81,7 +82,10 @@ class ImportSessionViewModel @Inject constructor(
             } catch (e: Exception) {
                 Timber.e(e, "ImportSessionViewModel: failed to build pages")
                 _buildPagesResult.value = BuildPagesResult.Error(
-                    "Error reading files: ${e.message ?: "Please try again."}"
+                    appContext.getString(
+                        R.string.import_err_reading,
+                        e.message ?: appContext.getString(R.string.import_err_try_again)
+                    )
                 )
             }
         }
@@ -146,7 +150,7 @@ class ImportSessionViewModel @Inject constructor(
         val pages = _pendingPages.value
         val invoiceType = _invoiceType.value
         if (pages.isEmpty()) {
-            _extractionState.value = ImportExtractionState.Error("No pages to extract")
+            _extractionState.value = ImportExtractionState.Error(appContext.getString(R.string.import_err_no_pages))
             return
         }
         _extractionState.value = ImportExtractionState.Extracting(0, pages.size)
@@ -163,7 +167,7 @@ class ImportSessionViewModel @Inject constructor(
                     }
                     val mime = context.contentResolver.getType(uri)?.takeIf { !it.isNullOrBlank() } ?: "image/jpeg"
                     val parsed = if (bytes == null || bytes.isEmpty()) {
-                        ParsedInvoice(extractionMessage = "Could not read file. Enter details manually.")
+                        ParsedInvoice(extractionMessage = appContext.getString(R.string.import_err_read_page))
                     } else {
                         azure.extractFromBytes(
                             bytes,
@@ -183,7 +187,9 @@ class ImportSessionViewModel @Inject constructor(
                 Timber.d("Import extraction done: ${results.size} invoices")
             } catch (e: Exception) {
                 Timber.e(e, "Import extraction failed")
-                _extractionState.value = ImportExtractionState.Error(e.message ?: "Extraction failed")
+                _extractionState.value = ImportExtractionState.Error(
+                    e.message ?: appContext.getString(R.string.import_err_extraction_failed)
+                )
             }
         }
     }

@@ -3,6 +3,7 @@ package com.vitol.inv3.billing
 import android.app.Activity
 import android.content.Context
 import com.android.billingclient.api.*
+import com.vitol.inv3.R
 import com.vitol.inv3.analytics.MetaAppEvents
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,7 +60,7 @@ class BillingManager @Inject constructor(
                     Timber.d("Billing client ready")
                 } else {
                     Timber.e("Billing setup failed: ${billingResult.debugMessage}")
-                    _errorMessage.value = "Billing service unavailable. Please check your internet connection."
+                    _errorMessage.value = context.getString(R.string.billing_unavailable)
                 }
             }
             
@@ -214,7 +215,7 @@ class BillingManager @Inject constructor(
                     val offerToken = productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
                     if (offerToken == null) {
                         Timber.e("No subscription offer found for ${plan.planId}")
-                        _errorMessage.value = "Subscription not configured. Please try again later."
+                        _errorMessage.value = context.getString(R.string.billing_not_configured)
                         callback(
                             BillingResult.newBuilder()
                                 .setResponseCode(BillingClient.BillingResponseCode.ITEM_UNAVAILABLE)
@@ -266,9 +267,9 @@ class BillingManager @Inject constructor(
                         BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED -> {
                             Timber.d("User already owns this subscription")
                             _errorMessage.value = if (_lastLaunchWasReplacement) {
-                                "Plan change failed. Open Google Play to manage your subscription (cancel, then subscribe to a new plan)."
+                                context.getString(R.string.billing_plan_change_short)
                             } else {
-                                "You already have an active subscription."
+                                context.getString(R.string.billing_already_owned)
                             }
                             queryPurchases() // Refresh status
                         }
@@ -280,7 +281,7 @@ class BillingManager @Inject constructor(
                     callback(response)
                 } else {
                     Timber.e("Product details not found for ${plan.planId}")
-                    _errorMessage.value = "Product not found. Install the app from Google Play (internal testing) and ensure subscriptions are active in Play Console."
+                    _errorMessage.value = context.getString(R.string.billing_product_not_found)
                     callback(
                         BillingResult.newBuilder()
                             .setResponseCode(BillingClient.BillingResponseCode.ITEM_UNAVAILABLE)
@@ -299,26 +300,26 @@ class BillingManager @Inject constructor(
     private fun handleBillingError(responseCode: Int, debugMessage: String) {
         val userMessage = when (responseCode) {
             BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE -> {
-                "Billing service is temporarily unavailable. Please check your internet connection and try again."
+                context.getString(R.string.billing_temp_unavailable)
             }
             BillingClient.BillingResponseCode.BILLING_UNAVAILABLE -> {
-                "Billing is not available on this device. Please update Google Play Store."
+                context.getString(R.string.billing_update_play)
             }
             BillingClient.BillingResponseCode.ITEM_UNAVAILABLE -> {
-                "This subscription is temporarily unavailable. Please try again later."
+                context.getString(R.string.billing_item_unavailable)
             }
             BillingClient.BillingResponseCode.DEVELOPER_ERROR -> {
-                "Billing configuration error. Make sure the app is installed from Google Play (internal testing) and subscriptions are set up in Play Console."
+                context.getString(R.string.billing_dev_error)
             }
             BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED -> {
                 if (_lastLaunchWasReplacement) {
-                    "Plan change failed. To switch plans: open Google Play, cancel your current subscription, then subscribe to the new plan here. Or ensure all plans are in the same subscription group in Play Console."
+                    context.getString(R.string.billing_plan_change_long)
                 } else {
-                    "You already have an active subscription."
+                    context.getString(R.string.billing_already_owned)
                 }
             }
             else -> {
-                "Unable to process purchase. Error code: $responseCode"
+                context.getString(R.string.billing_unable_process, responseCode)
             }
         }
         

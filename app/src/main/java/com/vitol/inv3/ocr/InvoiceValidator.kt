@@ -62,7 +62,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.EMPTY_FIELD,
                 "invoice_id",
-                "Invoice ID is required"
+                emptyList()
             ))
         }
         
@@ -70,7 +70,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.EMPTY_FIELD,
                 "date",
-                "Date is required"
+                emptyList()
             ))
         }
         
@@ -78,7 +78,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.EMPTY_FIELD,
                 "company_name",
-                "Company name is required"
+                emptyList()
             ))
         }
         
@@ -86,7 +86,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.EMPTY_FIELD,
                 "amount_without_vat_eur",
-                "Amount without VAT is required"
+                emptyList()
             ))
         }
         
@@ -94,7 +94,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.EMPTY_FIELD,
                 "vat_amount_eur",
-                "VAT amount is required"
+                emptyList()
             ))
         }
         
@@ -102,7 +102,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.EMPTY_FIELD,
                 "vat_number",
-                "VAT number is required"
+                emptyList()
             ))
         }
         
@@ -110,7 +110,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.EMPTY_FIELD,
                 "company_number",
-                "Company number is required"
+                emptyList()
             ))
         }
         
@@ -125,7 +125,7 @@ class InvoiceValidator {
                 errors.add(InvoiceError(
                     InvoiceErrorType.NEGATIVE_AMOUNT,
                     "amount_without_vat_eur",
-                    "Amount without VAT cannot be negative"
+                    emptyList()
                 ))
             }
         }
@@ -135,7 +135,7 @@ class InvoiceValidator {
                 errors.add(InvoiceError(
                     InvoiceErrorType.NEGATIVE_AMOUNT,
                     "vat_amount_eur",
-                    "VAT amount cannot be negative"
+                    emptyList()
                 ))
             }
         }
@@ -151,7 +151,7 @@ class InvoiceValidator {
                 errors.add(InvoiceError(
                     InvoiceErrorType.AMOUNT_TOO_LARGE,
                     "amount_without_vat_eur",
-                    "Amount without VAT exceeds maximum of ${MAX_AMOUNT.toInt()} EUR"
+                    listOf(MAX_AMOUNT.toInt())
                 ))
             }
         }
@@ -161,7 +161,7 @@ class InvoiceValidator {
                 errors.add(InvoiceError(
                     InvoiceErrorType.AMOUNT_TOO_LARGE,
                     "vat_amount_eur",
-                    "VAT amount exceeds maximum of ${MAX_AMOUNT.toInt()} EUR"
+                    listOf(MAX_AMOUNT.toInt())
                 ))
             }
         }
@@ -179,7 +179,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.INVALID_DATE,
                 "date",
-                "Invalid date format: $dateStr"
+                listOf(dateStr)
             ))
             return errors
         }
@@ -195,7 +195,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.INVALID_DATE,
                 "date",
-                "Date is more than $MAX_FUTURE_MONTHS months in the future"
+                listOf(MAX_FUTURE_MONTHS)
             ))
         }
         
@@ -246,7 +246,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.VAT_AMOUNT_MISMATCH,
                 "vat_amount_eur",
-                "VAT amount does not match any standard rate (0%, 5%, 9%, 21%) within ±${VAT_TOLERANCE} EUR tolerance"
+                listOf(VAT_TOLERANCE.toFloat())
             ))
         }
         
@@ -267,7 +267,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.DUPLICATE_INVOICE_ID,
                 "invoice_id",
-                "Duplicate invoice ID found: $invoiceId ($duplicateCount other invoice(s) with same ID)"
+                listOf(invoiceId, duplicateCount)
             ))
         }
         
@@ -286,7 +286,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.VAT_FORMAT_MISMATCH,
                 "vat_number",
-                "VAT number format is invalid. Lithuanian VAT numbers should be LT followed by 9 or 12 digits."
+                emptyList()
             ))
         }
         
@@ -348,7 +348,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.COMPANY_NUMBER_FORMAT_MISMATCH,
                 "company_number",
-                "Company number format/length does not match any historical company numbers in database"
+                emptyList()
             ))
         }
         
@@ -374,7 +374,7 @@ class InvoiceValidator {
             errors.add(InvoiceError(
                 InvoiceErrorType.COMPANY_VAT_MISMATCH,
                 "vat_number",
-                "Company '$companyName' has different VAT numbers in database: ${differentVatNumbers.joinToString(", ")}"
+                listOf(companyName, differentVatNumbers.joinToString(", "))
             ))
         }
         

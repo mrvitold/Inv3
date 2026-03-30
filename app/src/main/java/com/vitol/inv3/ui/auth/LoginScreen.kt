@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -51,21 +52,16 @@ fun LoginScreen(
     var resetEmail by remember { mutableStateOf("") }
     var isGoogleSignInInProgress by remember { mutableStateOf(false) }
 
-    // Check if Google Sign-In is configured
     val isGoogleSignInConfigured = remember {
         BuildConfig.GOOGLE_OAUTH_CLIENT_ID.isNotBlank()
     }
 
-    // Clear loading state when authenticated; navigation is handled by AppNavHost (authState)
     LaunchedEffect(uiState.isAuthenticated) {
         if (uiState.isAuthenticated) {
             isGoogleSignInInProgress = false
-            // Navigation to home is triggered by AppNavHost's LaunchedEffect(authState)
-            // to avoid duplicate navigation and "Ignoring popBackStack" warning
         }
     }
 
-    // Google Sign-In launcher
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -79,33 +75,33 @@ fun LoginScreen(
                     viewModel.handleGoogleSignInResult(idToken)
                 } ?: run {
                     Timber.e("Failed to get ID token from Google account")
-                    viewModel.setError("Failed to get ID token from Google. Please try again.")
+                    viewModel.setError(context.getString(R.string.auth_google_token_failed))
                 }
             } catch (e: ApiException) {
                 Timber.e(e, "Google sign in failed with ApiException: statusCode=${e.statusCode}, message=${e.message}")
                 val isOAuthNotRegistered = e.statusCode == 10 ||
                     (e.message?.contains("not registered", ignoreCase = true) == true)
                 val errorMessage = when {
-                    e.statusCode == 12501 -> "Google sign in was cancelled"
-                    isOAuthNotRegistered -> {
-                        "App not registered for Google Sign-In.\n\n" +
-                        "For Play Store builds: Add Play App Signing SHA-1 from Play Console → Release → Setup → App Integrity to Google Cloud Console (APIs & Services → Credentials → Android client for com.vitol.inv3).\n\n" +
-                        "For debug builds: Add debug SHA-1 to the same Android client.\n\n" +
-                        "See docs/GOOGLE_SIGNIN_SETUP.md for details."
-                    }
-                    e.statusCode == 7 -> "Network error. Please check your internet connection and try again."
-                    e.statusCode == 8 -> "Internal error. Please try again later."
-                    else -> "Google sign in failed: ${e.message ?: "Unknown error (code: ${e.statusCode})"}"
+                    e.statusCode == 12501 -> context.getString(R.string.auth_google_cancelled)
+                    isOAuthNotRegistered -> context.getString(R.string.auth_google_not_registered)
+                    e.statusCode == 7 -> context.getString(R.string.auth_network_error)
+                    e.statusCode == 8 -> context.getString(R.string.auth_internal_error)
+                    else -> context.getString(
+                        R.string.auth_google_failed_code,
+                        e.message ?: context.getString(R.string.common_unknown) + " (${e.statusCode})"
+                    )
                 }
                 viewModel.setError(errorMessage)
             } catch (e: Exception) {
                 Timber.e(e, "Google sign in error: ${e.javaClass.simpleName}")
-                viewModel.setError("Google sign in failed: ${e.message ?: "Unknown error"}")
+                viewModel.setError(
+                    context.getString(R.string.auth_google_failed_generic, e.message ?: context.getString(R.string.common_unknown))
+                )
             }
         } else {
             Timber.d("Google sign in cancelled or failed: resultCode = ${result.resultCode}")
             if (result.resultCode != Activity.RESULT_CANCELED) {
-                viewModel.setError("Google sign in was cancelled")
+                viewModel.setError(context.getString(R.string.auth_google_cancelled))
             }
         }
     }
@@ -114,30 +110,20 @@ fun LoginScreen(
         val googleClientId = BuildConfig.GOOGLE_OAUTH_CLIENT_ID
         if (googleClientId.isBlank()) {
             Timber.w("Google Sign-In attempted but GOOGLE_OAUTH_CLIENT_ID is not configured")
-            viewModel.setError(
-                "Google Sign-In is not configured.\n\n" +
-                "Please set GOOGLE_OAUTH_CLIENT_ID in gradle.properties.\n" +
-                "See GOOGLE_SIGNIN_SETUP.md for setup instructions."
-            )
+            viewModel.setError(context.getString(R.string.auth_google_not_configured))
             return
         }
 
-        // Validate client ID format (should be Web Client ID ending with .apps.googleusercontent.com)
         if (!googleClientId.endsWith(".apps.googleusercontent.com")) {
             Timber.w("Google Client ID format may be incorrect: $googleClientId")
-            viewModel.setError(
-                "Invalid Google Client ID format.\n\n" +
-                "The Client ID must be a Web Client ID (ending with .apps.googleusercontent.com), " +
-                "not an Android Client ID.\n" +
-                "See GOOGLE_SIGNIN_SETUP.md for details."
-            )
+            viewModel.setError(context.getString(R.string.auth_invalid_client_id))
             return
         }
 
         try {
             isGoogleSignInInProgress = true
             Timber.d("Starting Google Sign-In with client ID: ${googleClientId.take(20)}...")
-            
+
             val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
                 .requestIdToken(googleClientId)
                 .requestEmail()
@@ -149,7 +135,9 @@ fun LoginScreen(
         } catch (e: Exception) {
             isGoogleSignInInProgress = false
             Timber.e(e, "Error launching Google Sign-In intent")
-            viewModel.setError("Failed to start Google Sign-In: ${e.message ?: "Unknown error"}")
+            viewModel.setError(
+                context.getString(R.string.auth_failed_start_google, e.message ?: context.getString(R.string.common_unknown))
+            )
         }
     }
 
@@ -161,12 +149,11 @@ fun LoginScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = if (isSignUp) "Sign Up" else "Sign In",
+            text = if (isSignUp) stringResource(R.string.auth_sign_up) else stringResource(R.string.auth_sign_in),
             style = MaterialTheme.typography.headlineLarge,
             modifier = Modifier.padding(bottom = 32.dp)
         )
 
-        // Error Message
         uiState.errorMessage?.let { message ->
             Card(
                 modifier = Modifier
@@ -182,7 +169,6 @@ fun LoginScreen(
             }
         }
 
-        // Success Message
         uiState.successMessage?.let { message ->
             Card(
                 modifier = Modifier
@@ -198,7 +184,6 @@ fun LoginScreen(
             }
         }
 
-        // Email Confirmation Message
         if (uiState.showEmailConfirmation) {
             Card(
                 modifier = Modifier
@@ -207,7 +192,7 @@ fun LoginScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             ) {
                 Text(
-                    text = "Please check your email to confirm your account before signing in.",
+                    text = stringResource(R.string.auth_check_email_confirm),
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     modifier = Modifier.padding(12.dp)
                 )
@@ -242,16 +227,16 @@ fun LoginScreen(
                         strokeWidth = 2.dp,
                     )
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("Signing in...")
+                    Text(stringResource(R.string.auth_signing_in))
                 } else {
                     Image(
                         painter = painterResource(R.drawable.ic_google_logo),
-                        contentDescription = "Google",
+                        contentDescription = stringResource(R.string.cd_google),
                         modifier = Modifier.size(24.dp),
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Text(
-                        "Sign in with Google",
+                        stringResource(R.string.auth_sign_in_google),
                         style = MaterialTheme.typography.bodyLarge,
                     )
                 }
@@ -263,7 +248,8 @@ fun LoginScreen(
             ) {
                 HorizontalDivider(modifier = Modifier.weight(1f))
                 Text(
-                    text = if (isSignUp) "or sign up with email" else "or continue with email",
+                    text = if (isSignUp) stringResource(R.string.auth_or_sign_up_email)
+                    else stringResource(R.string.auth_or_continue_email),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 12.dp),
@@ -279,7 +265,7 @@ fun LoginScreen(
                 email = it
                 viewModel.clearMessages()
             },
-            label = { Text("Email") },
+            label = { Text(stringResource(R.string.common_email)) },
             modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             enabled = !uiState.isLoading
@@ -293,7 +279,7 @@ fun LoginScreen(
                 password = it
                 viewModel.clearMessages()
             },
-            label = { Text("Password") },
+            label = { Text(stringResource(R.string.common_password)) },
             modifier = Modifier.fillMaxWidth(),
             visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -301,7 +287,7 @@ fun LoginScreen(
                 IconButton(onClick = { passwordVisible = !passwordVisible }) {
                     Icon(
                         imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                        contentDescription = "Toggle password visibility"
+                        contentDescription = stringResource(R.string.cd_toggle_password)
                     )
                 }
             },
@@ -316,7 +302,7 @@ fun LoginScreen(
                     confirmPassword = it
                     viewModel.clearMessages()
                 },
-                label = { Text("Confirm Password") },
+                label = { Text(stringResource(R.string.common_confirm_password)) },
                 modifier = Modifier.fillMaxWidth(),
                 visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -324,7 +310,7 @@ fun LoginScreen(
                     IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
                         Icon(
                             imageVector = if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                            contentDescription = "Toggle password visibility"
+                            contentDescription = stringResource(R.string.cd_toggle_password)
                         )
                     }
                 },
@@ -339,7 +325,7 @@ fun LoginScreen(
                 if (password == confirmPassword && password.length >= 6) {
                     viewModel.signUp(email, password)
                 } else {
-                    viewModel.setError("Passwords must match and be at least 6 characters long")
+                    viewModel.setError(context.getString(R.string.auth_password_mismatch_rule))
                 }
             } else {
                 viewModel.signIn(email, password)
@@ -359,7 +345,7 @@ fun LoginScreen(
                         modifier = Modifier.size(20.dp),
                     )
                 } else {
-                    Text(if (isSignUp) "Sign Up" else "Sign In")
+                    Text(if (isSignUp) stringResource(R.string.auth_sign_up) else stringResource(R.string.auth_sign_in))
                 }
             }
         } else {
@@ -374,7 +360,7 @@ fun LoginScreen(
                         color = MaterialTheme.colorScheme.onPrimary,
                     )
                 } else {
-                    Text(if (isSignUp) "Sign Up" else "Sign In")
+                    Text(if (isSignUp) stringResource(R.string.auth_sign_up) else stringResource(R.string.auth_sign_in))
                 }
             }
         }
@@ -385,7 +371,7 @@ fun LoginScreen(
                 onClick = { showResetPassword = true },
                 enabled = !uiState.isLoading
             ) {
-                Text("Forgot Password?")
+                Text(stringResource(R.string.auth_forgot_password))
             }
         }
 
@@ -400,21 +386,23 @@ fun LoginScreen(
             },
             enabled = !uiState.isLoading
         ) {
-            Text(if (isSignUp) "Already have an account? Sign In" else "Don't have an account? Sign Up")
+            Text(
+                if (isSignUp) stringResource(R.string.auth_already_have_account)
+                else stringResource(R.string.auth_no_account)
+            )
         }
     }
 
-    // Reset Password Dialog
     if (showResetPassword) {
         AlertDialog(
             onDismissRequest = { showResetPassword = false },
-            title = { Text("Reset Password") },
+            title = { Text(stringResource(R.string.auth_reset_password_title)) },
             text = {
                 Column {
                     OutlinedTextField(
                         value = resetEmail,
                         onValueChange = { resetEmail = it },
-                        label = { Text("Email") },
+                        label = { Text(stringResource(R.string.common_email)) },
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                         enabled = !uiState.isLoading
@@ -432,15 +420,14 @@ fun LoginScreen(
                     },
                     enabled = !uiState.isLoading && resetEmail.isNotBlank()
                 ) {
-                    Text("Send Reset Email")
+                    Text(stringResource(R.string.auth_send_reset_email))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showResetPassword = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
     }
 }
-

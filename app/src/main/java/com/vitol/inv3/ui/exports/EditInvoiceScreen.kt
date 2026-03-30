@@ -36,7 +36,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.vitol.inv3.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.vitol.inv3.Routes
@@ -105,6 +108,7 @@ fun EditInvoiceScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
 
     // Form fields
     var invoiceIdField by remember { mutableStateOf("") }
@@ -138,11 +142,11 @@ fun EditInvoiceScreen(
                 vatNumberField = foundInvoice.vat_number ?: ""
                 companyNumberField = foundInvoice.company_number ?: ""
             } else {
-                errorMessage = "Invoice not found"
+                errorMessage = context.getString(R.string.error_invoice_not_found)
             }
         } catch (e: Exception) {
             Timber.e(e, "Failed to load invoice")
-            errorMessage = "Failed to load invoice: ${e.message}"
+            errorMessage = context.getString(R.string.error_load_invoice, e.message ?: "")
         } finally {
             isLoading = false
         }
@@ -151,12 +155,12 @@ fun EditInvoiceScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Edit Invoice") },
+                title = { Text(stringResource(R.string.review_title_edit)) },
                 navigationIcon = {
                     IconButton(onClick = { navController?.popBackStack() }) {
                         Icon(
                             imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = stringResource(R.string.common_back)
                         )
                     }
                 }
@@ -175,12 +179,12 @@ fun EditInvoiceScreen(
                 horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = errorMessage ?: "Invoice not found",
+                    text = errorMessage ?: stringResource(R.string.error_invoice_not_found),
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Spacer(modifier = Modifier.padding(16.dp))
                 Button(onClick = { navController?.popBackStack() }) {
-                    Text("Go Back")
+                    Text(stringResource(R.string.common_back))
                 }
             }
         } else {
@@ -208,20 +212,20 @@ fun EditInvoiceScreen(
                 OutlinedTextField(
                     value = invoiceIdField,
                     onValueChange = { invoiceIdField = it },
-                    label = { Text("Invoice ID") },
+                    label = { Text(stringResource(R.string.label_invoice_id)) },
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 OutlinedTextField(
                     value = dateField,
                     onValueChange = { dateField = it },
-                    label = { Text("Date") },
+                    label = { Text(stringResource(R.string.label_date)) },
                     modifier = Modifier.fillMaxWidth(),
                     trailingIcon = {
                         IconButton(onClick = { showDatePicker = true }) {
                             Icon(
                                 imageVector = Icons.Default.CalendarToday,
-                                contentDescription = "Pick date"
+                                contentDescription = stringResource(R.string.cd_pick_date)
                             )
                         }
                     },
@@ -231,35 +235,35 @@ fun EditInvoiceScreen(
                 OutlinedTextField(
                     value = companyNameField,
                     onValueChange = { companyNameField = it },
-                    label = { Text("Company Name") },
+                    label = { Text(stringResource(R.string.label_company_name_field)) },
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 OutlinedTextField(
                     value = amountWithoutVatField,
                     onValueChange = { amountWithoutVatField = it },
-                    label = { Text("Amount without VAT (EUR)") },
+                    label = { Text(stringResource(R.string.label_amount_without_vat_eur)) },
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 OutlinedTextField(
                     value = vatAmountField,
                     onValueChange = { vatAmountField = it },
-                    label = { Text("VAT Amount (EUR)") },
+                    label = { Text(stringResource(R.string.label_vat_amount_eur)) },
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 OutlinedTextField(
                     value = vatNumberField,
                     onValueChange = { vatNumberField = it },
-                    label = { Text("VAT Number") },
+                    label = { Text(stringResource(R.string.label_vat_number_field)) },
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 OutlinedTextField(
                     value = companyNumberField,
                     onValueChange = { companyNumberField = it },
-                    label = { Text("Company Number") },
+                    label = { Text(stringResource(R.string.label_company_no)) },
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -278,7 +282,7 @@ fun EditInvoiceScreen(
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Delete")
+                        Text(stringResource(R.string.common_delete))
                     }
                     Button(
                         onClick = {
@@ -303,7 +307,10 @@ fun EditInvoiceScreen(
                                     },
                                     onError = { e ->
                                         isSaving = false
-                                        errorMessage = "Failed to save: ${e.message}"
+                                        errorMessage = context.getString(
+                                            R.string.invoice_save_failed_msg,
+                                            e.message ?: ""
+                                        )
                                     }
                                 )
                             }
@@ -317,7 +324,7 @@ fun EditInvoiceScreen(
                                 color = MaterialTheme.colorScheme.onPrimary
                             )
                         }
-                        Text("Save")
+                        Text(stringResource(R.string.common_save))
                     }
                 }
 
@@ -332,12 +339,12 @@ fun EditInvoiceScreen(
                                 }
                                 showDatePicker = false
                             }) {
-                                Text("OK")
+                                Text(stringResource(R.string.common_ok))
                             }
                         },
                         dismissButton = {
                             TextButton(onClick = { showDatePicker = false }) {
-                                Text("Cancel")
+                                Text(stringResource(R.string.common_cancel))
                             }
                         }
                     ) {
@@ -348,8 +355,8 @@ fun EditInvoiceScreen(
                 if (showDeleteDialog) {
                     androidx.compose.material3.AlertDialog(
                         onDismissRequest = { showDeleteDialog = false },
-                        title = { Text("Delete Invoice") },
-                        text = { Text("Are you sure you want to delete this invoice? This action cannot be undone.") },
+                        title = { Text(stringResource(R.string.exports_delete_title)) },
+                        text = { Text(stringResource(R.string.edit_invoice_delete_confirm)) },
                         confirmButton = {
                             Button(
                                 onClick = {
@@ -361,19 +368,22 @@ fun EditInvoiceScreen(
                                                 navController?.popBackStack()
                                             },
                                             onError = { e ->
-                                                errorMessage = "Failed to delete: ${e.message}"
+                                                errorMessage = context.getString(
+                                                    R.string.invoice_delete_failed_msg,
+                                                    e.message ?: ""
+                                                )
                                                 showDeleteDialog = false
                                             }
                                         )
                                     }
                                 }
                             ) {
-                                Text("Delete")
+                                Text(stringResource(R.string.common_delete))
                             }
                         },
                         dismissButton = {
                             TextButton(onClick = { showDeleteDialog = false }) {
-                                Text("Cancel")
+                                Text(stringResource(R.string.common_cancel))
                             }
                         }
                     )

@@ -30,7 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.vitol.inv3.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.vitol.inv3.Routes
@@ -64,6 +66,7 @@ fun CompaniesScreen(
     val companies by viewModel.items.collectAsState()
     var companyToDelete by remember { mutableStateOf<CompanyRecord?>(null) }
     var showCompanyLimitDialog by remember { mutableStateOf(false) }
+    val thisCompanyFallback = stringResource(R.string.label_this_company)
 
     LaunchedEffect(Unit) { viewModel.load() }
 
@@ -74,9 +77,12 @@ fun CompaniesScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text(if (markAsOwnCompany) "Add Your Company" else "Companies")
+        Text(
+            if (markAsOwnCompany) stringResource(R.string.companies_add_title)
+            else stringResource(R.string.companies_title)
+        )
         if (companies.isEmpty()) {
-            Text("No companies yet or Supabase not configured.")
+            Text(stringResource(R.string.companies_empty))
         }
         for (company in companies) {
             Row(
@@ -100,7 +106,7 @@ fun CompaniesScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Edit,
-                        contentDescription = "Edit company"
+                        contentDescription = stringResource(R.string.cd_edit_company)
                     )
                 }
                 IconButton(
@@ -108,14 +114,26 @@ fun CompaniesScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Delete,
-                        contentDescription = "Remove company"
+                        contentDescription = stringResource(R.string.cd_remove_company)
                     )
                 }
             }
         }
-        OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Company name") })
-        OutlinedTextField(value = number, onValueChange = { number = it }, label = { Text("Company number") })
-        OutlinedTextField(value = vat, onValueChange = { vat = it }, label = { Text("VAT number") })
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text(stringResource(R.string.label_company_name)) }
+        )
+        OutlinedTextField(
+            value = number,
+            onValueChange = { number = it },
+            label = { Text(stringResource(R.string.label_company_number)) }
+        )
+        OutlinedTextField(
+            value = vat,
+            onValueChange = { vat = it },
+            label = { Text(stringResource(R.string.label_vat_number)) }
+        )
         Button(onClick = {
             val company = CompanyRecord(
                 company_name = name,
@@ -135,16 +153,21 @@ fun CompaniesScreen(
                 }
             )
             name = ""; number = ""; vat = ""
-        }) { Text("Save") }
+        }) { Text(stringResource(R.string.common_save)) }
     }
 
     // Company limit reached dialog
     if (showCompanyLimitDialog && markAsOwnCompany) {
         AlertDialog(
             onDismissRequest = { showCompanyLimitDialog = false },
-            title = { Text("Company Limit Reached") },
+            title = { Text(stringResource(R.string.own_company_limit_title)) },
             text = {
-                Text("Your plan allows ${viewModel.maxOwnCompanies} own companies. Upgrade to add more.")
+                Text(
+                    stringResource(
+                        R.string.own_company_limit_body,
+                        viewModel.maxOwnCompanies
+                    )
+                )
             },
             confirmButton = {
                 Button(
@@ -153,12 +176,12 @@ fun CompaniesScreen(
                         onCompanyLimitReached?.invoke()
                     }
                 ) {
-                    Text("Upgrade")
+                    Text(stringResource(R.string.common_upgrade))
                 }
             },
             dismissButton = {
                 OutlinedButton(onClick = { showCompanyLimitDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -168,9 +191,14 @@ fun CompaniesScreen(
     companyToDelete?.let { company ->
         AlertDialog(
             onDismissRequest = { companyToDelete = null },
-            title = { Text("Confirm Removal") },
+            title = { Text(stringResource(R.string.companies_confirm_remove_title)) },
             text = {
-                Text("Are you sure you want to remove ${company.company_name ?: "this company"}?")
+                Text(
+                    stringResource(
+                        R.string.companies_confirm_remove_body,
+                        company.company_name ?: thisCompanyFallback
+                    )
+                )
             },
             confirmButton = {
                 Button(
@@ -179,14 +207,14 @@ fun CompaniesScreen(
                         companyToDelete = null
                     }
                 ) {
-                    Text("Remove")
+                    Text(stringResource(R.string.common_remove))
                 }
             },
             dismissButton = {
                 OutlinedButton(
                     onClick = { companyToDelete = null }
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )

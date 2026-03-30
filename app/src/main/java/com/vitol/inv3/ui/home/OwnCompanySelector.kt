@@ -16,6 +16,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import com.vitol.inv3.R
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
@@ -43,6 +45,7 @@ fun OwnCompanySelector(
     var companyToRemove by remember { mutableStateOf<CompanyRecord?>(null) }
     var showCompanyLimitDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val thisCompanyFallback = stringResource(R.string.label_this_company)
     val scope = rememberCoroutineScope()
     val ownCompanies by viewModel.ownCompanies.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -109,7 +112,7 @@ fun OwnCompanySelector(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Your company:",
+                            text = stringResource(R.string.own_company_label),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -122,7 +125,7 @@ fun OwnCompanySelector(
                             )
                         } else {
                             Text(
-                                text = "Not selected",
+                                text = stringResource(R.string.common_not_selected),
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                             )
@@ -136,7 +139,10 @@ fun OwnCompanySelector(
                             expanded = !expanded
                         }
                     }) {
-                        Text(if (activeCompanyName == null) "Add" else "Change")
+                        Text(
+                            if (activeCompanyName == null) stringResource(R.string.common_add)
+                            else stringResource(R.string.common_change)
+                        )
                     }
                 }
                 
@@ -156,7 +162,7 @@ fun OwnCompanySelector(
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = "Add your company for better field detection",
+                            text = stringResource(R.string.own_company_hint),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
@@ -191,7 +197,7 @@ fun OwnCompanySelector(
                         DropdownMenuItem(
                             text = { 
                                 Text(
-                                    "No companies added yet.\nTap here or below to add one.",
+                                    stringResource(R.string.own_company_no_companies),
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                             },
@@ -208,7 +214,8 @@ fun OwnCompanySelector(
                                 text = {
                                     Column {
                                         Text(
-                                            text = company.company_name ?: "Unknown",
+                                            text = company.company_name
+                                                ?: stringResource(R.string.common_unknown),
                                             style = MaterialTheme.typography.bodyLarge
                                         )
                                         if (!company.company_number.isNullOrBlank() || !company.vat_number.isNullOrBlank()) {
@@ -228,7 +235,12 @@ fun OwnCompanySelector(
                                         context.setActiveOwnCompanyId(company.id)
                                         onCompanySelected(company.id)
                                         expanded = false
-                                        onShowSnackbar("Company selected: ${company.company_name}")
+                                        onShowSnackbar(
+                                            context.getString(
+                                                R.string.own_company_selected,
+                                                company.company_name ?: context.getString(R.string.common_unknown)
+                                            )
+                                        )
                                     }
                                 },
                                 trailingIcon = {
@@ -239,7 +251,7 @@ fun OwnCompanySelector(
                                         if (company.id == activeCompanyId) {
                                             Icon(
                                                 imageVector = Icons.Default.Check,
-                                                contentDescription = "Selected",
+                                                contentDescription = stringResource(R.string.cd_selected),
                                                 tint = MaterialTheme.colorScheme.primary,
                                                 modifier = Modifier.size(20.dp)
                                             )
@@ -254,7 +266,7 @@ fun OwnCompanySelector(
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Edit,
-                                                contentDescription = "Edit",
+                                                contentDescription = stringResource(R.string.cd_edit),
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 modifier = Modifier.size(18.dp)
                                             )
@@ -267,7 +279,7 @@ fun OwnCompanySelector(
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Delete,
-                                                contentDescription = "Remove",
+                                                contentDescription = stringResource(R.string.common_remove),
                                                 tint = MaterialTheme.colorScheme.error,
                                                 modifier = Modifier.size(18.dp)
                                             )
@@ -280,7 +292,7 @@ fun OwnCompanySelector(
                     }
                     
                     DropdownMenuItem(
-                        text = { Text("+ Add New Company") },
+                        text = { Text(stringResource(R.string.own_company_add_new)) },
                         onClick = { 
                             showAddForm = true
                             companyToEdit = null
@@ -306,8 +318,10 @@ fun OwnCompanySelector(
                     showAddForm = false
                     companyToEdit = null
                     onShowSnackbar(
-                        if (wasEdit) "Company updated and selected"
-                        else "Company added and selected"
+                        context.getString(
+                            if (wasEdit) R.string.own_company_updated
+                            else R.string.own_company_added
+                        )
                     )
                 }
             },
@@ -324,9 +338,14 @@ fun OwnCompanySelector(
     if (showCompanyLimitDialog) {
         AlertDialog(
             onDismissRequest = { showCompanyLimitDialog = false },
-            title = { Text("Company Limit Reached") },
+            title = { Text(stringResource(R.string.own_company_limit_title)) },
             text = {
-                Text("Your plan allows ${viewModel.maxOwnCompanies} own companies. Upgrade to add more.")
+                Text(
+                    stringResource(
+                        R.string.own_company_limit_body,
+                        viewModel.maxOwnCompanies
+                    )
+                )
             },
             confirmButton = {
                 Button(
@@ -335,12 +354,12 @@ fun OwnCompanySelector(
                         navController?.navigate(com.vitol.inv3.Routes.Subscription)
                     }
                 ) {
-                    Text("Upgrade")
+                    Text(stringResource(R.string.common_upgrade))
                 }
             },
             dismissButton = {
                 OutlinedButton(onClick = { showCompanyLimitDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -350,9 +369,14 @@ fun OwnCompanySelector(
     companyToRemove?.let { company ->
         AlertDialog(
             onDismissRequest = { companyToRemove = null },
-            title = { Text("Remove Company") },
+            title = { Text(stringResource(R.string.own_company_remove_title)) },
             text = {
-                Text("Are you sure you want to remove \"${company.company_name ?: "this company"}\" from your own companies?")
+                Text(
+                    stringResource(
+                        R.string.own_company_remove_body,
+                        company.company_name ?: thisCompanyFallback
+                    )
+                )
             },
             confirmButton = {
                 Button(
@@ -363,9 +387,9 @@ fun OwnCompanySelector(
                             if (company.id == activeCompanyId) {
                                 context.setActiveOwnCompanyId(null)
                                 onCompanySelected(null)
-                                onShowSnackbar("Company removed")
+                                onShowSnackbar(context.getString(R.string.own_company_removed))
                             } else {
-                                onShowSnackbar("Company removed")
+                                onShowSnackbar(context.getString(R.string.own_company_removed))
                             }
                             viewModel.loadOwnCompanies()
                             companyToRemove = null
@@ -373,14 +397,14 @@ fun OwnCompanySelector(
                         }
                     }
                 ) {
-                    Text("Remove")
+                    Text(stringResource(R.string.common_remove))
                 }
             },
             dismissButton = {
                 OutlinedButton(
                     onClick = { companyToRemove = null }
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -401,6 +425,8 @@ private fun AddCompanyDialog(
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val scrollState = rememberScrollState()
+    val dialogTitle = if (companyToEdit != null) stringResource(R.string.dialog_edit_company)
+    else stringResource(R.string.dialog_add_company)
     
     LaunchedEffect(companyToEdit?.id) {
         name = companyToEdit?.company_name ?: ""
@@ -429,14 +455,14 @@ private fun AddCompanyDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    text = if (companyToEdit != null) "Edit Company" else "Add Your Company",
+                    text = dialogTitle,
                     style = MaterialTheme.typography.titleLarge
                 )
                 
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Company name") },
+                    label = { Text(stringResource(R.string.label_company_name)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
@@ -446,7 +472,7 @@ private fun AddCompanyDialog(
                 OutlinedTextField(
                     value = number,
                     onValueChange = { number = it },
-                    label = { Text("Company number") },
+                    label = { Text(stringResource(R.string.label_company_number)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
@@ -456,7 +482,7 @@ private fun AddCompanyDialog(
                 OutlinedTextField(
                     value = vat,
                     onValueChange = { vat = it },
-                    label = { Text("VAT number") },
+                    label = { Text(stringResource(R.string.label_vat_number)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -471,7 +497,7 @@ private fun AddCompanyDialog(
                         onClick = onDismiss,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Cancel")
+                        Text(stringResource(R.string.common_cancel))
                     }
                     
                     Button(
@@ -501,7 +527,10 @@ private fun AddCompanyDialog(
                         modifier = Modifier.weight(1f),
                         enabled = name.isNotBlank()
                     ) {
-                        Text(if (companyToEdit != null) "Update" else "Save")
+                        Text(
+                            if (companyToEdit != null) stringResource(R.string.common_update)
+                            else stringResource(R.string.common_save)
+                        )
                     }
                 }
             }

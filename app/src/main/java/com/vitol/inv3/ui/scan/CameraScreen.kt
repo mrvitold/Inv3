@@ -40,19 +40,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.vitol.inv3.R
 import com.vitol.inv3.Routes
 import com.vitol.inv3.ui.subscription.SubscriptionViewModel
 import com.vitol.inv3.ui.subscription.UpgradeDialog
@@ -66,6 +68,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.ui.text.style.Hyphens
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextAlign
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -76,16 +80,32 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.Executor
 
+/** Titles in side-by-side cards: avoid hyphenation that splits Lithuanian words mid-syllable. */
+@Composable
+private fun InvoiceTypeCardTitle(text: String, color: Color) {
+    Text(
+        text = text,
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center,
+        maxLines = 2,
+        style = MaterialTheme.typography.titleMedium.copy(
+            hyphens = Hyphens.None,
+            lineBreak = LineBreak.Simple
+        ),
+        color = color
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SelectInvoiceTypeScreen(navController: NavController) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Select Invoice Type") },
+                title = { Text(stringResource(R.string.select_invoice_type_title)) },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.common_back))
                     }
                 }
             )
@@ -100,7 +120,7 @@ fun SelectInvoiceTypeScreen(navController: NavController) {
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "What type of invoice are you scanning?",
+                text = stringResource(R.string.select_invoice_type_question),
                 style = MaterialTheme.typography.headlineSmall,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(bottom = 32.dp)
@@ -108,7 +128,7 @@ fun SelectInvoiceTypeScreen(navController: NavController) {
             
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // Purchase Invoice Button
                 Card(
@@ -125,24 +145,27 @@ fun SelectInvoiceTypeScreen(navController: NavController) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(24.dp),
+                            .padding(horizontal = 12.dp, vertical = 20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.ShoppingCart,
-                            contentDescription = "Purchase",
+                            contentDescription = stringResource(R.string.cd_purchase),
                             modifier = Modifier.padding(bottom = 8.dp),
                             tint = MaterialTheme.colorScheme.onPrimaryContainer
                         )
-                        Text(
-                            text = "Purchase",
-                            style = MaterialTheme.typography.titleLarge,
+                        InvoiceTypeCardTitle(
+                            text = stringResource(R.string.invoice_type_purchase),
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                         Text(
-                            text = "Invoice from supplier",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = stringResource(R.string.invoice_type_purchase_sub),
+                            modifier = Modifier.fillMaxWidth(),
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                hyphens = Hyphens.None,
+                                lineBreak = LineBreak.Simple
+                            ),
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                             textAlign = TextAlign.Center
                         )
@@ -164,24 +187,27 @@ fun SelectInvoiceTypeScreen(navController: NavController) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(24.dp),
+                            .padding(horizontal = 12.dp, vertical = 20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Sell,
-                            contentDescription = "Sales",
+                            contentDescription = stringResource(R.string.cd_sales),
                             modifier = Modifier.padding(bottom = 8.dp),
                             tint = MaterialTheme.colorScheme.onSecondaryContainer
                         )
-                        Text(
-                            text = "Sales",
-                            style = MaterialTheme.typography.titleLarge,
+                        InvoiceTypeCardTitle(
+                            text = stringResource(R.string.invoice_type_sales),
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                         Text(
-                            text = "Invoice to customer",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = stringResource(R.string.invoice_type_sales_sub),
+                            modifier = Modifier.fillMaxWidth(),
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                hyphens = Hyphens.None,
+                                lineBreak = LineBreak.Simple
+                            ),
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             textAlign = TextAlign.Center
                         )
@@ -254,10 +280,10 @@ fun SelectImportTypeScreen(navController: NavController) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Select Invoice Type") },
+                title = { Text(stringResource(R.string.select_invoice_type_title)) },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.common_back))
                     }
                 }
             )
@@ -276,14 +302,14 @@ fun SelectImportTypeScreen(navController: NavController) {
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
-                    text = "What type of invoice are you importing?",
+                    text = stringResource(R.string.select_import_type_question),
                     style = MaterialTheme.typography.headlineSmall,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(bottom = 32.dp)
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Card(
                         modifier = Modifier.weight(1f),
@@ -298,24 +324,27 @@ fun SelectImportTypeScreen(navController: NavController) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(24.dp),
+                                .padding(horizontal = 12.dp, vertical = 20.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Upload,
-                                contentDescription = "Import purchase",
+                                contentDescription = stringResource(R.string.cd_import_purchase),
                                 modifier = Modifier.padding(bottom = 8.dp),
                                 tint = MaterialTheme.colorScheme.onPrimaryContainer
                             )
-                            Text(
-                                text = "Purchase",
-                                style = MaterialTheme.typography.titleLarge,
+                            InvoiceTypeCardTitle(
+                                text = stringResource(R.string.invoice_type_purchase),
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Text(
-                                text = "Invoice from supplier",
-                                style = MaterialTheme.typography.bodyMedium,
+                                text = stringResource(R.string.invoice_type_purchase_sub),
+                                modifier = Modifier.fillMaxWidth(),
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    hyphens = Hyphens.None,
+                                    lineBreak = LineBreak.Simple
+                                ),
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 textAlign = TextAlign.Center
                             )
@@ -334,24 +363,27 @@ fun SelectImportTypeScreen(navController: NavController) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(24.dp),
+                                .padding(horizontal = 12.dp, vertical = 20.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Upload,
-                                contentDescription = "Import sales",
+                                contentDescription = stringResource(R.string.cd_import_sales),
                                 modifier = Modifier.padding(bottom = 8.dp),
                                 tint = MaterialTheme.colorScheme.onSecondaryContainer
                             )
-                            Text(
-                                text = "Sales",
-                                style = MaterialTheme.typography.titleLarge,
+                            InvoiceTypeCardTitle(
+                                text = stringResource(R.string.invoice_type_sales),
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
                             )
                             Text(
-                                text = "Invoice to customer",
-                                style = MaterialTheme.typography.bodyMedium,
+                                text = stringResource(R.string.invoice_type_sales_sub),
+                                modifier = Modifier.fillMaxWidth(),
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    hyphens = Hyphens.None,
+                                    lineBreak = LineBreak.Simple
+                                ),
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                                 textAlign = TextAlign.Center
                             )
@@ -378,7 +410,7 @@ fun SelectImportTypeScreen(navController: NavController) {
                         CircularProgressIndicator()
                         Spacer(Modifier.height(24.dp))
                         Text(
-                            text = "Preparing files…",
+                            text = stringResource(R.string.preparing_files),
                             style = MaterialTheme.typography.bodyLarge
                         )
                     }
@@ -413,7 +445,7 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
             permissionJustGranted = true
         } else {
             scope.launch {
-                snackbarHostState.showSnackbar("Camera permission is required to scan invoices")
+                snackbarHostState.showSnackbar(context.getString(R.string.camera_permission_snackbar))
             }
         }
     }
@@ -448,10 +480,10 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Scan Invoice") },
+                title = { Text(stringResource(R.string.scan_invoice_title)) },
                 navigationIcon = {
                     androidx.compose.material3.IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.common_back))
                     }
                 },
                 actions = {
@@ -462,7 +494,7 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
                             }
                         }
                     ) {
-                        Icon(Icons.Default.Home, contentDescription = "Exit to Home")
+                        Icon(Icons.Default.Home, contentDescription = stringResource(R.string.cd_exit_home))
                     }
                 }
             )
@@ -485,7 +517,7 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
                         modifier = Modifier.padding(24.dp)
                     ) {
                         Text(
-                            text = "Camera permission is required",
+                            text = stringResource(R.string.camera_permission_required),
                             style = MaterialTheme.typography.headlineSmall
                         )
                         androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(16.dp))
@@ -494,7 +526,7 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
                                 permissionLauncher.launch(Manifest.permission.CAMERA)
                             }
                         ) {
-                            Text("Grant Permission")
+                            Text(stringResource(R.string.camera_grant_permission))
                         }
                     }
                 }
@@ -505,7 +537,7 @@ fun CameraScreen(navController: NavController, invoiceType: String = "P") {
                         scope.launch {
                             try {
                                 if (uri == null) {
-                                    snackbarHostState.showSnackbar("Failed to capture image")
+                                    snackbarHostState.showSnackbar(context.getString(R.string.capture_failed))
                                     return@launch
                                 }
                                 if (!subscriptionViewModel.canScanPagesFresh(1)) {
@@ -549,6 +581,8 @@ fun CameraPreview(
     onCapturingChanged: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
+    val captureLabel = stringResource(R.string.capture)
+    val captureCd = stringResource(R.string.cd_capture)
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { ContextCompat.getMainExecutor(context) }
     val scope = rememberCoroutineScope()
@@ -639,10 +673,10 @@ fun CameraPreview(
             ) {
                 Icon(
                     Icons.Default.CameraAlt,
-                    contentDescription = "Capture",
+                    contentDescription = captureCd,
                     modifier = Modifier.padding(end = 8.dp)
                 )
-                Text("Capture")
+                Text(captureLabel)
             }
         }
         }

@@ -19,7 +19,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.vitol.inv3.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.vitol.inv3.data.remote.CompanyRecord
@@ -62,31 +64,31 @@ fun EditCompanyScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = "Edit Company",
+            text = stringResource(R.string.dialog_edit_company),
             style = MaterialTheme.typography.headlineSmall
         )
 
         if (isLoading) {
-            Text("Loading company data...")
+            Text(stringResource(R.string.edit_company_loading))
         } else if (company == null) {
-            Text("Company not found")
+            Text(stringResource(R.string.edit_company_not_found))
         } else {
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("Company name") },
+                label = { Text(stringResource(R.string.label_company_name)) },
                 modifier = Modifier.fillMaxWidth()
             )
             OutlinedTextField(
                 value = number,
                 onValueChange = { number = it },
-                label = { Text("Company number") },
+                label = { Text(stringResource(R.string.label_company_number)) },
                 modifier = Modifier.fillMaxWidth()
             )
             OutlinedTextField(
                 value = vat,
                 onValueChange = { vat = it },
-                label = { Text("VAT number") },
+                label = { Text(stringResource(R.string.label_vat_number)) },
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -101,7 +103,7 @@ fun EditCompanyScreen(
                     },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
                 Button(
                     onClick = {
@@ -120,7 +122,7 @@ fun EditCompanyScreen(
                     },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("Save")
+                    Text(stringResource(R.string.common_save))
                 }
             }
         }

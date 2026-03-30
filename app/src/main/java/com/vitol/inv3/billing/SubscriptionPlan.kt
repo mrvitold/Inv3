@@ -5,12 +5,11 @@ enum class SubscriptionPlan(
     val invoicesFirstMonth: Int?,
     val invoicesPerMonth: Int,
     val maxOwnCompanies: Int,
-    val price: String
 ) {
-    FREE("free", 30, 5, 1, "Free"),
-    BASIC("basic_monthly", null, 60, 1, "€7/month"),
-    PRO("pro_monthly", null, 400, 6, "€17/month"),
-    ACCOUNTING("accounting_monthly", null, 3000, 50, "€39/month");
+    FREE("free", 30, 5, 1),
+    BASIC("basic_monthly", null, 60, 1),
+    PRO("pro_monthly", null, 400, 6),
+    ACCOUNTING("accounting_monthly", null, 3000, 50);
 
     /**
      * Get the invoice limit for the current period.
@@ -26,12 +25,6 @@ enum class SubscriptionPlan(
             else -> invoicesPerMonth
         }
     }
-
-    val invoicesDisplayText: String
-        get() = when (this) {
-            FREE -> "30 invoices first month, then 5/month"
-            else -> "Up to $invoicesPerMonth invoices/month"
-        }
 
     companion object {
         fun fromPlanId(planId: String?): SubscriptionPlan {

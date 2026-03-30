@@ -17,7 +17,8 @@ enum class InvoiceErrorType {
 data class InvoiceError(
     val errorType: InvoiceErrorType,
     val fieldName: String,
-    val message: String
+    /** Format arguments for [localizedMessage]. */
+    val formatArgs: List<Any> = emptyList()
 )
 
 data class InvoiceValidationResult(

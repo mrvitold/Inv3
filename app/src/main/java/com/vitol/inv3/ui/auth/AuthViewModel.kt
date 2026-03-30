@@ -1,9 +1,12 @@
 package com.vitol.inv3.ui.auth
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vitol.inv3.R
 import com.vitol.inv3.auth.AuthManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,7 +23,8 @@ data class AuthUiState(
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
-    private val authManager: AuthManager
+    private val authManager: AuthManager,
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AuthUiState())
@@ -51,7 +55,8 @@ class AuthViewModel @Inject constructor(
             } else {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    errorMessage = result.exceptionOrNull()?.message ?: "Sign up failed"
+                    errorMessage = result.exceptionOrNull()?.message
+                        ?: appContext.getString(R.string.auth_sign_up_failed)
                 )
             }
         }
@@ -76,7 +81,7 @@ class AuthViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 isAuthenticated = false,
-                successMessage = if (result.isSuccess) "Signed out successfully" else null,
+                successMessage = if (result.isSuccess) appContext.getString(R.string.auth_signed_out) else null,
                 errorMessage = result.exceptionOrNull()?.message
             )
         }
@@ -89,12 +94,13 @@ class AuthViewModel @Inject constructor(
             if (result.isSuccess) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    successMessage = "Password reset email sent. Please check your inbox."
+                    successMessage = appContext.getString(R.string.auth_password_reset_sent)
                 )
             } else {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    errorMessage = result.exceptionOrNull()?.message ?: "Failed to send reset email"
+                    errorMessage = result.exceptionOrNull()?.message
+                        ?: appContext.getString(R.string.auth_failed_reset_email)
                 )
             }
         }
@@ -107,14 +113,14 @@ class AuthViewModel @Inject constructor(
             if (result.isSuccess) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    successMessage = "Password changed successfully. You will be logged out."
+                    successMessage = appContext.getString(R.string.auth_password_changed)
                 )
-                // Sign out after password change
                 authManager.signOut()
             } else {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    errorMessage = result.exceptionOrNull()?.message ?: "Failed to change password"
+                    errorMessage = result.exceptionOrNull()?.message
+                        ?: appContext.getString(R.string.auth_failed_change_password)
                 )
             }
         }
@@ -127,7 +133,7 @@ class AuthViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 isAuthenticated = false,
-                successMessage = if (result.isSuccess) "Account deleted successfully" else null,
+                successMessage = if (result.isSuccess) appContext.getString(R.string.auth_account_deleted) else null,
                 errorMessage = result.exceptionOrNull()?.message
             )
         }
@@ -141,16 +147,3 @@ class AuthViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(errorMessage = message)
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

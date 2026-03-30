@@ -52,6 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +67,7 @@ import com.vitol.inv3.export.ISafXmlExporter
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.ui.home.OwnCompanyViewModel
+import com.vitol.inv3.R
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import java.text.NumberFormat
@@ -146,9 +148,10 @@ fun ExportsScreen(
     invoiceToDelete?.let { invoice ->
         AlertDialog(
             onDismissRequest = { invoiceToDelete = null },
-            title = { Text("Delete Invoice") },
+            title = { Text(stringResource(R.string.exports_delete_title)) },
             text = {
-                Text("Are you sure you want to delete invoice \"${invoice.invoice_id ?: "this invoice"}\"? This action cannot be undone.")
+                val fallback = stringResource(R.string.exports_this_invoice)
+                Text(stringResource(R.string.exports_delete_body, invoice.invoice_id ?: fallback))
             },
             confirmButton = {
                 Button(
@@ -159,14 +162,14 @@ fun ExportsScreen(
                         }
                     }
                 ) {
-                    Text("Delete")
+                    Text(stringResource(R.string.common_delete))
                 }
             },
             dismissButton = {
                 OutlinedButton(
                     onClick = { invoiceToDelete = null }
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -179,14 +182,15 @@ fun ExportsScreen(
         AlertDialog(
             onDismissRequest = { invoiceWithErrorsToShow = null },
             title = {
+                val invId = invoice.invoice_id ?: stringResource(R.string.common_unknown)
                 Column {
                     Text(
-                        text = "Validation Errors",
+                        text = stringResource(R.string.exports_validation_errors),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Invoice: ${invoice.invoice_id ?: "Unknown"}",
+                        text = stringResource(R.string.exports_invoice_label, invId),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp)
@@ -199,7 +203,7 @@ fun ExportsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (errors.isEmpty()) {
-                        Text("No errors found")
+                        Text(stringResource(R.string.exports_no_errors))
                     } else {
                         errors.forEachIndexed { index, error ->
                             Card(
@@ -222,12 +226,12 @@ fun ExportsScreen(
                                     )
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = error.message,
+                                            text = error.localizedMessage(),
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "Field: ${error.fieldName}",
+                                            text = stringResource(R.string.exports_error_field, error.fieldName),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.padding(top = 2.dp)
@@ -243,7 +247,7 @@ fun ExportsScreen(
                 Button(
                     onClick = { invoiceWithErrorsToShow = null }
                 ) {
-                    Text("Close")
+                    Text(stringResource(R.string.common_close))
                 }
             }
         )
@@ -254,9 +258,15 @@ fun ExportsScreen(
         val monthInvoices = viewModel.getInvoicesForMonth(month)
         AlertDialog(
             onDismissRequest = { monthToDelete = null },
-            title = { Text("Delete Month") },
+            title = { Text(stringResource(R.string.exports_delete_month_title)) },
             text = {
-                Text("Are you sure you want to delete all ${monthInvoices.size} invoice(s) for $month? This action cannot be undone.")
+                Text(
+                    stringResource(
+                        R.string.exports_delete_month_body,
+                        monthInvoices.size,
+                        month
+                    )
+                )
             },
             confirmButton = {
                 Button(
@@ -268,14 +278,14 @@ fun ExportsScreen(
                         viewModel.loadInvoices()
                     }
                 ) {
-                    Text("Delete All")
+                    Text(stringResource(R.string.exports_delete_all))
                 }
             },
             dismissButton = {
                 OutlinedButton(
                     onClick = { monthToDelete = null }
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -288,12 +298,12 @@ fun ExportsScreen(
                 monthToRemoveDuplicates = null
                 duplicateCountToRemove = 0
             },
-            title = { Text("Remove Duplicates") },
+            title = { Text(stringResource(R.string.exports_remove_dup_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Found $duplicateCountToRemove duplicate invoice(s) in $month.")
+                    Text(stringResource(R.string.exports_remove_dup_body, duplicateCountToRemove, month))
                     Text(
-                        text = "This will keep the most recent invoice for each duplicate group and remove the rest. This action cannot be undone.",
+                        text = stringResource(R.string.exports_remove_dup_detail),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -307,14 +317,22 @@ fun ExportsScreen(
                         duplicateCountToRemove = 0
                         viewModel.removeDuplicatesForMonth(monthToProcess) { removedCount ->
                             if (removedCount > 0) {
-                                Toast.makeText(context, "Removed $removedCount duplicate(s)", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.exports_dup_removed, removedCount),
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             } else {
-                                Toast.makeText(context, "No duplicates found", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.exports_no_dup),
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
                         }
                     }
                 ) {
-                    Text("Remove Duplicates")
+                    Text(stringResource(R.string.exports_remove_dup_action))
                 }
             },
             dismissButton = {
@@ -324,7 +342,7 @@ fun ExportsScreen(
                         duplicateCountToRemove = 0
                     }
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -349,7 +367,7 @@ fun ExportsScreen(
             )
         } else if (ownCompanies.isEmpty()) {
             Text(
-                text = "Add your company on the Home screen first to export invoices.",
+                text = stringResource(R.string.exports_add_company_first),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -389,7 +407,7 @@ fun ExportsScreen(
                     )
                 }
             ) {
-                Text("Export All")
+                Text(stringResource(R.string.exports_export_all))
             }
         }
 
@@ -453,7 +471,7 @@ fun ExportsScreen(
                                 duplicateCountToRemove = duplicateCount
                                 monthToRemoveDuplicates = month
                             } else {
-                                Toast.makeText(context, "No duplicates found", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.exports_no_dup), Toast.LENGTH_SHORT).show()
                             }
                         }
                     )
@@ -482,7 +500,7 @@ fun YearFilterDropdown(
             value = selectedYear.toString(),
             onValueChange = {},
             readOnly = true,
-            label = { Text("Year") },
+            label = { Text(stringResource(R.string.exports_year)) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .fillMaxWidth()
@@ -515,7 +533,7 @@ fun CompanyFilterDropdown(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selectedCompany = ownCompanies.find { it.id == selectedCompanyId }
-    val displayText = selectedCompany?.company_name ?: "Select company"
+    val displayText = selectedCompany?.company_name ?: stringResource(R.string.exports_select_company)
 
     ExposedDropdownMenuBox(
         expanded = expanded,
@@ -526,7 +544,7 @@ fun CompanyFilterDropdown(
             value = displayText,
             onValueChange = {},
             readOnly = true,
-            label = { Text("Export for company") },
+            label = { Text(stringResource(R.string.exports_for_company)) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .fillMaxWidth()
@@ -538,7 +556,9 @@ fun CompanyFilterDropdown(
         ) {
             ownCompanies.forEach { company ->
                 DropdownMenuItem(
-                    text = { Text(company.company_name ?: company.company_number ?: "Unknown") },
+                    text = {
+                        Text(company.company_name ?: company.company_number ?: stringResource(R.string.common_unknown))
+                    },
                     onClick = {
                         onCompanySelected(company.id)
                         expanded = false
@@ -571,6 +591,10 @@ fun MonthlySummaryCard(
         maximumFractionDigits = 2
     }
     val darkRed = Color(0xFF8B0000)
+    val invoiceNoIdLabel = stringResource(R.string.invoice_no_id)
+    val cdShowErrors = stringResource(R.string.cd_show_errors)
+    val cdEditInvoice = stringResource(R.string.cd_edit)
+    val cdDeleteInvoice = stringResource(R.string.common_delete)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -602,7 +626,8 @@ fun MonthlySummaryCard(
                     Spacer(modifier = Modifier.width(8.dp))
                     Icon(
                         imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (isExpanded) "Collapse" else "Expand"
+                        contentDescription = if (isExpanded) stringResource(R.string.cd_collapse)
+                        else stringResource(R.string.cd_expand)
                     )
                 }
                 // Only show remove duplicates button if duplicates exist
@@ -613,7 +638,7 @@ fun MonthlySummaryCard(
                     ) {
                         Icon(
                             imageVector = Icons.Default.MergeType,
-                            contentDescription = "Remove duplicates",
+                            contentDescription = stringResource(R.string.cd_remove_duplicates),
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
@@ -621,7 +646,7 @@ fun MonthlySummaryCard(
                 IconButton(onClick = onExportClick) {
                     Icon(
                         imageVector = Icons.Default.FileDownload,
-                        contentDescription = "Export"
+                        contentDescription = stringResource(R.string.cd_export)
                     )
                 }
                 IconButton(
@@ -629,7 +654,7 @@ fun MonthlySummaryCard(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Delete,
-                        contentDescription = "Delete month",
+                        contentDescription = stringResource(R.string.cd_delete_month),
                         tint = MaterialTheme.colorScheme.error
                     )
                 }
@@ -640,23 +665,33 @@ fun MonthlySummaryCard(
                 modifier = Modifier.padding(start = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                val invoiceQtyLine = stringResource(R.string.exports_invoice_qty, summary.invoiceCount)
+                val toCheckSuffix = if (summary.errorCount > 0) {
+                    stringResource(R.string.exports_to_check_bracket, summary.errorCount)
+                } else null
                 Text(
                     text = buildAnnotatedString {
-                        append("invoice q-ty: ${summary.invoiceCount}")
-                        if (summary.errorCount > 0) {
+                        append(invoiceQtyLine)
+                        if (toCheckSuffix != null) {
                             withStyle(style = SpanStyle(color = darkRed)) {
-                                append(" [${summary.errorCount} to check]")
+                                append(toCheckSuffix)
                             }
                         }
                     },
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    text = "${numberFormat.format(summary.totalAmount)} EUR (without VAT)",
+                    text = stringResource(
+                        R.string.exports_eur_without_vat,
+                        numberFormat.format(summary.totalAmount)
+                    ),
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    text = "${numberFormat.format(summary.totalVat)} EUR (VAT)",
+                    text = stringResource(
+                        R.string.exports_eur_vat,
+                        numberFormat.format(summary.totalVat)
+                    ),
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -695,34 +730,48 @@ fun MonthlySummaryCard(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
+                                    val spInvLine = stringResource(R.string.exports_invoices_count, salesPurchase.invoiceCount)
+                                    val spCheck = if (salesPurchase.errorCount > 0) {
+                                        stringResource(R.string.exports_to_check_bracket, salesPurchase.errorCount)
+                                    } else null
                                     Text(
-                                        text = salesPurchase.typeLabel,
+                                        text = when (salesPurchase.type) {
+                                            "S" -> stringResource(R.string.invoice_type_sales_label)
+                                            else -> stringResource(R.string.invoice_type_purchase_label)
+                                        },
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
                                         text = buildAnnotatedString {
-                                            append("invoices: ${salesPurchase.invoiceCount}")
-                                            if (salesPurchase.errorCount > 0) {
+                                            append(spInvLine)
+                                            if (spCheck != null) {
                                                 withStyle(style = SpanStyle(color = darkRed)) {
-                                                    append(" [${salesPurchase.errorCount} to check]")
+                                                    append(spCheck)
                                                 }
                                             }
                                         },
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
-                                        text = "${numberFormat.format(salesPurchase.totalAmount)} EUR (without VAT)",
+                                        text = stringResource(
+                                            R.string.exports_eur_without_vat,
+                                            numberFormat.format(salesPurchase.totalAmount)
+                                        ),
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
-                                        text = "${numberFormat.format(salesPurchase.totalVat)} EUR (VAT)",
+                                        text = stringResource(
+                                            R.string.exports_eur_vat,
+                                            numberFormat.format(salesPurchase.totalVat)
+                                        ),
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                 }
                                 Icon(
                                     imageVector = if (isSalesPurchaseExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                    contentDescription = if (isSalesPurchaseExpanded) "Collapse" else "Expand"
+                                    contentDescription = if (isSalesPurchaseExpanded) stringResource(R.string.cd_collapse)
+                                    else stringResource(R.string.cd_expand)
                                 )
                             }
                             
@@ -730,7 +779,7 @@ fun MonthlySummaryCard(
                             if (isSalesPurchaseExpanded && companySummariesForType.isNotEmpty()) {
                                 Spacer(modifier = Modifier.padding(vertical = 8.dp))
                                 Text(
-                                    text = "Companies:",
+                                    text = stringResource(R.string.exports_companies_header),
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(top = 4.dp)
@@ -771,29 +820,40 @@ fun MonthlySummaryCard(
                                                         style = MaterialTheme.typography.bodyMedium,
                                                         fontWeight = FontWeight.Medium
                                                     )
+                                                    val coInvLine = stringResource(R.string.exports_invoices_count, company.invoiceCount)
+                                                    val coCheck = if (company.errorCount > 0) {
+                                                        stringResource(R.string.exports_to_check_bracket, company.errorCount)
+                                                    } else null
                                                     Text(
                                                         text = buildAnnotatedString {
-                                                            append("invoices: ${company.invoiceCount}")
-                                                            if (company.errorCount > 0) {
+                                                            append(coInvLine)
+                                                            if (coCheck != null) {
                                                                 withStyle(style = SpanStyle(color = darkRed)) {
-                                                                    append(" [${company.errorCount} to check]")
+                                                                    append(coCheck)
                                                                 }
                                                             }
                                                         },
                                                         style = MaterialTheme.typography.bodySmall
                                                     )
                                                     Text(
-                                                        text = "${numberFormat.format(company.totalAmount)} EUR (without VAT)",
+                                                        text = stringResource(
+                                                            R.string.exports_eur_without_vat,
+                                                            numberFormat.format(company.totalAmount)
+                                                        ),
                                                         style = MaterialTheme.typography.bodySmall
                                                     )
                                                     Text(
-                                                        text = "${numberFormat.format(company.totalVat)} EUR (VAT)",
+                                                        text = stringResource(
+                                                            R.string.exports_eur_vat,
+                                                            numberFormat.format(company.totalVat)
+                                                        ),
                                                         style = MaterialTheme.typography.bodySmall
                                                     )
                                                 }
                                                 Icon(
                                                     imageVector = if (isCompanyExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                                    contentDescription = if (isCompanyExpanded) "Collapse" else "Expand"
+                                                    contentDescription = if (isCompanyExpanded) stringResource(R.string.cd_collapse)
+                                                    else stringResource(R.string.cd_expand)
                                                 )
                                             }
                                             
@@ -822,7 +882,7 @@ fun MonthlySummaryCard(
                                                         ) {
                                                             Column(modifier = Modifier.weight(1f)) {
                                                                 Text(
-                                                                    text = invoice.invoice_id ?: "No ID",
+                                                                    text = invoice.invoice_id ?: invoiceNoIdLabel,
                                                                     style = MaterialTheme.typography.bodySmall,
                                                                     fontWeight = FontWeight.Medium,
                                                                     color = textColor
@@ -833,12 +893,18 @@ fun MonthlySummaryCard(
                                                                     color = textColor
                                                                 )
                                                                 Text(
-                                                                    text = "${numberFormat.format(invoice.amount_without_vat_eur ?: 0.0)} EUR (without VAT)",
+                                                                    text = stringResource(
+                                                                        R.string.exports_eur_without_vat,
+                                                                        numberFormat.format(invoice.amount_without_vat_eur ?: 0.0)
+                                                                    ),
                                                                     style = MaterialTheme.typography.bodySmall,
                                                                     color = textColor
                                                                 )
                                                                 Text(
-                                                                    text = "${numberFormat.format(invoice.vat_amount_eur ?: 0.0)} EUR (VAT)",
+                                                                    text = stringResource(
+                                                                        R.string.exports_eur_vat,
+                                                                        numberFormat.format(invoice.vat_amount_eur ?: 0.0)
+                                                                    ),
                                                                     style = MaterialTheme.typography.bodySmall,
                                                                     color = textColor
                                                                 )
@@ -852,7 +918,7 @@ fun MonthlySummaryCard(
                                                                 ) {
                                                                     Icon(
                                                                         imageVector = Icons.Default.Info,
-                                                                        contentDescription = "Show validation errors",
+                                                                        contentDescription = cdShowErrors,
                                                                         tint = darkRed
                                                                     )
                                                                 }
@@ -866,7 +932,7 @@ fun MonthlySummaryCard(
                                                             ) {
                                                                 Icon(
                                                                     imageVector = Icons.Default.Edit,
-                                                                    contentDescription = "Edit invoice"
+                                                                    contentDescription = cdEditInvoice
                                                                 )
                                                             }
                                                             IconButton(
@@ -876,7 +942,7 @@ fun MonthlySummaryCard(
                                                             ) {
                                                                 Icon(
                                                                     imageVector = Icons.Default.Delete,
-                                                                    contentDescription = "Delete invoice",
+                                                                    contentDescription = cdDeleteInvoice,
                                                                     tint = MaterialTheme.colorScheme.error
                                                                 )
                                                             }
@@ -932,7 +998,7 @@ fun ExportDialog(
         onDismissRequest = onDismiss,
         title = { 
             Text(
-                text = "Export Options",
+                text = stringResource(R.string.exports_export_options_title),
                 style = MaterialTheme.typography.titleLarge
             )
         },
@@ -942,7 +1008,7 @@ fun ExportDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Choose how to export invoices for $month",
+                    text = stringResource(R.string.exports_choose_how, month),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
@@ -965,7 +1031,7 @@ fun ExportDialog(
                             if (result != null) {
                                 Toast.makeText(context, result, Toast.LENGTH_LONG).show()
                             } else {
-                                Toast.makeText(context, "Failed to save file", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.exports_failed_save), Toast.LENGTH_SHORT).show()
                             }
                         },
                         enabled = !isSaving,
@@ -976,7 +1042,7 @@ fun ExportDialog(
                             contentDescription = null,
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text("Export Excel")
+                        Text(stringResource(R.string.exports_excel))
                     }
                     
                     // Share Excel
@@ -989,7 +1055,9 @@ fun ExportDialog(
                                 putExtra(Intent.EXTRA_STREAM, uri)
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
-                            context.startActivity(Intent.createChooser(share, "Share $month.xlsx"))
+                            context.startActivity(
+                                Intent.createChooser(share, context.getString(R.string.exports_share_chooser_excel, month))
+                            )
                             onDismiss()
                         },
                         enabled = !isSaving,
@@ -1000,14 +1068,18 @@ fun ExportDialog(
                             contentDescription = null,
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text("Share Excel")
+                        Text(stringResource(R.string.exports_share_excel))
                     }
                     
                     // Export XML (i.SAF)
                     Button(
                         onClick = {
                             if (ownCompany == null) {
-                                Toast.makeText(context, "Please select an own company first", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.exports_select_company_first),
+                                    Toast.LENGTH_LONG
+                                ).show()
                                 return@Button
                             }
                             isSaving = true
@@ -1020,11 +1092,15 @@ fun ExportDialog(
                                     if (result != null) {
                                         Toast.makeText(context, result, Toast.LENGTH_LONG).show()
                                     } else {
-                                        Toast.makeText(context, "Failed to save XML file", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, context.getString(R.string.exports_failed_save_xml), Toast.LENGTH_SHORT).show()
                                     }
                                 } catch (e: Exception) {
                                     isSaving = false
-                                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(R.string.exports_error_message, e.message ?: ""),
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
                             }
                         },
@@ -1036,14 +1112,18 @@ fun ExportDialog(
                             contentDescription = null,
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text("Export XML (i.SAF)")
+                        Text(stringResource(R.string.exports_xml))
                     }
                     
                     // Share XML (i.SAF)
                     OutlinedButton(
                         onClick = {
                             if (ownCompany == null) {
-                                Toast.makeText(context, "Please select an own company first", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.exports_select_company_first),
+                                    Toast.LENGTH_LONG
+                                ).show()
                                 return@OutlinedButton
                             }
                             try {
@@ -1057,10 +1137,14 @@ fun ExportDialog(
                                     putExtra(Intent.EXTRA_SUBJECT, fileName)
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 }
-                                context.startActivity(Intent.createChooser(share, "Share $fileName"))
+                                context.startActivity(Intent.createChooser(share, context.getString(R.string.exports_share_chooser_file, fileName)))
                                 onDismiss()
                             } catch (e: Exception) {
-                                Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.exports_error_message, e.message ?: ""),
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         },
                         enabled = !isSaving && ownCompany != null,
@@ -1071,14 +1155,14 @@ fun ExportDialog(
                             contentDescription = null,
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text("Share XML (i.SAF)")
+                        Text(stringResource(R.string.exports_share_xml))
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(stringResource(R.string.common_cancel))
             }
         }
     )

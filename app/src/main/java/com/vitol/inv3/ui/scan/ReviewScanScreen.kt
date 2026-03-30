@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -72,7 +73,9 @@ import com.vitol.inv3.export.VatRateValidation
 import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
 import com.vitol.inv3.ocr.CompanyNameUtils
 import com.vitol.inv3.ocr.ParsedInvoice
+import com.vitol.inv3.R
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -112,7 +115,8 @@ data class MergedFormData(
 
 @HiltViewModel
 class ReviewScanViewModel @Inject constructor(
-    private val repo: SupabaseRepository
+    private val repo: SupabaseRepository,
+    @ApplicationContext private val appContext: Context
 ) : androidx.lifecycle.ViewModel() {
 
     private val _processingState = MutableStateFlow(ProcessingState())
@@ -226,8 +230,9 @@ class ReviewScanViewModel @Inject constructor(
                     isProcessing = false,
                     parsedInvoice = parsedInvoice,
                     errorMessage = when {
-                        parsedInvoice == null -> "Failed to extract invoice data. Please try again."
-                        noUsefulData -> (parsedInvoice.extractionMessage ?: "No data could be extracted. Try a clearer or larger image.")
+                        parsedInvoice == null -> appContext.getString(R.string.review_error_extract_failed)
+                        noUsefulData -> (parsedInvoice.extractionMessage
+                            ?: appContext.getString(R.string.review_error_no_data))
                         else -> null
                     }
                 )
@@ -236,7 +241,7 @@ class ReviewScanViewModel @Inject constructor(
                 _processingState.value = _processingState.value.copy(
                     isLoading = false,
                     isProcessing = false,
-                    errorMessage = "Error processing invoice: ${e.message}"
+                    errorMessage = appContext.getString(R.string.review_error_processing, e.message ?: "")
                 )
             }
         }
@@ -346,12 +351,12 @@ fun ReviewScanScreen(
                     taxCodeField = existingInvoice.tax_code ?: "PVM1"
                     isLoading = false
                 } else {
-                    errorMessage = "Invoice not found"
+                    errorMessage = context.getString(R.string.error_invoice_not_found)
                     isLoading = false
                 }
             } catch (e: Exception) {
                 Timber.e(e, "Failed to load invoice")
-                errorMessage = "Failed to load invoice: ${e.message}"
+                errorMessage = context.getString(R.string.error_load_invoice, e.message ?: "")
                 isLoading = false
             }
         }
@@ -520,15 +525,19 @@ fun ReviewScanScreen(
                     Column {
                         Text(
                             when {
-                                invoiceId != null -> "Edit Invoice"
-                                fromImport && totalCount > 1 -> "Invoice ${currentIndex + 1} of $totalCount"
-                                else -> "Review Scanned Invoice"
+                                invoiceId != null -> stringResource(R.string.review_title_edit)
+                                fromImport && totalCount > 1 -> stringResource(
+                                    R.string.review_title_import,
+                                    currentIndex + 1,
+                                    totalCount
+                                )
+                                else -> stringResource(R.string.review_title_scan)
                             }
                         )
                         if (fromImport && extractionState is ImportExtractionState.Extracting) {
                             val state = extractionState as ImportExtractionState.Extracting
                             Text(
-                                "${state.current} of ${state.total} analyzing…",
+                                stringResource(R.string.analyzing_progress, state.current, state.total),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -545,14 +554,14 @@ fun ReviewScanScreen(
                     }) {
                         Icon(
                             imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = stringResource(R.string.common_back)
                         )
                     }
                 },
                 actions = {
                     if (fromImport && (importSessionViewModel?.hasPrevious == true)) {
                         TextButton(onClick = { importSessionViewModel?.advanceToPrevious() }) {
-                            Text("Previous")
+                            Text(stringResource(R.string.review_previous))
                         }
                     }
                     if (fromImport && importSessionViewModel != null && extractionState is ImportExtractionState.Done) {
@@ -571,12 +580,13 @@ fun ReviewScanScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Image,
-                                contentDescription = "View original invoice"
+                                contentDescription = stringResource(R.string.cd_view_original)
                             )
                         }
                     }
                     Text(
-                        text = if (invoiceType == "S") "Sale" else "Purchase",
+                        text = if (invoiceType == "S") stringResource(R.string.invoice_kind_sale)
+                        else stringResource(R.string.invoice_kind_purchase),
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(end = 16.dp)
                     )
@@ -602,10 +612,14 @@ fun ReviewScanScreen(
                         text = when {
                             isWaitingForNextInvoice -> {
                                 val total = importSessionViewModel?.totalCount ?: 1
-                                "Extracting invoice ${importCurrentIndex + 1} of $total…"
+                                stringResource(
+                                    R.string.extracting_invoice_progress,
+                                    importCurrentIndex + 1,
+                                    total
+                                )
                             }
-                            isProcessing -> "Processing invoice..."
-                            else -> "Loading..."
+                            isProcessing -> stringResource(R.string.processing_invoice)
+                            else -> stringResource(R.string.loading)
                         },
                         style = MaterialTheme.typography.bodyLarge
                     )
@@ -652,7 +666,7 @@ fun ReviewScanScreen(
                 OutlinedTextField(
                     value = invoiceIdField,
                     onValueChange = { invoiceIdField = it },
-                    label = { Text("Invoice ID") },
+                    label = { Text(stringResource(R.string.label_invoice_id)) },
                     modifier = Modifier.fillMaxWidth(),
                     colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                         unfocusedBorderColor = getBorderColor(isRequiredAndEmpty(invoiceIdField))
@@ -662,13 +676,13 @@ fun ReviewScanScreen(
                 OutlinedTextField(
                     value = dateField,
                     onValueChange = { dateField = it },
-                    label = { Text("Date") },
+                    label = { Text(stringResource(R.string.label_date)) },
                     modifier = Modifier.fillMaxWidth(),
                     trailingIcon = {
                         IconButton(onClick = { showDatePicker = true }) {
                             Icon(
                                 imageVector = Icons.Default.CalendarToday,
-                                contentDescription = "Pick date"
+                                contentDescription = stringResource(R.string.cd_pick_date)
                             )
                         }
                     },
@@ -681,7 +695,7 @@ fun ReviewScanScreen(
                 OutlinedTextField(
                     value = companyNameField,
                     onValueChange = { companyNameField = it },
-                    label = { Text("Company Name") },
+                    label = { Text(stringResource(R.string.label_company_name_field)) },
                     modifier = Modifier.fillMaxWidth(),
                     colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                         unfocusedBorderColor = getBorderColor(isRequiredAndEmpty(companyNameField))
@@ -695,7 +709,7 @@ fun ReviewScanScreen(
                     OutlinedTextField(
                         value = amountWithoutVatField,
                         onValueChange = { amountWithoutVatField = it },
-                        label = { Text("Amount w/o VAT") },
+                        label = { Text(stringResource(R.string.label_amount_no_vat)) },
                         modifier = Modifier.weight(1f),
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                             unfocusedBorderColor = getBorderColor(isRequiredAndEmpty(amountWithoutVatField))
@@ -705,7 +719,7 @@ fun ReviewScanScreen(
                     OutlinedTextField(
                         value = vatAmountField,
                         onValueChange = { vatAmountField = it },
-                        label = { Text("VAT Amount") },
+                        label = { Text(stringResource(R.string.label_vat_amount)) },
                         modifier = Modifier.weight(1f),
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                             unfocusedBorderColor = getBorderColor(isRequiredAndEmpty(vatAmountField))
@@ -720,7 +734,7 @@ fun ReviewScanScreen(
                     OutlinedTextField(
                         value = vatNumberField,
                         onValueChange = { vatNumberField = it },
-                        label = { Text("VAT Number") },
+                        label = { Text(stringResource(R.string.label_vat_number_field)) },
                         modifier = Modifier.weight(1f),
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                             unfocusedBorderColor = getBorderColor(isRequiredAndEmpty(vatNumberField))
@@ -730,7 +744,7 @@ fun ReviewScanScreen(
                     OutlinedTextField(
                         value = companyNumberField,
                         onValueChange = { companyNumberField = it },
-                        label = { Text("Company No.") },
+                        label = { Text(stringResource(R.string.label_company_no)) },
                         modifier = Modifier.weight(1f),
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                             unfocusedBorderColor = getBorderColor(isRequiredAndEmpty(companyNumberField))
@@ -745,7 +759,7 @@ fun ReviewScanScreen(
                     OutlinedTextField(
                         value = vatRateField,
                         onValueChange = { vatRateField = it },
-                        label = { Text("VAT Rate %") },
+                        label = { Text(stringResource(R.string.label_vat_rate)) },
                         modifier = Modifier.weight(1f),
                         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                             unfocusedBorderColor = getBorderColor(isRequiredAndEmpty(vatRateField))
@@ -755,7 +769,7 @@ fun ReviewScanScreen(
                     OutlinedTextField(
                         value = taxCodeField,
                         onValueChange = { taxCodeField = it },
-                        label = { Text("Tax Code") },
+                        label = { Text(stringResource(R.string.label_tax_code)) },
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -773,7 +787,7 @@ fun ReviewScanScreen(
                             onClick = { showCancelImportDialog = true },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Cancel")
+                            Text(stringResource(R.string.common_cancel))
                         }
                         OutlinedButton(
                             onClick = {
@@ -784,12 +798,15 @@ fun ReviewScanScreen(
                                     navController?.navigate(Routes.Home) {
                                         popUpTo(0) { inclusive = true }
                                     }
-                                    scope.launch { snackbarHostState.showSnackbar("Import complete") }
+                                    scope.launch { snackbarHostState.showSnackbar(context.getString(R.string.import_complete)) }
                                 }
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(if (importSessionViewModel.hasNext) "Skip" else "Skip and finish")
+                            Text(
+                                if (importSessionViewModel.hasNext) stringResource(R.string.import_skip)
+                                else stringResource(R.string.import_skip_finish)
+                            )
                         }
                         Button(
                             onClick = {
@@ -823,7 +840,7 @@ fun ReviewScanScreen(
                                             scope.launch {
                                                 isSaving = false
                                                 subscriptionViewModel.trackPageUsageSync()
-                                                snackbarHostState.showSnackbar("Invoice saved successfully")
+                                                snackbarHostState.showSnackbar(context.getString(R.string.invoice_saved))
                                                 withContext(Dispatchers.IO) {
                                                     importSessionViewModel.advanceToNext(context)
                                                 }
@@ -832,14 +849,14 @@ fun ReviewScanScreen(
                                                     navController?.navigate(Routes.Home) {
                                                         popUpTo(0) { inclusive = true }
                                                     }
-                                                    snackbarHostState.showSnackbar("All invoices saved")
+                                                    snackbarHostState.showSnackbar(context.getString(R.string.all_invoices_saved))
                                                 }
                                             }
                                         },
                                         onError = { e ->
                                             isSaving = false
-                                            errorMessage = "Failed to save invoice: ${e.message}"
-                                            scope.launch { snackbarHostState.showSnackbar("Failed to save invoice") }
+                                            errorMessage = context.getString(R.string.invoice_save_failed_msg, e.message ?: "")
+                                            scope.launch { snackbarHostState.showSnackbar(context.getString(R.string.invoice_save_failed)) }
                                         }
                                     )
                                 }
@@ -854,7 +871,8 @@ fun ReviewScanScreen(
                                 )
                             }
                             Text(
-                                if (importSessionViewModel.hasNext) "Save and next" else "Confirm and Save"
+                                if (importSessionViewModel.hasNext) stringResource(R.string.save_and_next)
+                                else stringResource(R.string.confirm_and_save)
                             )
                         }
                     }
@@ -877,7 +895,7 @@ fun ReviewScanScreen(
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Redo")
+                                Text(stringResource(R.string.redo))
                             }
                         } else {
                             Spacer(modifier = Modifier.weight(1f))
@@ -891,7 +909,7 @@ fun ReviewScanScreen(
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Cancel")
+                            Text(stringResource(R.string.common_cancel))
                         }
                     }
                     Row(
@@ -920,7 +938,7 @@ fun ReviewScanScreen(
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Merge with next")
+                                Text(stringResource(R.string.merge_with_next))
                             }
                         } else {
                             Spacer(modifier = Modifier.weight(1f))
@@ -954,15 +972,15 @@ fun ReviewScanScreen(
                                         onSuccess = {
                                             scope.launch {
                                                 isSaving = false
-                                                snackbarHostState.showSnackbar("Invoice updated successfully")
+                                                snackbarHostState.showSnackbar(context.getString(R.string.invoice_updated))
                                                 navController?.popBackStack()
                                             }
                                         },
                                         onError = { e ->
                                             isSaving = false
-                                            errorMessage = "Failed to update invoice: ${e.message}"
+                                            errorMessage = context.getString(R.string.invoice_update_failed_msg, e.message ?: "")
                                             scope.launch {
-                                                snackbarHostState.showSnackbar("Failed to update invoice")
+                                                snackbarHostState.showSnackbar(context.getString(R.string.invoice_update_failed))
                                             }
                                         }
                                     )
@@ -980,7 +998,7 @@ fun ReviewScanScreen(
                                         scope.launch {
                                             subscriptionViewModel.trackPageUsageSync()
                                             isSaving = false
-                                            snackbarHostState.showSnackbar("Invoice saved successfully")
+                                            snackbarHostState.showSnackbar(context.getString(R.string.invoice_saved))
                                             if (shouldOpenCamera) {
                                                 if (subscriptionViewModel.canScanPagesFresh(1)) {
                                                     navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
@@ -997,9 +1015,9 @@ fun ReviewScanScreen(
                                     },
                                     onError = { e ->
                                         isSaving = false
-                                        errorMessage = "Failed to save invoice: ${e.message}"
+                                        errorMessage = context.getString(R.string.invoice_save_failed_msg, e.message ?: "")
                                         scope.launch {
-                                            snackbarHostState.showSnackbar("Failed to save invoice")
+                                            snackbarHostState.showSnackbar(context.getString(R.string.invoice_save_failed))
                                         }
                                     }
                                 )
@@ -1016,9 +1034,9 @@ fun ReviewScanScreen(
                         }
                         Text(
                             when {
-                                invoiceId != null -> "Save Changes"
-                                fromImport && (importSessionViewModel?.hasNext == true) -> "Save and next"
-                                else -> "Confirm and Save"
+                                invoiceId != null -> stringResource(R.string.save_changes)
+                                fromImport && (importSessionViewModel?.hasNext == true) -> stringResource(R.string.save_and_next)
+                                else -> stringResource(R.string.confirm_and_save)
                             }
                         )
                     }
@@ -1051,12 +1069,12 @@ fun ReviewScanScreen(
                             showDatePicker = false
                         }
                     ) {
-                        Text("OK")
+                        Text(stringResource(R.string.common_ok))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showDatePicker = false }) {
-                        Text("Cancel")
+                        Text(stringResource(R.string.common_cancel))
                     }
                 }
             ) {
@@ -1068,8 +1086,8 @@ fun ReviewScanScreen(
         if (showCancelImportDialog) {
             AlertDialog(
                 onDismissRequest = { showCancelImportDialog = false },
-                title = { Text("Discard import?") },
-                text = { Text("Unsaved invoices will be lost.") },
+                title = { Text(stringResource(R.string.discard_import_title)) },
+                text = { Text(stringResource(R.string.discard_import_body)) },
                 confirmButton = {
                     TextButton(
                         onClick = {
@@ -1080,12 +1098,12 @@ fun ReviewScanScreen(
                             }
                         }
                     ) {
-                        Text("Discard", color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(R.string.discard), color = MaterialTheme.colorScheme.error)
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showCancelImportDialog = false }) {
-                        Text("Stay")
+                        Text(stringResource(R.string.stay))
                     }
                 }
             )
@@ -1146,7 +1164,7 @@ private fun InvoicePreviewOverlay(
         ) {
             AsyncImage(
                 model = uri,
-                contentDescription = "Original invoice",
+                contentDescription = stringResource(R.string.cd_original_invoice),
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
             )

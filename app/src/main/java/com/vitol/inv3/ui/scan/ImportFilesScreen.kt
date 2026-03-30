@@ -32,8 +32,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.vitol.inv3.R
 import com.vitol.inv3.Routes
 import com.vitol.inv3.ui.subscription.SubscriptionViewModel
 import com.vitol.inv3.ui.subscription.UpgradeDialog
@@ -85,9 +87,9 @@ fun ImportFilesScreen(
             isBuildingPages = false
             if (pages.isEmpty()) {
                 errorMessage = if (uris.size == 1) {
-                    "Could not read the selected file. Use an image or PDF."
+                    context.getString(R.string.import_err_read_file_single)
                 } else {
-                    "Could not read the selected files. Use images or PDFs."
+                    context.getString(R.string.import_err_read_files_multi)
                 }
                 return@LaunchedEffect
             }
@@ -103,17 +105,25 @@ fun ImportFilesScreen(
         } catch (e: Exception) {
             Timber.e(e, "ImportFiles: failed to build pages")
             isBuildingPages = false
-            errorMessage = "Error reading files: ${e.message ?: "Please try again."}"
+            errorMessage = context.getString(
+                R.string.import_err_reading,
+                e.message ?: context.getString(R.string.import_err_try_again)
+            )
         }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (invoiceType == "S") "Import Sales Invoices" else "Import Purchase Invoices") },
+                title = {
+                    Text(
+                        if (invoiceType == "S") stringResource(R.string.import_sales_title)
+                        else stringResource(R.string.import_purchase_title)
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.common_back))
                     }
                 }
             )
@@ -128,7 +138,7 @@ fun ImportFilesScreen(
             verticalArrangement = Arrangement.Center
         ) {
             if (isBuildingPages) {
-                Text("Preparing files…", style = MaterialTheme.typography.bodyLarge)
+                Text(stringResource(R.string.preparing_files), style = MaterialTheme.typography.bodyLarge)
                 return@Scaffold
             }
             errorMessage?.let { msg ->
@@ -136,7 +146,7 @@ fun ImportFilesScreen(
                 Spacer(modifier = Modifier.height(16.dp))
             }
             Text(
-                text = "Select images or PDF files to import as invoices. Each image or PDF page will be reviewed one by one.",
+                text = stringResource(R.string.import_files_intro),
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(bottom = 24.dp)
@@ -146,7 +156,7 @@ fun ImportFilesScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
-                Text("Select files")
+                Text(stringResource(R.string.select_files))
             }
         }
     }

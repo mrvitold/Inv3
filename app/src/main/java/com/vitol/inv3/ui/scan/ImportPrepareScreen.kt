@@ -17,7 +17,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.vitol.inv3.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.vitol.inv3.MainActivityViewModel
@@ -83,7 +85,7 @@ fun ImportPrepareScreen(
                 CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(24.dp))
                 Text(
-                    text = "Extracting invoice ${state.current} of ${state.total}…",
+                    text = stringResource(R.string.import_extracting, state.current, state.total),
                     style = MaterialTheme.typography.bodyLarge
                 )
             }
@@ -98,7 +100,7 @@ fun ImportPrepareScreen(
                 CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(24.dp))
                 Text(
-                    text = "Preparing…",
+                    text = stringResource(R.string.import_preparing),
                     style = MaterialTheme.typography.bodyLarge
                 )
             }

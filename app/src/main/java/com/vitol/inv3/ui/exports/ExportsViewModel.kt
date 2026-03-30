@@ -188,7 +188,6 @@ class ExportsViewModel @Inject constructor(
             }
             SalesPurchaseSummary(
                 type = type,
-                typeLabel = if (type == "S") "Sales" else "Purchase",
                 invoiceCount = typeInvoices.size,
                 totalAmount = totalAmount,
                 totalVat = totalVat,

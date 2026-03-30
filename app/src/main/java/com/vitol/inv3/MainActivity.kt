@@ -4,6 +4,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -47,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,6 +58,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.vitol.inv3.data.local.applyStoredAppLocales
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
 import com.vitol.inv3.data.local.getCompanySetupHomePromptAckUserId
 import com.vitol.inv3.data.local.setActiveOwnCompanyId
@@ -69,6 +72,7 @@ import com.vitol.inv3.ui.subscription.UpgradeDialog
 import com.vitol.inv3.auth.AuthManager
 import com.vitol.inv3.auth.AuthState
 import com.vitol.inv3.ui.auth.LoginScreen
+import com.vitol.inv3.R
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.SupervisorJob
@@ -79,11 +83,13 @@ import javax.inject.Inject
 private const val NAV_STATE_KEY = "nav_state"
 
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     private lateinit var viewModel: MainActivityViewModel
     private var navControllerRef: NavHostController? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Per-app locales from AppCompatDelegate apply to AppCompatActivity's resources; call before super.
+        applyStoredAppLocales(applicationContext)
         super.onCreate(savedInstanceState)
         
         // Initialize ViewModel for lifecycle-aware access in onResume
@@ -324,7 +330,7 @@ fun AppNavHost(
                 // Show loading while fetching invoice
                 androidx.compose.material3.CircularProgressIndicator()
             } else {
-                PlaceholderScreen("Invalid invoice ID")
+                PlaceholderScreen(stringResource(R.string.placeholder_invalid_invoice))
             }
         }
         composable("${Routes.ReviewScanEdit}/{invoiceId}/{invoiceType}") { backStackEntry ->
@@ -338,7 +344,7 @@ fun AppNavHost(
                     invoiceId = invoiceId
                 )
             } else {
-                PlaceholderScreen("Invalid invoice ID")
+                PlaceholderScreen(stringResource(R.string.placeholder_invalid_invoice))
             }
         }
         composable("${Routes.EditCompany}/{companyId}") { backStackEntry ->
@@ -346,7 +352,7 @@ fun AppNavHost(
             if (companyId.isNotBlank()) {
                 com.vitol.inv3.ui.companies.EditCompanyScreen(companyId = companyId, navController = navController)
             } else {
-                PlaceholderScreen("Invalid company ID")
+                PlaceholderScreen(stringResource(R.string.placeholder_invalid_company))
             }
         }
         composable(Routes.SelectInvoiceType) {
@@ -376,7 +382,7 @@ fun AppNavHost(
                     fromImport = false
                 )
             } else {
-                PlaceholderScreen("Invalid image URI")
+                PlaceholderScreen(stringResource(R.string.placeholder_invalid_uri))
             }
         }
         composable("${Routes.ReviewScanImport}/{invoiceType}") { backStackEntry ->
@@ -405,6 +411,7 @@ fun HomeScreen(
     val repo = mainActivityViewModel.repo
     val authManager = mainActivityViewModel.authManager
     val context = LocalContext.current
+    val fillCompanyFirst = stringResource(R.string.toast_fill_company_first)
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     
@@ -557,7 +564,7 @@ fun HomeScreen(
                     Button(
                         onClick = { 
                             if (!isOwnCompanyFilled()) {
-                                Toast.makeText(context, "Fill your company data first", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, fillCompanyFirst, Toast.LENGTH_LONG).show()
                                 return@Button
                             }
                             if (subscriptionStatus?.canScan == true) {
@@ -566,21 +573,26 @@ fun HomeScreen(
                                 showUpgradeDialog = true
                             }
                         },
-                        modifier = Modifier.fillMaxWidth(0.6f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.CameraAlt,
-                            contentDescription = "Scan with Camera",
+                            contentDescription = stringResource(R.string.cd_scan_camera),
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text(text = "Scan with Camera")
+                        Text(
+                            text = stringResource(R.string.nav_scan_invoice),
+                            maxLines = 2
+                        )
                     }
                     
                     // Import files button
                     Button(
                         onClick = { 
                             if (!isOwnCompanyFilled()) {
-                                Toast.makeText(context, "Fill your company data first", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, fillCompanyFirst, Toast.LENGTH_LONG).show()
                                 return@Button
                             }
                             if (subscriptionStatus?.canScan == true) {
@@ -589,53 +601,73 @@ fun HomeScreen(
                                 showUpgradeDialog = true
                             }
                         },
-                        modifier = Modifier.fillMaxWidth(0.6f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Upload,
-                            contentDescription = "Import files",
+                            contentDescription = stringResource(R.string.cd_import_files),
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text(text = "Import files")
+                        Text(
+                            text = stringResource(R.string.nav_import_files),
+                            maxLines = 2
+                        )
                     }
                     
                     // Exports button
                     Button(
                         onClick = { navController.navigate(Routes.Exports) },
-                        modifier = Modifier.fillMaxWidth(0.6f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Download,
-                            contentDescription = "Exports",
+                            contentDescription = stringResource(R.string.cd_exports),
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text(text = "Exports")
+                        Text(
+                            text = stringResource(R.string.nav_exports),
+                            maxLines = 2
+                        )
                     }
                     
                     // Guide button
                     Button(
                         onClick = { navController.navigate(Routes.Guide) },
-                        modifier = Modifier.fillMaxWidth(0.6f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.MenuBook,
-                            contentDescription = "Guide",
+                            contentDescription = stringResource(R.string.cd_guide),
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text(text = "Guide")
+                        Text(
+                            text = stringResource(R.string.nav_guide),
+                            maxLines = 2
+                        )
                     }
                     
                     // Settings button
                     Button(
                         onClick = { navController.navigate(Routes.Settings) },
-                        modifier = Modifier.fillMaxWidth(0.6f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Settings,
-                            contentDescription = "Settings",
+                            contentDescription = stringResource(R.string.cd_settings),
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text(text = "Settings")
+                        Text(
+                            text = stringResource(R.string.nav_settings),
+                            maxLines = 2
+                        )
                     }
                 }
             }
@@ -653,7 +685,7 @@ fun HomeScreen(
         
         // Version number at the bottom
         Text(
-            text = "v${com.vitol.inv3.BuildConfig.VERSION_NAME}",
+            text = stringResource(R.string.common_version, com.vitol.inv3.BuildConfig.VERSION_NAME),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 64.dp), // Add more padding to avoid navigation bar
@@ -690,12 +722,9 @@ fun HomeScreen(
             }
             AlertDialog(
                 onDismissRequest = { acknowledgePrompt() },
-                title = { Text("Set up your company") },
+                title = { Text(stringResource(R.string.company_setup_title)) },
                 text = {
-                    Text(
-                        "Add your company name and number so scanning and exports work correctly. " +
-                            "You can change this anytime under Your company."
-                    )
+                    Text(stringResource(R.string.company_setup_message))
                 },
                 confirmButton = {
                     Button(
@@ -704,14 +733,14 @@ fun HomeScreen(
                             navController.navigate(Routes.AddOwnCompany)
                         },
                     ) {
-                        Text("Set up")
+                        Text(stringResource(R.string.company_setup_confirm))
                     }
                 },
                 dismissButton = {
                     TextButton(
                         onClick = { acknowledgePrompt() },
                     ) {
-                        Text("Later")
+                        Text(stringResource(R.string.common_later))
                     }
                 },
             )
@@ -729,7 +758,10 @@ fun PlaceholderScreen(title: String) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(text = title, style = MaterialTheme.typography.headlineSmall)
-        Text(text = "Coming soon", modifier = Modifier.padding(top = 8.dp))
+        Text(
+            text = stringResource(R.string.common_coming_soon),
+            modifier = Modifier.padding(top = 8.dp)
+        )
     }
 }
 
