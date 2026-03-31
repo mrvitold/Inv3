@@ -1,12 +1,12 @@
 # Inv3 – Project Status
 
-**Last updated:** 2026-03-28
+**Last updated:** 2026-03-30
 
 ## Current State
 
 ### App
 - **Package:** com.vitol.inv3
-- **Version:** 1.19 (versionCode 19)
+- **Version:** 1.20 (versionCode 20)
 - **Status:** Internal testing on Google Play Console
 - **Build:** Release AAB at `app/release/app-release.aab` (build via Android Studio)
 
@@ -72,6 +72,13 @@
 | Azure setup | [AZURE_SETUP.md](AZURE_SETUP.md) |
 
 ---
+
+## Release 1.20 (2026-03-30)
+
+**Release notes for Play Console:**
+- English and Lithuanian: in-app language choice in Settings (preference persisted)
+- UI strings localized (exports, scan, subscription, auth, billing messages, and more)
+- Invoice validation and export-related messages use resources for consistent LT/EN copy
 
 ## Release 1.19 (2026-03-28)
 

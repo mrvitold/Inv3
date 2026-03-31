@@ -1,4 +1,4 @@
-# Google Play Publish Checklist – Inv3 v1.19
+# Google Play Publish Checklist – Inv3 v1.20
 
 Use this checklist before publishing to production.
 
@@ -8,7 +8,7 @@ Use this checklist before publishing to production.
 
 | Item | Status |
 |------|--------|
-| versionCode 19, versionName "1.19" | ✓ |
+| versionCode 20, versionName "1.20" | ✓ |
 | targetSdk 35 (required by Play) | ✓ |
 | Release signing (keystore.properties) | ✓ |
 | ProGuard rules for release | ✓ |
