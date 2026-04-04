@@ -66,8 +66,11 @@ import com.vitol.inv3.Routes
 import com.vitol.inv3.ui.subscription.SubscriptionViewModel
 import com.vitol.inv3.ui.subscription.UpgradeDialog
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
+import com.vitol.inv3.data.local.setPendingFeedbackAfterImportComplete
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.InvoiceRecord
+import com.vitol.inv3.data.remote.LithuanianCompanyRegistry
+import com.vitol.inv3.data.remote.LtCompanyLookupResult
 import com.vitol.inv3.data.remote.SupabaseRepository
 import com.vitol.inv3.export.VatRateValidation
 import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
@@ -151,6 +154,28 @@ class ReviewScanViewModel @Inject constructor(
             repo.findInvoiceByVatOrCompanyNumber(vatNumber, companyNumber)
         } catch (e: Exception) {
             Timber.e(e, "Failed to find partner company")
+            null
+        }
+    }
+
+    /**
+     * Resolve official name from `all_lt_companies` using 9-digit JA kodas from the company number
+     * or from LT + 9-digit VAT. Fills company code when it was missing but VAT carried it.
+     */
+    suspend fun lookupOfficialLtCompany(companyNumber: String?, vatNumber: String?): LtCompanyLookupResult? {
+        return try {
+            val jaKodas = LithuanianCompanyRegistry.resolveJaKodas(companyNumber, vatNumber)
+                ?: return null
+            val row = repo.findLtCompanyByJaKodas(jaKodas) ?: return null
+            val hadValidCodeInNumberField =
+                LithuanianCompanyRegistry.normalizeJaKodas(companyNumber) != null
+            val fillCompanyNumberIfBlank = if (!hadValidCodeInNumberField) jaKodas else null
+            val rawName = row.ja_pavadinimas?.trim()?.takeIf { it.isNotEmpty() }
+            val officialName = rawName?.takeUnless { LithuanianCompanyRegistry.isUninformativeRegisterName(it) }
+            if (officialName == null && fillCompanyNumberIfBlank == null) return null
+            LtCompanyLookupResult(officialName = officialName, fillCompanyNumberIfBlank = fillCompanyNumberIfBlank)
+        } catch (e: Exception) {
+            Timber.e(e, "Failed LT registry lookup")
             null
         }
     }
@@ -429,7 +454,27 @@ fun ReviewScanScreen(
                 companyNameField = ""
             }
             
-            // Lookup partner company from existing invoices
+            // Official Lithuanian register (all_lt_companies): canonical name; JA kodas from VAT when number missing.
+            // Merge mode keeps non-blank user fields from the prior screen — do not overwrite those with registry data.
+            val ltLookup = viewModel.lookupOfficialLtCompany(
+                companyNumber = companyNumberField.takeIf { it.isNotBlank() },
+                vatNumber = vatNumberField.takeIf { it.isNotBlank() }
+            )
+            if (ltLookup != null) {
+                val mergeKeepsCompanyName = isMerge && companyNameField.isNotBlank()
+                val mergeKeepsCompanyNumber = isMerge && companyNumberField.isNotBlank()
+                if (!mergeKeepsCompanyName) {
+                    ltLookup.officialName?.let {
+                        Timber.d("LT registry resolved official name for JA kodas")
+                        companyNameField = it
+                    }
+                }
+                if (!mergeKeepsCompanyNumber) {
+                    ltLookup.fillCompanyNumberIfBlank?.let { companyNumberField = it }
+                }
+            }
+            
+            // Lookup partner company from existing invoices (fill gaps only; register wins for name when matched above)
             val partnerInvoice = if (!vatNumberField.isBlank() || !companyNumberField.isBlank()) {
                 viewModel.findPartnerCompany(
                     vatNumber = vatNumberField.takeIf { it.isNotBlank() },
@@ -439,10 +484,9 @@ fun ReviewScanScreen(
                 null
             }
             
-            // Auto-fill partner company parameters if found - prefer DB name for consistency (same company code = same name)
             if (partnerInvoice != null) {
                 Timber.d("Found partner company from existing invoice: ${partnerInvoice.company_name}")
-                if (!partnerInvoice.company_name.isNullOrBlank()) {
+                if (companyNameField.isBlank() && !partnerInvoice.company_name.isNullOrBlank()) {
                     companyNameField = partnerInvoice.company_name
                 }
                 if (vatNumberField.isBlank() && !partnerInvoice.vat_number.isNullOrBlank()) {
@@ -488,10 +532,20 @@ fun ReviewScanScreen(
         // Infer VAT rate from amounts when not explicitly found
         var vatRateForTax = vatRateField.replace(",", ".").toDoubleOrNull()
         if (vatRateForTax == null && amountWithoutVatField.isNotBlank() && vatAmountField.isNotBlank()) {
-            val amountVal = amountWithoutVatField.replace(",", ".").toDoubleOrNull()
+            val amountBeforeInference = amountWithoutVatField
+            val amountVal = amountBeforeInference.replace(",", ".").toDoubleOrNull()
             val vatVal = vatAmountField.replace(",", ".").toDoubleOrNull()
-            vatRateForTax = com.vitol.inv3.export.TaxCodeDeterminer.calculateVatRate(amountVal, vatVal)
-            if (vatRateForTax != null) vatRateField = vatRateForTax.toInt().toString()
+            val inference = com.vitol.inv3.export.TaxCodeDeterminer.inferVatRateFromAmounts(amountVal, vatVal)
+            if (inference != null) {
+                vatRateForTax = inference.ratePercent
+                vatRateField = inference.ratePercent.toInt().toString()
+                inference.correctedNetAmount?.let { net ->
+                    amountWithoutVatField = com.vitol.inv3.export.TaxCodeDeterminer.formatAmountPreservingSeparator(
+                        net,
+                        amountBeforeInference
+                    )
+                }
+            }
         }
         val invoiceText = parsed.lines.joinToString(" ")
         val detectedTaxCode = com.vitol.inv3.export.TaxCodeDeterminer.determineTaxCode(
@@ -504,14 +558,28 @@ fun ReviewScanScreen(
             if (vatNumberField.equals(ownCompany.vat_number, ignoreCase = true)) vatNumberField = ""
             if (CompanyNameUtils.isSameAsOwnCompanyName(companyNameField, ownCompany.company_name)) companyNameField = ""
         }
+        val ltImport = viewModel.lookupOfficialLtCompany(
+            companyNumber = companyNumberField.takeIf { it.isNotBlank() },
+            vatNumber = vatNumberField.takeIf { it.isNotBlank() }
+        )
+        if (ltImport != null) {
+            ltImport.officialName?.let { companyNameField = it }
+            ltImport.fillCompanyNumberIfBlank?.let { companyNumberField = it }
+        }
         val partnerInvoice = viewModel.findPartnerCompany(
             vatNumber = vatNumberField.takeIf { it.isNotBlank() },
             companyNumber = companyNumberField.takeIf { it.isNotBlank() }
         )
         if (partnerInvoice != null) {
-            if (!partnerInvoice.company_name.isNullOrBlank()) companyNameField = partnerInvoice.company_name
-            if (vatNumberField.isBlank() && !partnerInvoice.vat_number.isNullOrBlank()) vatNumberField = partnerInvoice.vat_number
-            if (companyNumberField.isBlank() && !partnerInvoice.company_number.isNullOrBlank()) companyNumberField = partnerInvoice.company_number
+            if (companyNameField.isBlank() && !partnerInvoice.company_name.isNullOrBlank()) {
+                companyNameField = partnerInvoice.company_name
+            }
+            if (vatNumberField.isBlank() && !partnerInvoice.vat_number.isNullOrBlank()) {
+                vatNumberField = partnerInvoice.vat_number
+            }
+            if (companyNumberField.isBlank() && !partnerInvoice.company_number.isNullOrBlank()) {
+                companyNumberField = partnerInvoice.company_number
+            }
         }
         errorMessage = parsed.extractionMessage
     }
@@ -846,10 +914,12 @@ fun ReviewScanScreen(
                                                 }
                                                 if (!importSessionViewModel.hasNext) {
                                                     importSessionViewModel.clear()
+                                                    withContext(Dispatchers.IO) {
+                                                        setPendingFeedbackAfterImportComplete(context)
+                                                    }
                                                     navController?.navigate(Routes.Home) {
                                                         popUpTo(0) { inclusive = true }
                                                     }
-                                                    snackbarHostState.showSnackbar(context.getString(R.string.all_invoices_saved))
                                                 }
                                             }
                                         },

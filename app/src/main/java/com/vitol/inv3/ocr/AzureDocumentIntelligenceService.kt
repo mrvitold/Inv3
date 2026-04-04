@@ -7,8 +7,12 @@ import android.net.Uri
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.vitol.inv3.export.TaxCodeDeterminer
 import com.vitol.inv3.export.VatRateValidation
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.pow
@@ -64,21 +68,30 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             return@withContext ParsedInvoice(extractionMessage = "OCR not configured. Enter details manually.")
         }
         val (bytes, finalMime) = compressImageIfNeeded(imageBytes, mimeType)
-        // 1) Layout for reliable OCR text
-        val layoutOp = submitDocumentToUrl(layoutAnalyzeUrl, bytes, finalMime)
-        var parsed = if (layoutOp != null) {
-            val res = pollForResults(layoutOp)
-            if (res != null) parseResultsToInvoice(res, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
-            else ParsedInvoice(extractionMessage = "Could not read document. Try a clearer file or enter manually.")
-        } else ParsedInvoice(extractionMessage = "Could not send document. Check connection and try again.")
-        // 2) Invoice model for structured fields (VendorName, amounts, etc.)
-        val invoiceOp = submitDocumentToUrl(analyzeUrl, bytes, finalMime)
-        if (invoiceOp != null) {
-            val invRes = pollForResults(invoiceOp)
-            if (invRes != null) {
-                val invoiceParsed = parseResultsToInvoice(invRes, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
-                parsed = mergeParsedInvoices(invoiceParsed, parsed)
+        // Layout + invoice models in parallel (same bytes) to cut wall-clock time vs sequential submits.
+        var layoutJson: JsonObject? = null
+        var invoiceJson: JsonObject? = null
+        coroutineScope {
+            val layoutDeferred = async {
+                val op = submitDocumentToUrl(layoutAnalyzeUrl, bytes, finalMime)
+                if (op != null) pollForResults(op) else null
             }
+            val invoiceDeferred = async {
+                val op = submitDocumentToUrl(analyzeUrl, bytes, finalMime)
+                if (op != null) pollForResults(op) else null
+            }
+            layoutJson = layoutDeferred.await()
+            invoiceJson = invoiceDeferred.await()
+        }
+        var parsed = when {
+            layoutJson != null && invoiceJson != null -> {
+                val fromLayout = parseResultsToInvoice(layoutJson!!, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+                val fromInvoice = parseResultsToInvoice(invoiceJson!!, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+                mergeParsedInvoices(fromInvoice, fromLayout)
+            }
+            layoutJson != null -> parseResultsToInvoice(layoutJson!!, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+            invoiceJson != null -> parseResultsToInvoice(invoiceJson!!, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+            else -> ParsedInvoice(extractionMessage = "Could not send document. Check connection and try again.")
         }
         // 3) If still no text, try prebuilt-read
         if (parsed.lines.isEmpty()) {
@@ -126,12 +139,11 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 val response = httpClient.newCall(request).execute()
                 
                 if (response.code == 429) {
-                    // Rate limited - retry with backoff. Cap Retry-After at 15s to avoid very long waits
                     val retryAfter = response.header("Retry-After")?.toLongOrNull()
                     val delayMs = if (retryAfter != null) {
-                        minOf(retryAfter * 1000, 15_000L) // Cap at 15 seconds
+                        minOf(retryAfter * 1000, 8_000L)
                     } else {
-                        baseDelayMs * (2.0.pow(retryCount.toDouble())).toLong() // Exponential backoff
+                        minOf(baseDelayMs * (2.0.pow(retryCount.toDouble())).toLong(), 8_000L)
                     }
                     
                     if (retryCount < maxRetries) {
@@ -191,12 +203,11 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 val response = httpClient.newCall(request).execute()
                 
                 if (response.code == 429) {
-                    // Rate limited - retry with backoff. Cap Retry-After at 15s to avoid very long waits
                     val retryAfter = response.header("Retry-After")?.toLongOrNull()
                     val delayMs = if (retryAfter != null) {
-                        minOf(retryAfter * 1000, 15_000L) // Cap at 15 seconds
+                        minOf(retryAfter * 1000, 6_000L)
                     } else {
-                        2000L * (2.0.pow(attempts.toDouble())).toLong() // Exponential backoff
+                        2500L
                     }
                     
                     Timber.w("Azure rate limited (429) while polling. Waiting ${delayMs}ms...")
@@ -252,15 +263,67 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         }
     }
     
+    /**
+     * Invoice and layout models often reorder OCR lines differently; structured fields (VendorTaxId) come from
+     * invoice, but Įm. kodas from layout reading order is usually more reliable. Prefer a 9-digit code over 6-digit.
+     */
+    private fun mergeCompanyNumber(fromInvoice: String?, fromLayout: String?): String? {
+        val inv = fromInvoice?.trim()?.takeIf { it.isNotEmpty() }
+        val lay = fromLayout?.trim()?.takeIf { it.isNotEmpty() }
+        if (inv == null) return lay
+        if (lay == null) return inv
+        if (inv == lay) return inv
+        val inv9 = inv.matches(Regex("^[123]\\d{8}$"))
+        val lay9 = lay.matches(Regex("^[123]\\d{8}$"))
+        if (lay9 && !inv9) {
+            Timber.d("Azure merge: using layout company number '$lay' over invoice '$inv' (9-digit vs shorter/other)")
+            return lay
+        }
+        if (inv9 && !lay9) return inv
+        if (inv9 && lay9) {
+            Timber.d("Azure merge: invoice vs layout 9-digit company number differ; preferring layout '$lay'")
+            return lay
+        }
+        Timber.d("Azure merge: preferring layout company number '$lay' over invoice '$inv'")
+        return lay
+    }
+
+    /**
+     * Invoice `content` and layout `pages[].lines` often reorder rows; supplier Įm. kodas can sit next to payment
+     * details so text parsing picks the bank name. Prefer layout when invoice name looks like a bank/payment line.
+     */
+    private fun mergeCompanyName(fromInvoice: String?, fromLayout: String?): String? {
+        val inv = fromInvoice?.trim()?.takeIf { it.isNotEmpty() }
+        val lay = fromLayout?.trim()?.takeIf { it.isNotEmpty() }
+        if (inv == null) return lay
+        if (lay == null) return inv
+        if (inv.equals(lay, ignoreCase = true)) return inv
+        val invBank = InvoiceParser.isLikelyPaymentBankName(inv)
+        val layBank = InvoiceParser.isLikelyPaymentBankName(lay)
+        if (invBank && !layBank) {
+            Timber.d("Azure merge: using layout company name '$lay' over invoice '$inv' (invoice looks like bank/payment)")
+            return lay
+        }
+        if (!invBank && layBank) return inv
+        val invSig = InvoiceParser.isLikelySignaturePlaceholderName(inv)
+        val laySig = InvoiceParser.isLikelySignaturePlaceholderName(lay)
+        if (invSig && !laySig) {
+            Timber.d("Azure merge: using layout company name '$lay' over invoice '$inv' (invoice looks like signature placeholder)")
+            return lay
+        }
+        if (!invSig && laySig) return inv
+        return inv
+    }
+
     /** Merges invoice-model result with layout-model result: prefer non-blank from invoice, fill from layout; use layout lines (full OCR). */
     private fun mergeParsedInvoices(fromInvoice: ParsedInvoice, fromLayout: ParsedInvoice): ParsedInvoice = ParsedInvoice(
         invoiceId = fromInvoice.invoiceId.takeIf { !it.isNullOrBlank() } ?: fromLayout.invoiceId,
         date = fromInvoice.date.takeIf { !it.isNullOrBlank() } ?: fromLayout.date,
-        companyName = fromInvoice.companyName.takeIf { !it.isNullOrBlank() } ?: fromLayout.companyName,
+        companyName = mergeCompanyName(fromInvoice.companyName, fromLayout.companyName),
         amountWithoutVatEur = fromInvoice.amountWithoutVatEur.takeIf { !it.isNullOrBlank() } ?: fromLayout.amountWithoutVatEur,
         vatAmountEur = fromInvoice.vatAmountEur.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatAmountEur,
         vatNumber = fromInvoice.vatNumber.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatNumber,
-        companyNumber = fromInvoice.companyNumber.takeIf { !it.isNullOrBlank() } ?: fromLayout.companyNumber,
+        companyNumber = mergeCompanyNumber(fromInvoice.companyNumber, fromLayout.companyNumber),
         vatRate = VatRateValidation.sanitizeOcrPercentToDisplayString(
             fromInvoice.vatRate.takeIf { !it.isNullOrBlank() } ?: fromLayout.vatRate
         ),
@@ -376,10 +439,11 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 // VAT number extraction - prioritize based on invoice type
                 // Normalize OCR error "ILT" -> "LT" before validation
                 fun normalizeVatFromOcr(raw: String): String {
-                    val v = raw.trim().uppercase().replace(" ", "")
+                    val v = raw.trim().uppercase().replace(" ", "").replace("-", "")
                     return when {
                         v.startsWith("LT") -> v
                         v.startsWith("ILT") -> "LT" + v.removePrefix("ILT")
+                        v.matches(Regex("^[0-9]{8,12}$")) -> "LT$v"
                         else -> v
                     }
                 }
@@ -661,16 +725,33 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         
         // Extract VAT rate from text if available
         var vatRate: String? = parsedFromText.vatRate
-        // Infer VAT rate from amounts when not explicitly found (e.g. 143.90/685.23 ≈ 21%)
+        // Infer or override VAT rate from amounts when missing or inconsistent with net+VAT (e.g. discount "6,25%" misread as PVM)
         val amtNoVat = amountNoVat
         val vatAmt = vatAmount
-        if (vatRate.isNullOrBlank() && amtNoVat != null && vatAmt != null) {
+        if (amtNoVat != null && vatAmt != null) {
             val amountVal = amtNoVat.replace(",", ".").toDoubleOrNull()
             val vatVal = vatAmt.replace(",", ".").toDoubleOrNull()
-            val inferredRate = com.vitol.inv3.export.TaxCodeDeterminer.calculateVatRate(amountVal, vatVal)
-            if (inferredRate != null) {
-                vatRate = inferredRate.toInt().toString()
-                Timber.d("Azure: Inferred VAT rate $vatRate% from amounts (amountNoVat=$amtNoVat, vatAmount=$vatAmt)")
+            val inference = TaxCodeDeterminer.inferVatRateFromAmounts(amountVal, vatVal)
+            if (inference != null) {
+                val inferredStr = inference.ratePercent.toInt().toString()
+                val ocrMatchesAmounts = if (vatRate.isNullOrBlank() || amountVal == null || vatVal == null || amountVal <= 0) {
+                    false
+                } else {
+                    val ocr = vatRate.replace(",", ".").toDoubleOrNull()
+                    ocr != null && abs(amountVal * (ocr / 100.0) - vatVal) <= 0.08
+                }
+                val useInference = vatRate.isNullOrBlank() || !ocrMatchesAmounts
+                if (useInference) {
+                    if (!vatRate.isNullOrBlank() && !ocrMatchesAmounts) {
+                        Timber.d("Azure: Overriding OCR VAT rate $vatRate% with amount-inferred $inferredStr%")
+                    }
+                    vatRate = inferredStr
+                    inference.correctedNetAmount?.let { net ->
+                        amountNoVat = TaxCodeDeterminer.formatAmountPreservingSeparator(net, amtNoVat)
+                        Timber.d("Azure: Corrected amount without VAT (was gross): $amountNoVat")
+                    }
+                    Timber.d("Azure: VAT rate from amounts: $vatRate% (amountNoVat=$amtNoVat, vatAmount=$vatAmt)")
+                }
             }
         }
         

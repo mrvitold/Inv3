@@ -67,6 +67,12 @@ data class UserSubscriptionRecord(
     val purchase_token: String? = null
 )
 
+@Serializable
+data class LtCompanyRecord(
+    val ja_kodas: Long,
+    val ja_pavadinimas: String? = null
+)
+
 class SupabaseRepository(
     private val client: SupabaseClient?,
     private val authManager: AuthManager
@@ -899,6 +905,37 @@ class SupabaseRepository(
             null
         } catch (e: Exception) {
             Timber.e(e, "Failed to find invoice by VAT or company number")
+            null
+        }
+    }
+
+    /**
+     * Official company name from the national register snapshot (`all_lt_companies`).
+     * Requires Supabase RLS to allow SELECT for signed-in users (reference data).
+     */
+    suspend fun findLtCompanyByJaKodas(jaKodas: String): LtCompanyRecord? = withContext(Dispatchers.IO) {
+        if (client == null) {
+            Timber.w("Supabase client is null, cannot query all_lt_companies")
+            return@withContext null
+        }
+        if (getCurrentUserId() == null) {
+            Timber.w("User not authenticated, skip all_lt_companies lookup")
+            return@withContext null
+        }
+        val codeLong = jaKodas.toLongOrNull() ?: return@withContext null
+        try {
+            val rows = client.from("all_lt_companies")
+                .select {
+                    filter {
+                        eq("ja_kodas", codeLong)
+                    }
+                }
+                .decodeList<LtCompanyRecord>()
+            rows.firstOrNull()?.also {
+                Timber.d("all_lt_companies hit for ja_kodas=$jaKodas")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to query all_lt_companies for ja_kodas=$jaKodas")
             null
         }
     }

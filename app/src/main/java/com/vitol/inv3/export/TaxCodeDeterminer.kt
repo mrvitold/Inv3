@@ -1,6 +1,7 @@
 package com.vitol.inv3.export
 
 import timber.log.Timber
+import java.util.Locale
 
 /**
  * Determines the appropriate PVM (VAT) tax code based on invoice data.
@@ -79,25 +80,71 @@ object TaxCodeDeterminer {
     }
     
     /**
+     * Result of inferring VAT rate from a monetary line that might be net or gross (with VAT).
+     * Many invoices mis-label or OCR swaps "Suma be PVM" vs "Suma su PVM"; we try both.
+     */
+    data class VatAmountsInference(
+        val ratePercent: Double,
+        /** If the candidate was gross, this is net = gross − VAT for correcting the form. */
+        val correctedNetAmount: Double?
+    )
+
+    /**
+     * Try [amountCandidate] as **net** (without VAT); if that does not snap to a standard LT rate,
+     * try as **gross** (with VAT) so net = candidate − VAT (when VAT is positive).
+     */
+    fun inferVatRateFromAmounts(amountCandidate: Double?, vatAmount: Double?): VatAmountsInference? {
+        if (amountCandidate == null) return null
+        if (amountCandidate < 0) return null
+        val vat = vatAmount ?: 0.0
+        if (vat < 0) return null
+
+        if (amountCandidate == 0.0) {
+            return if (vat == 0.0) {
+                val z = VatRateValidation.snapRatioPercentToStandardOrNull(0.0) ?: 0.0
+                VatAmountsInference(z, null)
+            } else {
+                null
+            }
+        }
+
+        val rateIfNet = (vat / amountCandidate) * 100.0
+        val snappedNet = VatRateValidation.snapRatioPercentToStandardOrNull(rateIfNet)
+        if (snappedNet != null) {
+            Timber.d("VAT rate inference: amount as NET ($amountCandidate): $rateIfNet% -> $snappedNet%")
+            return VatAmountsInference(snappedNet, null)
+        }
+
+        if (vat == 0.0) return null
+
+        val impliedNet = amountCandidate - vat
+        if (impliedNet <= 0.001) return null
+        val rateIfGross = (vat / impliedNet) * 100.0
+        val snappedGross = VatRateValidation.snapRatioPercentToStandardOrNull(rateIfGross)
+        if (snappedGross != null) {
+            Timber.d(
+                "VAT rate inference: amount as GROSS (implied net=$impliedNet): " +
+                    "$rateIfGross% -> $snappedGross%"
+            )
+            return VatAmountsInference(snappedGross, impliedNet)
+        }
+
+        Timber.d("VAT rate inference: no match (as net: $rateIfNet%, as gross net=$impliedNet: $rateIfGross%)")
+        return null
+    }
+
+    /** Format [value] with the same decimal separator as [originalAmountString] (`,` vs `.`). */
+    fun formatAmountPreservingSeparator(value: Double, originalAmountString: String): String {
+        val sep = if (originalAmountString.contains(',')) ',' else '.'
+        return String.format(Locale.US, "%.2f", value).replace('.', sep)
+    }
+
+    /**
      * Calculate VAT rate from amount without VAT and VAT amount.
-     * 
-     * @param amountWithoutVat Amount without VAT
-     * @param vatAmount VAT amount
-     * @return VAT rate as percentage, or null if calculation not possible
+     * If the first argument is actually **gross**, still returns the correct standard rate when possible.
      */
     fun calculateVatRate(amountWithoutVat: Double?, vatAmount: Double?): Double? {
-        if (amountWithoutVat == null) {
-            return null
-        }
-        val vat = vatAmount ?: 0.0
-        if (amountWithoutVat == 0.0) {
-            return if (vat == 0.0) 0.0 else null
-        }
-        
-        val rate = (vat / amountWithoutVat) * 100.0
-        val snapped = VatRateValidation.snapRatioPercentToStandardOrNull(rate)
-        Timber.d("Calculated VAT rate: $rate% -> snapped: $snapped%")
-        return snapped
+        return inferVatRateFromAmounts(amountWithoutVat, vatAmount)?.ratePercent
     }
 }
 

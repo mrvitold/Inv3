@@ -1,16 +1,33 @@
 # Inv3 — Meta ad creatives (Lithuanian)
 
-Use these as **copy decks** for static images, carousel, or Reels/Stories subtitles. Pair with **vertical 9:16** video or **1080×1080** / **1080×1350** static images. Keep on-screen text short (safe zone: center).
+Copy for static images, carousel, Reels/Stories. Prefer **vertical 9:16** video or **1080×1080** / **1080×1350** images. On-image text: **short** (safe zone: centre; leave top/bottom clear for Meta UI).
 
-**Compliance:** Position Inv3 as helping **capture and prepare invoice data** and **reduce manual work** related to bookkeeping and i.SAF. Do not claim official VMI endorsement unless documented.
+**Compliance:** Inv3 helps **capture and prepare invoice data** and **cut manual work** before i.SAF. Do not claim VMI endorsement unless documented.
 
 ---
 
-## Variant A — Time / i.SAF fatigue
+## Look & type (match the app)
 
-**Primary text (Feed / long)**
+Inv3 uses **Material 3** with a calm **Nord-style** palette (same idea as `colors.xml` + site):
 
-> Vargstate įvedinėdami PVM sąskaitas į i.SAF po vieną? Inv3 padeda greičiau paruošti duomenis telefone — be įdiegtų programų kompiuteryje. Išbandykite nemokamai.
+| Role | Hex | Use on ads |
+|------|-----|------------|
+| Text / primary | `#2E3440` | Headlines, body on light panels |
+| Background | `#ECEFF4` | Full-bleed panels, bars |
+| Surface | `#FFFFFF` | Cards (optional) |
+| Accent / links | `#5E81AC` | Small highlights, icons — use sparingly |
+
+**Fonts (avoid “AI poster” looks):** use one neutral **sans** with good Lithuanian glyphs — e.g. **Inter**, **Source Sans 3**, or **IBM Plex Sans**. Weights: **Semibold** for headline, **Regular** for subline. **Do not** mix script, condensed, or decorative display fonts; that clashes with the app’s clean UI.
+
+**Tone:** short sentences, concrete verbs (nufotografuoti, patikrinti, eksportuoti), no filler like “prisijunkite prie…” unless you have real numbers.
+
+---
+
+## Variant A — Įkyrus rankinis darbas
+
+**Primary text**
+
+> Vis dar suvedinėjate PVM sąskaitas į i.SAF ranka? Su Inv3 greičiau paruošite duomenis telefone — nebereikia atskirų programų kompiuteryje. Parsisiųskite nemokamai.
 
 **Headline**
 
@@ -18,21 +35,21 @@ Use these as **copy decks** for static images, carousel, or Reels/Stories subtit
 
 **Description (optional)**
 
-> Sąskaitos telefone · nuo €7/mėn.
+> Sąskaitos telefone · planai nuo €7 / mėn.
 
-**CTA button:** Install now / Learn more
+**CTA:** Install now
 
 ---
 
-## Variant B — No desktop
+## Variant B — Be PC programų
 
 **Primary text**
 
-> Norite tvarkyti PVM sąskaitas be sudėtingų kompiuterinių programų? Inv3 veikia jūsų telefone. Tinka mažoms įmonėms, kurios jau naudoja i.SAF.
+> Nenorite vėl diegti buhalterinių programų į kompiuterį? Inv3 veikia telefone. Tinka mažoms įmonėms, kurios jau kelia duomenis į i.SAF.
 
 **Headline**
 
-> Be PC programų — viskas telefone
+> Viskas telefone — ne PC
 
 **Description**
 
@@ -40,25 +57,25 @@ Use these as **copy decks** for static images, carousel, or Reels/Stories subtit
 
 ---
 
-## Variant C — Short / punchy (Reels overlay)
+## Variant C — Trumpa ant vaizdo (Reels / Stories)
 
-**On-video text (3 lines max)**
+**On-screen (max 3 eilutės)**
 
-1. PVM sąskaitos  
-2. Telefone  
-3. Mažiau rankinio įvedimo  
+1. Nufotografuojate  
+2. Patikslinate laukus  
+3. Eksportuojate XML  
 
-**Caption**
+**Caption po įrašo**
 
-> Inv3 — sąskaitų skaitymas ir paruošimas telefone. Lietuva · mažoms įmonėms.
+> Inv3 — sąskaitų paruošimas telefone. Lietuva; mažoms įmonėms.
 
 ---
 
-## Variant D — Accountant / owner rational
+## Variant D — Įmonės savininkui
 
 **Primary text**
 
-> Mažai įmonei kiekviena valanda skaičiuoja. Inv3 padeda sutrumpinti sąskaitų paruošimą prieš įvedant duomenis į i.SAF — patogu, kai viskas telefone.
+> Mažoje įmonėje kiekviena valanda matosi. Inv3 sutrumpina sąskaitų paruošimą prieš keliant į i.SAF — patogu, kai viskas telefone.
 
 **Headline**
 
@@ -66,32 +83,32 @@ Use these as **copy decks** for static images, carousel, or Reels/Stories subtit
 
 **Description**
 
-> Nemokamas startas · tada pasirinktinas planas
+> Nemokama pradžia · vėliau — pasirinktas planas
 
 ---
 
-## Variant E — Social proof placeholder
+## Variant E — Kol nėra įrodymų (pakeiskite vėliau)
 
 **Primary text**
 
-> Prisijunkite prie įmonių, kurios mažina rankinį sąskaitų tvarkymą. Inv3 — Android programa su aiškiais planais (nuo €7/mėn.).
+> Inv3 padeda tvarkyti PVM sąskaitas telefone prieš keliant į i.SAF. Aiškūs planai — nuo €7 / mėn.
 
 **Headline**
 
 > Inv3 — sąskaitos telefone
 
-Replace the first sentence when you have a **real review or metric** (e.g. “4.8★ Google Play”).
+**When you have real proof**, swap the first sentence for something like: „4,8★ Google Play“ arba trumpa tikro kliento citata.
 
 ---
 
-## Video script outline (15–30 s, vertical)
+## Video script (15–30 s, vertical)
 
-| Sec | Visual | Audio / subtitle |
-|-----|--------|------------------|
-| 0–3 | Stressed person with papers | „Vis dar su sąskaitomis vakarais?“ |
-| 3–10 | Phone: open Inv3, scan invoice | „Nufotografuokite — paruoškite duomenis telefone.“ |
-| 10–20 | Export / fields on screen (blur sensitive data) | „Mažiau rankinio įvedimo į i.SAF.“ |
-| 20–25 | Play Store / logo | „Inv3 — išbandykite nemokamai.“ |
+| Sec | Visual | Subtitle / voice (LT) |
+|-----|--------|------------------------|
+| 0–3 | Žmogus su popieriais / sąskaitomis | „Vis dar vakarais su sąskaitomis?“ |
+| 3–10 | Telefonas: Inv3, sąskaitos kadras | „Nufotografuojate — patikslinate laukus telefone.“ |
+| 10–20 | Eksportas / laukai (jautrius duomenis nublurkinkite) | „Mažiau rankinio įvedimo į i.SAF.“ |
+| 20–25 | Logotipas / Play | „Išbandykite Inv3 nemokamai.“ |
 
 ---
 
@@ -99,10 +116,10 @@ Replace the first sentence when you have a **real review or metric** (e.g. “4.
 
 | ID | Angle |
 |----|--------|
-| A | Time saved + i.SAF |
-| B | No desktop |
-| C | Speed / mobile-first |
-| D | SMB owner value |
-| E | Trust / proof |
+| A | Laikas + i.SAF |
+| B | Be kompiuterio programų |
+| C | Greitas kelias: foto → XML |
+| D | SMB savininkas |
+| E | Paprastas pasiūlymas (be social proof) |
 
-Run **3–5** variants simultaneously; pause losers after **~500–1000** impressions per ad if CTR is clearly worse than the winner.
+Paleiskite **3–5** variantus; silpnus stabdykite po **~500–1000** rodinių, jei CTR aiškiai atsilieka.

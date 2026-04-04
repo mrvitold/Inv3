@@ -84,6 +84,27 @@ object FieldExtractors {
     private val ibanVatPattern = Regex("\\bLT[0-9]*(?:[1-3][0-9]{8}|[0-9]{6})", RegexOption.IGNORE_CASE)
     private val invoiceNumberPattern = Regex("(?:nr\\.?|numeris|serija)\\s*(?:[1-3][0-9]{8}|[0-9]{6})", RegexOption.IGNORE_CASE)
 
+    /** e.g. OCR "202601 23" (YYYYMM + day) misread as company code — 202601 matches 6-digit branch. */
+    private fun isYearMonthPlusDayFragment(candidate: String, line: String, matchEnd: Int): Boolean {
+        if (candidate.length != 6 || !candidate.all { it.isDigit() }) return false
+        if (!Regex("^(19|20)\\d{2}(0[1-9]|1[0-2])$").matches(candidate)) return false
+        val rest = line.substring(matchEnd + 1).trim()
+        if (!rest.matches(Regex("^(?:[1-9]|[12][0-9]|3[01])$"))) return false
+        return true
+    }
+
+    /** OCR often flips one digit in the buyer's company code (e.g. 305… vs own 303…); treat as own company. */
+    private fun isSingleDigitTypoOfOwn(candidate: String, own: String?): Boolean {
+        val o = own?.trim() ?: return false
+        if (o.length != candidate.length || o.length < 6) return false
+        var diff = 0
+        for (i in o.indices) {
+            if (o[i] != candidate[i]) diff++
+            if (diff > 1) return false
+        }
+        return diff == 1
+    }
+
     fun tryExtractDate(line: String): String? {
         // Try Lithuanian month format first: "2026 m. Sausio mėn. 13 d."
         val lithuanianMatch = lithuanianMonthDateRegex.find(line)
@@ -220,6 +241,11 @@ object FieldExtractors {
                 Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - invoice number pattern (immediately after nr/serija)")
                 continue
             }
+
+            if (isYearMonthPlusDayFragment(candidate, line, matchEnd)) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - YYYYMM + day date fragment, not company code")
+                continue
+            }
             
             // Exclude if it's near amount keywords (but only if very close - within 5 chars)
             val amountContext = if (matchStart > 0 && matchEnd < line.length - 1) {
@@ -247,6 +273,10 @@ object FieldExtractors {
             if (normalizedOwn != null && candidate == normalizedOwn) {
                 Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - same as own company number")
                 continue // This is own company number, skip it
+            }
+            if (normalizedOwn != null && isSingleDigitTypoOfOwn(candidate, normalizedOwn)) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - single-digit typo of own company number")
+                continue
             }
             
             Timber.d("tryExtractCompanyNumber: Found valid company number '$candidate' in line: $line")
@@ -290,6 +320,10 @@ object FieldExtractors {
                 Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - invoice number pattern in fallback (after nr/serija)")
                 continue
             }
+
+            if (isYearMonthPlusDayFragment(candidate, line, matchEnd)) {
+                continue
+            }
             
             // Exclude if same as VAT number
             if (excludeVatNumber != null) {
@@ -303,6 +337,9 @@ object FieldExtractors {
             // Exclude own company number
             val normalizedOwn = excludeOwnCompanyNumber?.trim()
             if (normalizedOwn != null && candidate == normalizedOwn) {
+                continue
+            }
+            if (normalizedOwn != null && isSingleDigitTypoOfOwn(candidate, normalizedOwn)) {
                 continue
             }
             

@@ -28,6 +28,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
@@ -65,6 +70,9 @@ import com.vitol.inv3.export.ExcelExporter
 import com.vitol.inv3.export.ExportInvoice
 import com.vitol.inv3.export.ISafXmlExporter
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
+import com.vitol.inv3.data.local.recordFeedbackPromptOffered
+import com.vitol.inv3.data.local.shouldOfferFeedbackPrompt
+import com.vitol.inv3.utils.openFeedbackEmail
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.ui.home.OwnCompanyViewModel
 import com.vitol.inv3.R
@@ -129,7 +137,9 @@ fun ExportsScreen(
     // Get repo for getting own company
     val mainActivityViewModel: com.vitol.inv3.MainActivityViewModel = hiltViewModel()
     val repo = mainActivityViewModel.repo
-    
+    val exportFeedbackSnackbarHostState = remember { SnackbarHostState() }
+    val exportFeedbackScope = rememberCoroutineScope()
+
     // Show export dialog if state is set
     exportDialogState?.let { state ->
         ExportDialog(
@@ -140,7 +150,19 @@ fun ExportsScreen(
             selectedCompanyId = selectedExportCompanyId,
             onDismiss = { exportDialogState = null },
             onRefresh = { viewModel.loadInvoices() },
-            repo = repo
+            repo = repo,
+            onDownloadsSaveSuccess = {
+                exportFeedbackScope.launch {
+                    if (!shouldOfferFeedbackPrompt(context)) return@launch
+                    recordFeedbackPromptOffered(context)
+                    val result = exportFeedbackSnackbarHostState.showSnackbar(
+                        message = context.getString(R.string.feedback_snackbar_message),
+                        actionLabel = context.getString(R.string.feedback_snackbar_action),
+                        duration = SnackbarDuration.Long
+                    )
+                    if (result == SnackbarResult.ActionPerformed) openFeedbackEmail(context)
+                }
+            }
         )
     }
     
@@ -348,9 +370,18 @@ fun ExportsScreen(
         )
     }
 
+    Scaffold(
+        snackbarHost = {
+            SnackbarHost(
+                hostState = exportFeedbackSnackbarHostState,
+                modifier = Modifier.padding(16.dp)
+            )
+        }
+    ) { innerPadding ->
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .padding(innerPadding)
             .statusBarsPadding()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -478,6 +509,7 @@ fun ExportsScreen(
                 }
             }
         }
+    }
     }
 }
 
@@ -977,7 +1009,8 @@ fun ExportDialog(
     selectedCompanyId: String?,
     onDismiss: () -> Unit,
     onRefresh: () -> Unit,
-    repo: com.vitol.inv3.data.remote.SupabaseRepository
+    repo: com.vitol.inv3.data.remote.SupabaseRepository,
+    onDownloadsSaveSuccess: () -> Unit = {}
 ) {
     var isSaving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -1030,6 +1063,7 @@ fun ExportDialog(
                             onDismiss()
                             if (result != null) {
                                 Toast.makeText(context, result, Toast.LENGTH_LONG).show()
+                                onDownloadsSaveSuccess()
                             } else {
                                 Toast.makeText(context, context.getString(R.string.exports_failed_save), Toast.LENGTH_SHORT).show()
                             }
@@ -1091,6 +1125,7 @@ fun ExportDialog(
                                     onDismiss()
                                     if (result != null) {
                                         Toast.makeText(context, result, Toast.LENGTH_LONG).show()
+                                        onDownloadsSaveSuccess()
                                     } else {
                                         Toast.makeText(context, context.getString(R.string.exports_failed_save_xml), Toast.LENGTH_SHORT).show()
                                     }

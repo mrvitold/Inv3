@@ -105,6 +105,15 @@
     <string name="cd_change_password">Change password</string>
     <string name="cd_log_out">Log out</string>
     <string name="cd_delete_account">Delete account</string>
+    <string name="settings_send_feedback">Send feedback</string>
+    <string name="settings_send_feedback_sub">Report issues or suggest improvements — opens your email app</string>
+    <string name="cd_send_feedback">Send feedback</string>
+    <string name="feedback_email_subject">Inv3 feedback (v%1$d)</string>
+    <string name="feedback_email_body">What were you trying to do?\n\nWhat went wrong, or what would you like to see improved?\n\n---\nDevice: %1$s %2$s\nAndroid: %3$s\nApp: %4$s (%5$d)</string>
+    <string name="feedback_send_chooser_title">Send email</string>
+    <string name="feedback_no_email_app">No email app found. You can write to svarosfrontas@gmail.com from a browser.</string>
+    <string name="feedback_snackbar_message">How was your experience? Early feedback helps us prioritize what to build next.</string>
+    <string name="feedback_snackbar_action">Email us</string>
 
     <!-- Subscription plans -->
     <string name="plan_name_free">Free</string>

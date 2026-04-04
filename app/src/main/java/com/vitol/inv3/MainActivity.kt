@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
@@ -25,13 +27,17 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -59,7 +65,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.vitol.inv3.data.local.applyStoredAppLocales
+import com.vitol.inv3.data.local.consumePendingFeedbackAfterImport
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
+import com.vitol.inv3.data.local.recordFeedbackPromptOffered
+import com.vitol.inv3.data.local.shouldOfferFeedbackPrompt
 import com.vitol.inv3.data.local.getCompanySetupHomePromptAckUserId
 import com.vitol.inv3.data.local.setActiveOwnCompanyId
 import com.vitol.inv3.data.local.setCompanySetupHomePromptAckUserId
@@ -72,6 +81,7 @@ import com.vitol.inv3.ui.subscription.UpgradeDialog
 import com.vitol.inv3.auth.AuthManager
 import com.vitol.inv3.auth.AuthState
 import com.vitol.inv3.ui.auth.LoginScreen
+import com.vitol.inv3.utils.openFeedbackEmail
 import com.vitol.inv3.R
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
@@ -467,6 +477,22 @@ fun HomeScreen(
     }
 
     var showUpgradeDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        if (!consumePendingFeedbackAfterImport(context)) return@LaunchedEffect
+        snackbarHostState.showSnackbar(
+            message = context.getString(R.string.all_invoices_saved),
+            duration = SnackbarDuration.Short
+        )
+        if (!shouldOfferFeedbackPrompt(context)) return@LaunchedEffect
+        recordFeedbackPromptOffered(context)
+        val result = snackbarHostState.showSnackbar(
+            message = context.getString(R.string.feedback_snackbar_message),
+            actionLabel = context.getString(R.string.feedback_snackbar_action),
+            duration = SnackbarDuration.Long
+        )
+        if (result == SnackbarResult.ActionPerformed) openFeedbackEmail(context)
+    }
     
     // Get subscription status for limit checks and upgrade dialog
     val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState()
@@ -546,11 +572,12 @@ fun HomeScreen(
             
             Spacer(modifier = Modifier.height(16.dp))
             
-            // Rest of the buttons (centered)
+            // Rest of the buttons (slightly above vertical center)
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 24.dp),
+                    .padding(horizontal = 24.dp)
+                    .offset(y = (-40).dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -667,6 +694,34 @@ fun HomeScreen(
                         Text(
                             text = stringResource(R.string.nav_settings),
                             maxLines = 2
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedButton(
+                        onClick = { openFeedbackEmail(context) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                        shape = MaterialTheme.shapes.medium,
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
+                        ),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.secondary
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Email,
+                            contentDescription = stringResource(R.string.cd_send_feedback),
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_send_feedback),
+                            maxLines = 2,
+                            style = MaterialTheme.typography.labelLarge
                         )
                     }
                 }

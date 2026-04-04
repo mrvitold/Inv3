@@ -101,6 +101,15 @@
     <string name="cd_change_password">Keisti slaptažodį</string>
     <string name="cd_log_out">Atsijungti</string>
     <string name="cd_delete_account">Ištrinti paskyrą</string>
+    <string name="settings_send_feedback">Siųsti atsiliepimą</string>
+    <string name="settings_send_feedback_sub">Praneškite apie problemas ar pasiūlymus — atsidarys el. pašto programa</string>
+    <string name="cd_send_feedback">Siųsti atsiliepimą</string>
+    <string name="feedback_email_subject">Inv3 atsiliepimas (v%1$d)</string>
+    <string name="feedback_email_body">Ką bandėte padaryti?\n\nKas nepavyko ar ką norėtumėte patobulinti?\n\n---\nĮrenginys: %1$s %2$s\nAndroid: %3$s\nProgramėlė: %4$s (%5$d)</string>
+    <string name="feedback_send_chooser_title">Siųsti el. laišką</string>
+    <string name="feedback_no_email_app">El. pašto programėlė nerasta. Rašykite į svarosfrontas@gmail.com per naršyklę.</string>
+    <string name="feedback_snackbar_message">Kaip sekėsi? Ankstyvi atsiliepimai padeda nuspręsti, ką tobulinti pirmiausia.</string>
+    <string name="feedback_snackbar_action">Rašyti</string>
 
     <string name="plan_name_free">Nemokamas</string>
     <string name="plan_name_basic">Bazinis</string>

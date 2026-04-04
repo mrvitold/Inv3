@@ -276,11 +276,19 @@ class ImportSessionViewModel @Inject constructor(
         }
         // Infer VAT rate from amounts when not explicitly found
         if (vatRate.isNullOrBlank() && amountNoVat != null && vatAmount != null) {
-            val amountVal = amountNoVat.replace(",", ".").toDoubleOrNull()
+            val amountBeforeInference = amountNoVat
+            val amountVal = amountBeforeInference.replace(",", ".").toDoubleOrNull()
             val vatVal = vatAmount.replace(",", ".").toDoubleOrNull()
-            val inferredRate = com.vitol.inv3.export.TaxCodeDeterminer.calculateVatRate(amountVal, vatVal)
-            if (inferredRate != null) {
-                vatRate = inferredRate.toInt().toString()
+            val inference = com.vitol.inv3.export.TaxCodeDeterminer.inferVatRateFromAmounts(amountVal, vatVal)
+            if (inference != null) {
+                vatRate = inference.ratePercent.toInt().toString()
+                inference.correctedNetAmount?.let { net ->
+                    amountNoVat = com.vitol.inv3.export.TaxCodeDeterminer.formatAmountPreservingSeparator(
+                        net,
+                        amountBeforeInference
+                    )
+                    Timber.d("Import merge: corrected net amount (was gross): $amountNoVat")
+                }
                 Timber.d("Import merge: inferred VAT rate $vatRate% from amounts")
             }
         }
