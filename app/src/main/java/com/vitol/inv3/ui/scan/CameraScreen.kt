@@ -245,7 +245,6 @@ fun SelectImportTypeScreen(navController: NavController) {
     LaunchedEffect(buildPagesResult) {
         when (val result = buildPagesResult) {
             is BuildPagesResult.Success -> {
-                importSessionViewModel.clearBuildPagesResult()
                 if (!subscriptionViewModel.canScanPagesFresh(result.pages.size)) {
                     showUpgradeDialog = true
                 } else {
@@ -254,6 +253,9 @@ fun SelectImportTypeScreen(navController: NavController) {
                         popUpTo(Routes.SelectImportType) { inclusive = true }
                     }
                 }
+                // Clear only after handling success; clearing first can cancel this effect
+                // before navigation/session initialization finishes.
+                importSessionViewModel.clearBuildPagesResult()
             }
             is BuildPagesResult.Error -> {
                 errorMessage = result.message

@@ -61,9 +61,11 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.data.local.applyStoredAppLocales
 import com.vitol.inv3.data.local.consumePendingFeedbackAfterImport
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
@@ -96,6 +98,7 @@ private const val NAV_STATE_KEY = "nav_state"
 class MainActivity : AppCompatActivity() {
     private lateinit var viewModel: MainActivityViewModel
     private var navControllerRef: NavHostController? = null
+    @Inject lateinit var appAnalytics: AppAnalytics
     
     override fun onCreate(savedInstanceState: Bundle?) {
         // Per-app locales from AppCompatDelegate apply to AppCompatActivity's resources; call before super.
@@ -155,7 +158,11 @@ class MainActivity : AppCompatActivity() {
                 // Nav state save/restore handles activity recreation. If black screen returns on
                 // some devices, we need a fix that doesn't recreate the NavHost.
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    AppNavHost(navController, viewModel.authManager)
+                    AppNavHost(
+                        navController = navController,
+                        authManager = viewModel.authManager,
+                        appAnalytics = appAnalytics
+                    )
                 }
             }
         }
@@ -229,23 +236,30 @@ object Routes {
 @Composable
 fun AppNavHost(
     navController: NavHostController,
-    authManager: AuthManager
+    authManager: AuthManager,
+    appAnalytics: AppAnalytics
 ) {
     val authState by authManager.authState.collectAsState(initial = AuthState.Loading)
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+
+    LaunchedEffect(currentRoute) {
+        appAnalytics.trackScreenViewed(currentRoute)
+    }
     
     // Navigate based on auth state (single source of truth - prevents duplicate navigation)
     LaunchedEffect(authState) {
-        val currentRoute = navController.currentDestination?.route
+        val destinationRoute = navController.currentDestination?.route
         when (authState) {
             is AuthState.Unauthenticated -> {
-                if (currentRoute != Routes.Login) {
+                if (destinationRoute != Routes.Login) {
                     navController.navigate(Routes.Login) {
                         popUpTo(0) { inclusive = true }
                     }
                 }
             }
             is AuthState.Authenticated -> {
-                if (currentRoute == Routes.Login) {
+                if (destinationRoute == Routes.Login) {
                     navController.navigate(Routes.Home) {
                         popUpTo(Routes.Login) { inclusive = true }
                     }
@@ -272,7 +286,7 @@ fun AppNavHost(
                 }
             )
         }
-        composable(Routes.Home) { HomeScreen(navController) }
+        composable(Routes.Home) { HomeScreen(navController, appAnalytics = appAnalytics) }
         composable(Routes.Guide) { com.vitol.inv3.ui.guide.GuideScreen(navController = navController) }
         composable(Routes.Companies) { 
             com.vitol.inv3.ui.companies.CompaniesScreen(
@@ -414,6 +428,7 @@ fun AppNavHost(
 @Composable
 fun HomeScreen(
     navController: NavHostController,
+    appAnalytics: AppAnalytics,
     ownCompanyViewModel: OwnCompanyViewModel = hiltViewModel(),
     subscriptionViewModel: SubscriptionViewModel = hiltViewModel(),
     mainActivityViewModel: MainActivityViewModel = hiltViewModel(),
@@ -534,6 +549,7 @@ fun HomeScreen(
                 subscriptionStatus = subscriptionStatus,
                 modifier = Modifier.padding(horizontal = 24.dp),
                 onUpgradeClick = {
+                    appAnalytics.trackPaywallViewed(source = "usage_indicator")
                     navController.navigate(Routes.Subscription)
                 }
             )
@@ -591,12 +607,24 @@ fun HomeScreen(
                     Button(
                         onClick = { 
                             if (!isOwnCompanyFilled()) {
+                                appAnalytics.trackHomeAction(
+                                    action = "scan_camera",
+                                    allowed = false,
+                                    failureReason = "own_company_missing"
+                                )
                                 Toast.makeText(context, fillCompanyFirst, Toast.LENGTH_LONG).show()
                                 return@Button
                             }
                             if (subscriptionStatus?.canScan == true) {
+                                appAnalytics.trackHomeAction(action = "scan_camera", allowed = true)
                                 navController.navigate(Routes.SelectInvoiceType)
                             } else {
+                                appAnalytics.trackHomeAction(
+                                    action = "scan_camera",
+                                    allowed = false,
+                                    failureReason = "scan_limit_reached"
+                                )
+                                appAnalytics.trackPaywallViewed(source = "scan_camera")
                                 showUpgradeDialog = true
                             }
                         },
@@ -619,12 +647,24 @@ fun HomeScreen(
                     Button(
                         onClick = { 
                             if (!isOwnCompanyFilled()) {
+                                appAnalytics.trackHomeAction(
+                                    action = "import_files",
+                                    allowed = false,
+                                    failureReason = "own_company_missing"
+                                )
                                 Toast.makeText(context, fillCompanyFirst, Toast.LENGTH_LONG).show()
                                 return@Button
                             }
                             if (subscriptionStatus?.canScan == true) {
+                                appAnalytics.trackHomeAction(action = "import_files", allowed = true)
                                 navController.navigate(Routes.SelectImportType)
                             } else {
+                                appAnalytics.trackHomeAction(
+                                    action = "import_files",
+                                    allowed = false,
+                                    failureReason = "scan_limit_reached"
+                                )
+                                appAnalytics.trackPaywallViewed(source = "import_files")
                                 showUpgradeDialog = true
                             }
                         },
@@ -645,7 +685,10 @@ fun HomeScreen(
                     
                     // Exports button
                     Button(
-                        onClick = { navController.navigate(Routes.Exports) },
+                        onClick = {
+                            appAnalytics.trackHomeAction(action = "open_exports", allowed = true)
+                            navController.navigate(Routes.Exports)
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp)
@@ -663,7 +706,10 @@ fun HomeScreen(
                     
                     // Guide button
                     Button(
-                        onClick = { navController.navigate(Routes.Guide) },
+                        onClick = {
+                            appAnalytics.trackHomeAction(action = "open_guide", allowed = true)
+                            navController.navigate(Routes.Guide)
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp)
@@ -681,7 +727,10 @@ fun HomeScreen(
                     
                     // Settings button
                     Button(
-                        onClick = { navController.navigate(Routes.Settings) },
+                        onClick = {
+                            appAnalytics.trackHomeAction(action = "open_settings", allowed = true)
+                            navController.navigate(Routes.Settings)
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp)
@@ -700,7 +749,10 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     OutlinedButton(
-                        onClick = { openFeedbackEmail(context) },
+                        onClick = {
+                            appAnalytics.trackFeedbackAction(source = "home")
+                            openFeedbackEmail(context)
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp),
@@ -761,6 +813,7 @@ fun HomeScreen(
                 },
                 onUpgradeClick = { _ ->
                     showUpgradeDialog = false
+                    appAnalytics.trackPaywallViewed(source = "upgrade_dialog")
                     navController.navigate(Routes.Subscription)
                 }
             )
@@ -785,6 +838,10 @@ fun HomeScreen(
                     Button(
                         onClick = {
                             acknowledgePrompt()
+                            appAnalytics.trackHomeAction(
+                                action = "open_add_own_company",
+                                allowed = true
+                            )
                             navController.navigate(Routes.AddOwnCompany)
                         },
                     ) {

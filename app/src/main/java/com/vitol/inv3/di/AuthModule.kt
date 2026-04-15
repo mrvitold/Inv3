@@ -1,6 +1,7 @@
 package com.vitol.inv3.di
 
 import android.app.Application
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.auth.AuthManager
 import dagger.Module
 import dagger.Provides
@@ -17,9 +18,10 @@ object AuthModule {
     @Singleton
     fun provideAuthManager(
         app: Application,
-        supabaseClient: SupabaseClient?
+        supabaseClient: SupabaseClient?,
+        appAnalytics: AppAnalytics
     ): AuthManager {
-        return AuthManager(app, supabaseClient)
+        return AuthManager(app, supabaseClient, appAnalytics)
     }
 }
 

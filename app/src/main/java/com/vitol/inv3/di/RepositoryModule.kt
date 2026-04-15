@@ -1,5 +1,6 @@
 package com.vitol.inv3.di
 
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.auth.AuthManager
 import com.vitol.inv3.data.remote.SupabaseRepository
 import dagger.Module
@@ -16,7 +17,8 @@ object RepositoryModule {
     @Singleton
     fun provideSupabaseRepository(
         client: SupabaseClient?,
-        authManager: AuthManager
-    ): SupabaseRepository = SupabaseRepository(client, authManager)
+        authManager: AuthManager,
+        appAnalytics: AppAnalytics
+    ): SupabaseRepository = SupabaseRepository(client, authManager, appAnalytics)
 }
 

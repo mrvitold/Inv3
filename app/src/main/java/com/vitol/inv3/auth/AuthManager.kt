@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.vitol.inv3.BuildConfig
+import com.vitol.inv3.analytics.AppAnalytics
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.gotrue.providers.builtin.IDToken
@@ -33,7 +34,8 @@ private val USER_ID_KEY = stringPreferencesKey("user_id")
 
 class AuthManager(
     private val app: Application,
-    private val supabaseClient: SupabaseClient?
+    private val supabaseClient: SupabaseClient?,
+    private val appAnalytics: AppAnalytics
 ) {
     private val dataStore = app.dataStore
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -174,8 +176,10 @@ class AuthManager(
     }
     
     suspend fun signInWithEmail(email: String, password: String): Result<Unit> {
+        appAnalytics.trackAuthStarted(method = "email")
         return try {
             if (supabaseClient == null) {
+                appAnalytics.trackAuthFailed(method = "email", errorCode = "supabase_not_initialized")
                 return Result.failure(Exception("Supabase client not initialized"))
             }
             
@@ -191,14 +195,17 @@ class AuthManager(
                 saveSessionLocally(userId)
                 _authState.value = AuthState.Authenticated(userId)
                 Timber.d("Signed in: User ID = $userId")
+                appAnalytics.trackAuthSucceeded(method = "email")
                 Result.success(Unit)
             } else {
                 _authState.value = AuthState.Unauthenticated
+                appAnalytics.trackAuthFailed(method = "email", errorCode = "no_user_returned")
                 Result.failure(Exception("Sign in failed: No user returned"))
             }
         } catch (e: Exception) {
             Timber.e(e, "Sign in error")
             _authState.value = AuthState.Unauthenticated
+            appAnalytics.trackAuthFailed(method = "email", errorCode = exceptionToCode(e))
             Result.failure(e)
         }
     }
@@ -227,11 +234,13 @@ class AuthManager(
     }
     
     suspend fun signInWithGoogle(idToken: String): Result<Unit> {
+        appAnalytics.trackAuthStarted(method = "google")
         return try {
             Timber.d("Starting Google Sign-In with Supabase")
             
             if (supabaseClient == null) {
                 Timber.e("Supabase client is null, cannot sign in with Google")
+                appAnalytics.trackAuthFailed(method = "google", errorCode = "supabase_not_initialized")
                 return Result.failure(Exception("Supabase client not initialized"))
             }
             
@@ -255,6 +264,7 @@ class AuthManager(
             } catch (e: Exception) {
                 Timber.e(e, "Supabase signInWith(IDToken) failed: ${e.javaClass.simpleName}")
                 _authState.value = AuthState.Unauthenticated
+                appAnalytics.trackAuthFailed(method = "google", errorCode = exceptionToCode(e))
                 
                 // Provide more specific error messages based on exception type
                 val errorMessage = when {
@@ -292,11 +302,12 @@ class AuthManager(
                 saveSessionLocally(userId)
                 _authState.value = AuthState.Authenticated(userId)
                 Timber.d("Session saved locally and auth state updated")
-
+                appAnalytics.trackAuthSucceeded(method = "google")
                 Result.success(Unit)
             } else {
                 Timber.e("Google sign in completed but no user was returned from Supabase")
                 _authState.value = AuthState.Unauthenticated
+                appAnalytics.trackAuthFailed(method = "google", errorCode = "no_user_returned")
                 Result.failure(Exception(
                     "Google sign in failed: No user returned from Supabase. " +
                     "Please check your Supabase configuration and ensure Google provider is enabled."
@@ -308,6 +319,7 @@ class AuthManager(
             Timber.e("Stack trace:", e)
             
             _authState.value = AuthState.Unauthenticated
+            appAnalytics.trackAuthFailed(method = "google", errorCode = exceptionToCode(e))
             
             // Provide user-friendly error message
             val errorMessage = when {
@@ -435,6 +447,8 @@ class AuthManager(
             val uri = android.net.Uri.parse(url)
             val token = uri.getQueryParameter("token")
             val type = uri.getQueryParameter("type")
+            appAnalytics.trackDeepLinkAuthReceived(type = type)
+
             val tokenHash = uri.getQueryParameter("token_hash")
             val email = uri.getQueryParameter("email")
             
@@ -459,7 +473,6 @@ class AuthManager(
                 // Check for OAuth callback with access_token
                 val accessTokenMatch = Regex("access_token=([^&]+)").find(fragment)
                 if (accessTokenMatch != null) {
-                    val accessToken = accessTokenMatch.groupValues[1]
                     Timber.d("Found access token in fragment, attempting to set session")
                     // The Supabase client should handle this automatically via the Auth module
                     // But we can try to refresh the session
@@ -503,11 +516,21 @@ class AuthManager(
             
             // If we reach here, we couldn't process the deep link
             Timber.w("Could not process deep link - unknown format")
+            appAnalytics.trackDeepLinkAuthFailed(type = type, errorCode = "unknown_deep_link_format")
             Result.failure(Exception("Could not process confirmation link. Please try signing in manually."))
         } catch (e: Exception) {
             Timber.e(e, "Error handling deep link")
+            val deepLinkType = try { android.net.Uri.parse(url).getQueryParameter("type") } catch (_: Exception) { null }
+            appAnalytics.trackDeepLinkAuthFailed(type = deepLinkType, errorCode = exceptionToCode(e))
             Result.failure(e)
         }
+    }
+
+    private fun exceptionToCode(e: Exception): String {
+        return e.javaClass.simpleName
+            .ifBlank { "unknown_error" }
+            .lowercase()
+            .take(64)
     }
 }
 

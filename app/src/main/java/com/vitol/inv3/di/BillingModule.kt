@@ -1,6 +1,7 @@
 package com.vitol.inv3.di
 
 import android.content.Context
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.analytics.MetaAppEvents
 import com.vitol.inv3.billing.BillingManager
 import com.vitol.inv3.billing.UsageTracker
@@ -20,9 +21,10 @@ object BillingModule {
     @Singleton
     fun provideBillingManager(
         @ApplicationContext context: Context,
-        metaAppEvents: MetaAppEvents
+        metaAppEvents: MetaAppEvents,
+        appAnalytics: AppAnalytics
     ): BillingManager {
-        return BillingManager(context, metaAppEvents)
+        return BillingManager(context, metaAppEvents, appAnalytics)
     }
     
     @Provides

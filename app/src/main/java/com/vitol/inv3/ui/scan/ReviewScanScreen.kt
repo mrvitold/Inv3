@@ -42,6 +42,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,12 +58,16 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
 import com.vitol.inv3.Routes
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.ui.subscription.SubscriptionViewModel
 import com.vitol.inv3.ui.subscription.UpgradeDialog
 import com.vitol.inv3.data.local.getActiveOwnCompanyIdFlow
@@ -119,7 +124,8 @@ data class MergedFormData(
 @HiltViewModel
 class ReviewScanViewModel @Inject constructor(
     private val repo: SupabaseRepository,
-    @ApplicationContext private val appContext: Context
+    @ApplicationContext private val appContext: Context,
+    private val appAnalytics: AppAnalytics
 ) : androidx.lifecycle.ViewModel() {
 
     private val _processingState = MutableStateFlow(ProcessingState())
@@ -192,11 +198,30 @@ class ReviewScanViewModel @Inject constructor(
     
     fun updateInvoice(invoice: InvoiceRecord, onSuccess: () -> Unit, onError: (Exception) -> Unit) {
         viewModelScope.launch {
+            val startedAt = System.currentTimeMillis()
+            appAnalytics.trackInvoicePersistStarted(
+                action = "update",
+                source = "edit",
+                invoiceType = invoice.invoice_type
+            )
             try {
                 repo.updateInvoice(invoice)
+                appAnalytics.trackInvoicePersistSuccess(
+                    action = "update",
+                    source = "edit",
+                    invoiceType = invoice.invoice_type,
+                    durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+                )
                 onSuccess()
             } catch (e: Exception) {
                 Timber.e(e, "Failed to update invoice")
+                appAnalytics.trackInvoicePersistFailed(
+                    action = "update",
+                    source = "edit",
+                    invoiceType = invoice.invoice_type,
+                    errorCode = e.javaClass.simpleName.lowercase(),
+                    durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+                )
                 onError(e)
             }
         }
@@ -216,6 +241,11 @@ class ReviewScanViewModel @Inject constructor(
             )
 
             try {
+                val startedAt = System.currentTimeMillis()
+                appAnalytics.trackOcrStarted(
+                    source = "camera",
+                    invoiceType = invoiceType
+                )
                 // Get own company info for exclusion
                 val ownCompany = if (ownCompanyId != null) {
                     getOwnCompany(ownCompanyId)
@@ -261,8 +291,29 @@ class ReviewScanViewModel @Inject constructor(
                         else -> null
                     }
                 )
+                val hasUsefulData = parsedInvoice != null && !noUsefulData
+                if (parsedInvoice == null || noUsefulData) {
+                    appAnalytics.trackOcrFailed(
+                        source = "camera",
+                        invoiceType = invoiceType,
+                        errorCode = if (parsedInvoice == null) "null_parsed_invoice" else "no_useful_data",
+                        durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+                    )
+                } else {
+                    appAnalytics.trackOcrCompleted(
+                        source = "camera",
+                        invoiceType = invoiceType,
+                        durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L),
+                        hasUsefulData = hasUsefulData
+                    )
+                }
             } catch (e: Exception) {
                 Timber.e(e, "Failed to process invoice")
+                appAnalytics.trackOcrFailed(
+                    source = "camera",
+                    invoiceType = invoiceType,
+                    errorCode = e.javaClass.simpleName.lowercase()
+                )
                 _processingState.value = _processingState.value.copy(
                     isLoading = false,
                     isProcessing = false,
@@ -272,16 +323,70 @@ class ReviewScanViewModel @Inject constructor(
         }
     }
 
-    fun saveInvoice(invoice: InvoiceRecord, onSuccess: () -> Unit, onError: (Exception) -> Unit) {
+    fun saveInvoice(
+        invoice: InvoiceRecord,
+        source: String,
+        onSuccess: () -> Unit,
+        onError: (Exception) -> Unit
+    ) {
         viewModelScope.launch {
+            val startedAt = System.currentTimeMillis()
+            appAnalytics.trackInvoicePersistStarted(
+                action = "insert",
+                source = source,
+                invoiceType = invoice.invoice_type
+            )
             try {
                 repo.insertInvoice(invoice)
+                appAnalytics.trackInvoicePersistSuccess(
+                    action = "insert",
+                    source = source,
+                    invoiceType = invoice.invoice_type,
+                    durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+                )
                 onSuccess()
             } catch (e: Exception) {
                 Timber.e(e, "Failed to save invoice")
+                appAnalytics.trackInvoicePersistFailed(
+                    action = "insert",
+                    source = source,
+                    invoiceType = invoice.invoice_type,
+                    errorCode = e.javaClass.simpleName.lowercase(),
+                    durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+                )
                 onError(e)
             }
         }
+    }
+
+    fun trackReviewAbandoned(
+        source: String,
+        invoiceType: String?,
+        leaveType: String,
+        timeOnScreenMs: Long
+    ) {
+        appAnalytics.trackReviewScanAbandoned(
+            source = source,
+            invoiceType = invoiceType,
+            leaveType = leaveType,
+            timeOnScreenMs = timeOnScreenMs
+        )
+    }
+
+    fun trackProcessingWaitAbandoned(
+        source: String,
+        invoiceType: String?,
+        leaveType: String,
+        waitStage: String,
+        waitDurationMs: Long
+    ) {
+        appAnalytics.trackProcessingWaitAbandoned(
+            source = source,
+            invoiceType = invoiceType,
+            leaveType = leaveType,
+            waitStage = waitStage,
+            waitDurationMs = waitDurationMs
+        )
     }
 }
 
@@ -297,6 +402,7 @@ fun ReviewScanScreen(
     subscriptionViewModel: SubscriptionViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val importSessionViewModel: ImportSessionViewModel? = if (fromImport) {
         hiltViewModel(viewModelStoreOwner = context as ComponentActivity)
     } else null
@@ -313,6 +419,10 @@ fun ReviewScanScreen(
     var showCancelImportDialog by remember { mutableStateOf(false) }
     var showInvoiceOverlay by remember { mutableStateOf(false) }
     var overlayInvoiceUri by remember { mutableStateOf<Uri?>(null) }
+    val screenEnteredAtMs = remember { System.currentTimeMillis() }
+    var processingStartedAtMs by remember { mutableStateOf<Long?>(null) }
+    var abandonmentLogged by remember { mutableStateOf(false) }
+    var saveCompletedSuccessfully by remember { mutableStateOf(false) }
     
     // Own company info for exclusion
     var ownCompanyNumber by remember { mutableStateOf<String?>(null) }
@@ -516,6 +626,59 @@ fun ReviewScanScreen(
     val importCurrentIndex by importSessionViewModel?.currentIndex?.collectAsState(initial = 0) ?: remember { mutableStateOf(0) }
     val extractionState by importSessionViewModel?.extractionState?.collectAsState(initial = ImportExtractionState.Idle) ?: remember { mutableStateOf<ImportExtractionState>(ImportExtractionState.Idle) }
     val isWaitingForNextInvoice = fromImport && importSessionViewModel != null && importSessionViewModel.getCurrentParsedInvoice() == null
+    val isProcessingWait = (((isLoading || isProcessing) && invoiceId == null && !fromImport) || isWaitingForNextInvoice)
+
+    LaunchedEffect(isProcessingWait) {
+        if (isProcessingWait && processingStartedAtMs == null) {
+            processingStartedAtMs = System.currentTimeMillis()
+        } else if (!isProcessingWait) {
+            processingStartedAtMs = null
+        }
+    }
+
+    fun abandonmentSource(): String = when {
+        fromImport -> "import"
+        invoiceId != null -> "edit"
+        else -> "camera"
+    }
+
+    fun logAbandonmentIfNeeded(leaveType: String) {
+        if (abandonmentLogged || saveCompletedSuccessfully) return
+        abandonmentLogged = true
+        val source = abandonmentSource()
+        viewModel.trackReviewAbandoned(
+            source = source,
+            invoiceType = invoiceType,
+            leaveType = leaveType,
+            timeOnScreenMs = (System.currentTimeMillis() - screenEnteredAtMs).coerceAtLeast(0L)
+        )
+        val waitStarted = processingStartedAtMs
+        if (waitStarted != null) {
+            viewModel.trackProcessingWaitAbandoned(
+                source = source,
+                invoiceType = invoiceType,
+                leaveType = leaveType,
+                waitStage = if (isSaving) "saving" else "processing",
+                waitDurationMs = (System.currentTimeMillis() - waitStarted).coerceAtLeast(0L)
+            )
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, isProcessingWait, isSaving, saveCompletedSuccessfully) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP && !saveCompletedSuccessfully && (isProcessingWait || isSaving)) {
+                logAbandonmentIfNeeded("app_background")
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            if (!saveCompletedSuccessfully) {
+                logAbandonmentIfNeeded("screen_leave")
+            }
+        }
+    }
+
     LaunchedEffect(fromImport, parsedInvoices, importCurrentIndex, activeCompanyId) {
         if (!fromImport || importSessionViewModel == null || invoiceId != null) return@LaunchedEffect
         val parsed = importSessionViewModel.getCurrentParsedInvoice() ?: return@LaunchedEffect
@@ -904,8 +1067,10 @@ fun ReviewScanScreen(
                                     )
                                     viewModel.saveInvoice(
                                         invoice = invoice,
+                                        source = "import",
                                         onSuccess = {
                                             scope.launch {
+                                                saveCompletedSuccessfully = true
                                                 isSaving = false
                                                 subscriptionViewModel.trackPageUsageSync()
                                                 snackbarHostState.showSnackbar(context.getString(R.string.invoice_saved))
@@ -1041,6 +1206,7 @@ fun ReviewScanScreen(
                                         invoice = invoice,
                                         onSuccess = {
                                             scope.launch {
+                                                saveCompletedSuccessfully = true
                                                 isSaving = false
                                                 snackbarHostState.showSnackbar(context.getString(R.string.invoice_updated))
                                                 navController?.popBackStack()
@@ -1064,8 +1230,10 @@ fun ReviewScanScreen(
                                 val shouldOpenCamera = imageUri != null && !fromImport
                                 viewModel.saveInvoice(
                                     invoice = invoice,
+                                    source = "camera",
                                     onSuccess = {
                                         scope.launch {
+                                            saveCompletedSuccessfully = true
                                             subscriptionViewModel.trackPageUsageSync()
                                             isSaving = false
                                             snackbarHostState.showSnackbar(context.getString(R.string.invoice_saved))

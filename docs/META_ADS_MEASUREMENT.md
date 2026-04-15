@@ -18,6 +18,8 @@ Use the URLs documented in [META_ADS_CAMPAIGN.md](META_ADS_CAMPAIGN.md). Consist
 
 **Play Console** → **Quality** → **Android vitals** / **Ratings and reviews** — monitor uninstall trends after campaign spikes.
 
+For full in-app product behavior analytics (screen time, struggle points, churn diagnostics), see [INV3_ANALYTICS_PLAN.md](INV3_ANALYTICS_PLAN.md).
+
 ## 2. KPIs at €10/day (realistic)
 
 | Metric | Where | Note |

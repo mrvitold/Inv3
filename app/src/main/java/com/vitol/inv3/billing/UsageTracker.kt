@@ -59,6 +59,8 @@ class UsageTracker @Inject constructor(
             Timber.e(e, "Failed to initialize from Supabase, using local storage")
         }
         
+        // Ensure reset date exists and is stable even if server value is missing/unparseable.
+        ensureResetDateInitialized()
         // Ensure period reset is applied
         ensurePeriodReset()
         isInitialized = true
@@ -107,6 +109,7 @@ class UsageTracker @Inject constructor(
      * Get the reset date for the current period (rolling 30 days from subscription start).
      */
     suspend fun getResetDate(): Long {
+        ensureResetDateInitialized()
         ensurePeriodReset()
         return dataStore.data.first()[RESET_DATE_KEY] ?: getNextResetDate()
     }
@@ -187,6 +190,45 @@ class UsageTracker @Inject constructor(
                 Timber.d("Period reset: reset usage, new reset date: $finalResetDate (synced to Supabase)")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to sync period reset to Supabase, but local storage updated")
+            }
+        }
+    }
+
+    /**
+     * Make reset date deterministic when local storage is empty (e.g. after reinstall).
+     * Without this, UI fallback could drift by always using "now + 30 days".
+     */
+    private suspend fun ensureResetDateInitialized() {
+        var initializedResetDate: Long? = null
+        var shouldSync = false
+
+        dataStore.edit { preferences ->
+            val existingResetDate = preferences[RESET_DATE_KEY]
+            if (existingResetDate != null) {
+                initializedResetDate = existingResetDate
+                return@edit
+            }
+
+            val existingStartDate = preferences[SUBSCRIPTION_START_DATE_KEY]
+            val now = System.currentTimeMillis()
+            val baseStart = existingStartDate ?: now
+            val computedReset = baseStart + (30L * 24 * 60 * 60 * 1000)
+
+            if (existingStartDate == null) {
+                preferences[SUBSCRIPTION_START_DATE_KEY] = baseStart
+            }
+            preferences[RESET_DATE_KEY] = computedReset
+            initializedResetDate = computedReset
+            shouldSync = true
+        }
+
+        if (shouldSync) {
+            try {
+                val pagesUsed = getPagesUsed()
+                supabaseRepository.updateUsageCount(pagesUsed, initializedResetDate)
+                Timber.d("Initialized missing reset date: $initializedResetDate")
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to sync initialized reset date to Supabase")
             }
         }
     }

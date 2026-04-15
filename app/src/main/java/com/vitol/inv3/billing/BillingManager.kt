@@ -3,6 +3,7 @@ package com.vitol.inv3.billing
 import android.app.Activity
 import android.content.Context
 import com.android.billingclient.api.*
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.R
 import com.vitol.inv3.analytics.MetaAppEvents
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,7 +16,8 @@ import javax.inject.Singleton
 @Singleton
 class BillingManager @Inject constructor(
     private val context: Context,
-    private val metaAppEvents: MetaAppEvents
+    private val metaAppEvents: MetaAppEvents,
+    private val appAnalytics: AppAnalytics
 ) {
     private var billingClient: BillingClient? = null
     private var _activePurchase: Purchase? = null
@@ -165,6 +167,7 @@ class BillingManager @Inject constructor(
     }
     
     fun launchBillingFlow(activity: Activity, plan: SubscriptionPlan, callback: (BillingResult) -> Unit) {
+        appAnalytics.trackSubscriptionFlowStarted(plan.planId)
         val billingClient = billingClient ?: run {
             callback(
                 BillingResult.newBuilder()
@@ -277,7 +280,11 @@ class BillingManager @Inject constructor(
                             handleBillingError(response.responseCode, response.debugMessage)
                         }
                     }
-                    
+                    appAnalytics.trackSubscriptionFlowResult(
+                        planId = plan.planId,
+                        responseCode = response.responseCode,
+                        debugMessage = response.debugMessage
+                    )
                     callback(response)
                 } else {
                     Timber.e("Product details not found for ${plan.planId}")
@@ -298,6 +305,7 @@ class BillingManager @Inject constructor(
     }
     
     private fun handleBillingError(responseCode: Int, debugMessage: String) {
+        appAnalytics.trackBillingError(responseCode, debugMessage)
         val userMessage = when (responseCode) {
             BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE -> {
                 context.getString(R.string.billing_temp_unavailable)

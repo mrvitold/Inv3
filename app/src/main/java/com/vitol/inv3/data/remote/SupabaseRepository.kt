@@ -1,6 +1,7 @@
 package com.vitol.inv3.data.remote
 
 import com.vitol.inv3.auth.AuthManager
+import com.vitol.inv3.analytics.AppAnalytics
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.CancellationException
@@ -8,6 +9,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import timber.log.Timber
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import java.util.UUID
 
 @Serializable
@@ -75,8 +80,20 @@ data class LtCompanyRecord(
 
 class SupabaseRepository(
     private val client: SupabaseClient?,
-    private val authManager: AuthManager
+    private val authManager: AuthManager,
+    private val appAnalytics: AppAnalytics
 ) {
+    private fun parseTimestampToMillis(value: String?): Long? {
+        val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+
+        // Supabase can return a few timestamp formats depending on query/client codec.
+        return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(raw).toInstant().toEpochMilli() }.getOrNull()
+            ?: runCatching {
+                LocalDateTime.parse(raw.replace(" ", "T")).toInstant(ZoneOffset.UTC).toEpochMilli()
+            }.getOrNull()
+    }
+
     /**
      * Get current user ID from auth manager
      */
@@ -560,6 +577,11 @@ class SupabaseRepository(
             Timber.d("Invoice inserted successfully: ${invoice.invoice_id}")
         } catch (e: Exception) {
             Timber.e(e, "Failed to insert invoice: ${invoice.invoice_id}")
+            appAnalytics.trackRepositoryError(
+                operation = "insert",
+                entity = "invoice",
+                errorCode = exceptionToCode(e)
+            )
             throw e
         }
     }
@@ -964,6 +986,11 @@ class SupabaseRepository(
             Timber.d("Invoice updated successfully: ${invoice.invoice_id}")
         } catch (e: Exception) {
             Timber.e(e, "Failed to update invoice: ${invoice.invoice_id}")
+            appAnalytics.trackRepositoryError(
+                operation = "update",
+                entity = "invoice",
+                errorCode = exceptionToCode(e)
+            )
             throw e
         }
     }
@@ -1220,13 +1247,7 @@ class SupabaseRepository(
                 .decodeSingle<UserUsageRecord>()
             
             val pagesUsed = result.pages_used ?: 0
-            val resetDate = result.usage_reset_date?.let {
-                try {
-                    java.time.Instant.parse(it).toEpochMilli()
-                } catch (e: Exception) {
-                    null
-                }
-            }
+            val resetDate = parseTimestampToMillis(result.usage_reset_date)
             
             Timber.d("Fetched usage count from Supabase: pagesUsed=$pagesUsed, resetDate=$resetDate")
             return@withContext Pair(pagesUsed, resetDate)
@@ -1265,5 +1286,12 @@ class SupabaseRepository(
             Timber.e(e, "Failed to update usage count in Supabase")
         }
     }
+}
+
+private fun exceptionToCode(e: Exception): String {
+    return e.javaClass.simpleName
+        .ifBlank { "unknown_error" }
+        .lowercase()
+        .take(64)
 }
 

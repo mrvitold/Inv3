@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
 import com.vitol.inv3.ocr.CompanyNameUtils
 import com.vitol.inv3.ocr.InvoiceParser
@@ -48,7 +49,8 @@ sealed class ImportExtractionState {
  */
 @HiltViewModel
 class ImportSessionViewModel @Inject constructor(
-    @ApplicationContext private val appContext: Context
+    @ApplicationContext private val appContext: Context,
+    private val appAnalytics: AppAnalytics
 ) : ViewModel() {
 
     private val _buildPagesResult = MutableStateFlow<BuildPagesResult>(BuildPagesResult.Idle)
@@ -64,6 +66,7 @@ class ImportSessionViewModel @Inject constructor(
     fun buildPagesFromUris(uris: List<Uri>) {
         if (uris.isEmpty()) return
         val invoiceType = pendingImportType ?: "P"
+        appAnalytics.trackImportBuildStarted(fileCount = uris.size, invoiceType = invoiceType)
         pendingImportType = null
         _buildPagesResult.value = BuildPagesResult.Loading
         viewModelScope.launch {
@@ -72,6 +75,11 @@ class ImportSessionViewModel @Inject constructor(
                     buildImportPages(appContext, uris)
                 }
                 _buildPagesResult.value = if (pages.isEmpty()) {
+                    appAnalytics.trackImportBuildFailed(
+                        fileCount = uris.size,
+                        invoiceType = invoiceType,
+                        errorCode = "no_pages_built"
+                    )
                     BuildPagesResult.Error(
                         if (uris.size == 1) appContext.getString(R.string.import_err_read_file_single)
                         else appContext.getString(R.string.import_err_read_files_multi)
@@ -81,6 +89,11 @@ class ImportSessionViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Timber.e(e, "ImportSessionViewModel: failed to build pages")
+                appAnalytics.trackImportBuildFailed(
+                    fileCount = uris.size,
+                    invoiceType = invoiceType,
+                    errorCode = e.javaClass.simpleName.lowercase()
+                )
                 _buildPagesResult.value = BuildPagesResult.Error(
                     appContext.getString(
                         R.string.import_err_reading,
@@ -150,9 +163,20 @@ class ImportSessionViewModel @Inject constructor(
         val pages = _pendingPages.value
         val invoiceType = _invoiceType.value
         if (pages.isEmpty()) {
+            appAnalytics.trackOcrFailed(
+                source = "import",
+                invoiceType = invoiceType,
+                errorCode = "no_pages"
+            )
             _extractionState.value = ImportExtractionState.Error(appContext.getString(R.string.import_err_no_pages))
             return
         }
+        val startedAt = System.currentTimeMillis()
+        appAnalytics.trackOcrStarted(
+            source = "import",
+            invoiceType = invoiceType,
+            pageCount = pages.size
+        )
         _extractionState.value = ImportExtractionState.Extracting(0, pages.size)
         _parsedInvoices.value = emptyList()
         viewModelScope.launch {
@@ -167,6 +191,11 @@ class ImportSessionViewModel @Inject constructor(
                     }
                     val mime = context.contentResolver.getType(uri)?.takeIf { !it.isNullOrBlank() } ?: "image/jpeg"
                     val parsed = if (bytes == null || bytes.isEmpty()) {
+                        appAnalytics.trackOcrFailed(
+                            source = "import",
+                            invoiceType = invoiceType,
+                            errorCode = "empty_page_bytes"
+                        )
                         ParsedInvoice(extractionMessage = appContext.getString(R.string.import_err_read_page))
                     } else {
                         azure.extractFromBytes(
@@ -183,10 +212,30 @@ class ImportSessionViewModel @Inject constructor(
                     // Brief delay between pages to reduce Azure rate limiting
                     if (i < pages.size - 1) delay(1500)
                 }
+                val hasUsefulData = results.any {
+                    it.invoiceId?.isNotBlank() == true ||
+                        it.companyName?.isNotBlank() == true ||
+                        it.amountWithoutVatEur?.isNotBlank() == true ||
+                        it.vatAmountEur?.isNotBlank() == true ||
+                        it.vatNumber?.isNotBlank() == true ||
+                        it.companyNumber?.isNotBlank() == true
+                }
+                appAnalytics.trackOcrCompleted(
+                    source = "import",
+                    invoiceType = invoiceType,
+                    durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L),
+                    hasUsefulData = hasUsefulData
+                )
                 _extractionState.value = ImportExtractionState.Done
                 Timber.d("Import extraction done: ${results.size} invoices")
             } catch (e: Exception) {
                 Timber.e(e, "Import extraction failed")
+                appAnalytics.trackOcrFailed(
+                    source = "import",
+                    invoiceType = invoiceType,
+                    errorCode = e.javaClass.simpleName.lowercase(),
+                    durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+                )
                 _extractionState.value = ImportExtractionState.Error(
                     e.message ?: appContext.getString(R.string.import_err_extraction_failed)
                 )
