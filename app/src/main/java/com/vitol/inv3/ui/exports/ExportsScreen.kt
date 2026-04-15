@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.vitol.inv3.Routes
 import com.vitol.inv3.MainActivityViewModel
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.export.ExcelExporter
 import com.vitol.inv3.export.ExportInvoice
 import com.vitol.inv3.export.ISafXmlExporter
@@ -138,6 +139,7 @@ fun ExportsScreen(
     // Get repo for getting own company
     val mainActivityViewModel: com.vitol.inv3.MainActivityViewModel = hiltViewModel()
     val repo = mainActivityViewModel.repo
+    val appAnalytics = mainActivityViewModel.appAnalytics
     val exportFeedbackSnackbarHostState = remember { SnackbarHostState() }
     val exportFeedbackScope = rememberCoroutineScope()
 
@@ -152,6 +154,7 @@ fun ExportsScreen(
             onDismiss = { exportDialogState = null },
             onRefresh = { viewModel.loadInvoices() },
             repo = repo,
+            appAnalytics = appAnalytics,
             onDownloadsSaveSuccess = {
                 exportFeedbackScope.launch {
                     if (!shouldOfferFeedbackPrompt(context)) return@launch
@@ -1029,6 +1032,7 @@ fun ExportDialog(
     onDismiss: () -> Unit,
     onRefresh: () -> Unit,
     repo: com.vitol.inv3.data.remote.SupabaseRepository,
+    appAnalytics: AppAnalytics,
     onDownloadsSaveSuccess: () -> Unit = {}
 ) {
     var isSaving by remember { mutableStateOf(false) }
@@ -1081,6 +1085,7 @@ fun ExportDialog(
                             isSaving = false
                             onDismiss()
                             if (result != null) {
+                                appAnalytics.trackExcelExportAction(channel = "download", month = month)
                                 Toast.makeText(context, result, Toast.LENGTH_LONG).show()
                                 onDownloadsSaveSuccess()
                             } else {
@@ -1111,6 +1116,7 @@ fun ExportDialog(
                             context.startActivity(
                                 Intent.createChooser(share, context.getString(R.string.exports_share_chooser_excel, month))
                             )
+                            appAnalytics.trackExcelExportAction(channel = "share", month = month)
                             onDismiss()
                         },
                         enabled = !isSaving,
@@ -1143,6 +1149,7 @@ fun ExportDialog(
                                     isSaving = false
                                     onDismiss()
                                     if (result != null) {
+                                        appAnalytics.trackXmlExportAction(channel = "download", month = month)
                                         Toast.makeText(context, result, Toast.LENGTH_LONG).show()
                                         onDownloadsSaveSuccess()
                                     } else {
@@ -1192,6 +1199,7 @@ fun ExportDialog(
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 }
                                 context.startActivity(Intent.createChooser(share, context.getString(R.string.exports_share_chooser_file, fileName)))
+                                appAnalytics.trackXmlExportAction(channel = "share", month = month)
                                 onDismiss()
                             } catch (e: Exception) {
                                 Toast.makeText(

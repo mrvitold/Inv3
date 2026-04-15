@@ -290,6 +290,37 @@ class AppAnalytics @Inject constructor(
         )
     }
 
+    fun trackOwnCompanyFilled(mode: String, hasVatNumber: Boolean, source: String) {
+        logEvent(
+            event = "own_company_filled",
+            params = mapOf(
+                "mode" to mode,
+                "has_vat_number" to hasVatNumber.toString(),
+                "source" to source
+            )
+        )
+    }
+
+    fun trackExcelExportAction(channel: String, month: String) {
+        logEvent(
+            event = "export_excel_action",
+            params = mapOf(
+                "channel" to channel,
+                "month" to month
+            )
+        )
+    }
+
+    fun trackXmlExportAction(channel: String, month: String) {
+        logEvent(
+            event = "export_xml_action",
+            params = mapOf(
+                "channel" to channel,
+                "month" to month
+            )
+        )
+    }
+
     private fun routeToScreenName(route: String?): String {
         if (route.isNullOrBlank()) return "unknown"
         val withoutArgs = route.substringBefore("/")

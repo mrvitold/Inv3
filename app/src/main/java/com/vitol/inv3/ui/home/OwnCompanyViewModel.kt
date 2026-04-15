@@ -2,6 +2,7 @@ package com.vitol.inv3.ui.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vitol.inv3.analytics.AppAnalytics
 import com.vitol.inv3.billing.SubscriptionLimitsProvider
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
@@ -16,7 +17,8 @@ import javax.inject.Inject
 @HiltViewModel
 class OwnCompanyViewModel @Inject constructor(
     private val repo: SupabaseRepository,
-    private val limitsProvider: SubscriptionLimitsProvider
+    private val limitsProvider: SubscriptionLimitsProvider,
+    private val appAnalytics: AppAnalytics
 ) : ViewModel() {
     
     private val _ownCompanies = MutableStateFlow<List<CompanyRecord>>(emptyList())
@@ -49,7 +51,7 @@ class OwnCompanyViewModel @Inject constructor(
         data object Error : SaveCompanyResult()
     }
 
-    suspend fun saveCompany(company: CompanyRecord): SaveCompanyResult {
+    suspend fun saveCompany(company: CompanyRecord, source: String = "unknown"): SaveCompanyResult {
         if (company.is_own_company) {
             val ownCompanies = repo.getAllOwnCompanies()
             val isEditingExistingOwn = company.id != null && ownCompanies.any { it.id == company.id }
@@ -60,7 +62,16 @@ class OwnCompanyViewModel @Inject constructor(
         return try {
             val saved = repo.upsertCompany(company)
             loadOwnCompanies()
-            saved?.let { SaveCompanyResult.Success(it) } ?: SaveCompanyResult.Error
+            saved?.let {
+                if (it.is_own_company && !it.company_name.isNullOrBlank() && !it.company_number.isNullOrBlank()) {
+                    appAnalytics.trackOwnCompanyFilled(
+                        mode = if (company.id.isNullOrBlank()) "create" else "edit",
+                        hasVatNumber = !it.vat_number.isNullOrBlank(),
+                        source = source
+                    )
+                }
+                SaveCompanyResult.Success(it)
+            } ?: SaveCompanyResult.Error
         } catch (e: Exception) {
             Timber.e(e, "Failed to save company")
             SaveCompanyResult.Error

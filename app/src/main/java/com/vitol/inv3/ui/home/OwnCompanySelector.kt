@@ -510,7 +510,7 @@ private fun AddCompanyDialog(
                                     vat_number = vat,
                                     is_own_company = true
                                 )
-                                when (val result = viewModel.saveCompany(company)) {
+                                when (val result = viewModel.saveCompany(company, source = "home_selector")) {
                                     is OwnCompanyViewModel.SaveCompanyResult.Success -> {
                                         onSave(result.company.id, companyToEdit != null)
                                     }
