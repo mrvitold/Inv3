@@ -36,6 +36,7 @@ fun OwnCompanySelector(
     activeCompanyName: String?,
     onCompanySelected: (String?) -> Unit,
     onShowSnackbar: (String) -> Unit,
+    addDialogTrigger: Int = 0,
     navController: NavHostController?,
     viewModel: OwnCompanyViewModel = hiltViewModel()
 ) {
@@ -52,6 +53,14 @@ fun OwnCompanySelector(
     
     LaunchedEffect(Unit) {
         viewModel.loadOwnCompanies()
+    }
+
+    LaunchedEffect(addDialogTrigger) {
+        if (addDialogTrigger > 0) {
+            showAddForm = true
+            companyToEdit = null
+            expanded = false
+        }
     }
     
     // Auto-select company when app loads:

@@ -1,12 +1,12 @@
 # Inv3 – Project Status
 
-**Last updated:** 2026-03-30
+**Last updated:** 2026-04-17
 
 ## Current State
 
 ### App
 - **Package:** com.vitol.inv3
-- **Version:** 1.20 (versionCode 20)
+- **Version:** 1.23 (versionCode 23)
 - **Status:** Internal testing on Google Play Console
 - **Build:** Release AAB at `app/release/app-release.aab` (build via Android Studio)
 
@@ -79,6 +79,16 @@
 - English and Lithuanian: in-app language choice in Settings (preference persisted)
 - UI strings localized (exports, scan, subscription, auth, billing messages, and more)
 - Invoice validation and export-related messages use resources for consistent LT/EN copy
+
+## Release 1.23 (2026-04-17)
+
+**Release notes for Play Console:**
+- Import OCR flow performance improved by reducing Azure throttling (sequential model strategy with fallback and shorter inter-page pacing)
+- Multi-page PDF import improved: non-invoice/footer-only pages are filtered so one invoice does not appear duplicated
+- Review screen UX polish: success message appears above action buttons, supports faster dismiss behavior, and import completion feedback is shown before auto-navigation
+- Home feedback banner can be dismissed with horizontal swipe
+- Camera workflow improvement: after saving a scanned invoice, app opens camera again for the next scan
+- First-month usage reset date initialization stabilized after reinstall/login sync
 
 ## Release 1.19 (2026-03-28)
 

@@ -118,8 +118,8 @@ class UsageTracker @Inject constructor(
      * Get subscription start date. If not set, returns current time.
      */
     suspend fun getSubscriptionStartDate(): Long {
-        val startDate = dataStore.data.first()[SUBSCRIPTION_START_DATE_KEY]
-        return startDate ?: System.currentTimeMillis()
+        ensureSubscriptionStartDateInitialized()
+        return dataStore.data.first()[SUBSCRIPTION_START_DATE_KEY] ?: System.currentTimeMillis()
     }
     
     /**
@@ -254,7 +254,22 @@ class UsageTracker @Inject constructor(
      * Flow of subscription start date.
      */
     fun getSubscriptionStartDateFlow(): Flow<Long> = dataStore.data.map { 
-        it[SUBSCRIPTION_START_DATE_KEY] ?: System.currentTimeMillis() 
+        it[SUBSCRIPTION_START_DATE_KEY]
+            ?: it[RESET_DATE_KEY]?.minus(30L * 24 * 60 * 60 * 1000)
+            ?: System.currentTimeMillis()
+    }
+
+    /**
+     * Ensure subscription start date is stable even after reinstall.
+     * If start date is missing, derive it from reset date when available.
+     */
+    private suspend fun ensureSubscriptionStartDateInitialized() {
+        dataStore.edit { preferences ->
+            if (preferences[SUBSCRIPTION_START_DATE_KEY] != null) return@edit
+            val derivedStartDate = preferences[RESET_DATE_KEY]?.minus(30L * 24 * 60 * 60 * 1000)
+                ?: System.currentTimeMillis()
+            preferences[SUBSCRIPTION_START_DATE_KEY] = derivedStartDate
+        }
     }
 }
 

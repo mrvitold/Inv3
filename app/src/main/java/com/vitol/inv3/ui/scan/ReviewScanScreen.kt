@@ -35,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -90,6 +91,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -408,6 +410,19 @@ fun ReviewScanScreen(
     } else null
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    fun showFastSnackbar(message: String, visibleMs: Long = 2200L) {
+        scope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(
+                message = message,
+                duration = SnackbarDuration.Indefinite
+            )
+        }
+        scope.launch {
+            delay(visibleMs)
+            snackbarHostState.currentSnackbarData?.dismiss()
+        }
+    }
     var showUpgradeDialog by remember { mutableStateOf(false) }
     val subscriptionStatus by subscriptionViewModel.subscriptionStatus.collectAsState(initial = null)
     
@@ -824,7 +839,16 @@ fun ReviewScanScreen(
                 }
             )
         },
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
+        snackbarHost = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = 96.dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                SnackbarHost(hostState = snackbarHostState)
+            }
+        }
     ) { paddingValues ->
         Box(modifier = Modifier.fillMaxSize()) {
         if (((isLoading || isProcessing) && invoiceId == null && !fromImport) || isWaitingForNextInvoice) {
@@ -1025,11 +1049,14 @@ fun ReviewScanScreen(
                                 if (importSessionViewModel.hasNext) {
                                     importSessionViewModel.advanceToNextIndex()
                                 } else {
-                                    importSessionViewModel.clear()
-                                    navController?.navigate(Routes.Home) {
-                                        popUpTo(0) { inclusive = true }
+                                    showFastSnackbar(context.getString(R.string.import_complete))
+                                    scope.launch {
+                                        delay(1200)
+                                        importSessionViewModel.clear()
+                                        navController?.navigate(Routes.Home) {
+                                            popUpTo(0) { inclusive = true }
+                                        }
                                     }
-                                    scope.launch { snackbarHostState.showSnackbar(context.getString(R.string.import_complete)) }
                                 }
                             },
                             modifier = Modifier.weight(1f)
@@ -1073,11 +1100,13 @@ fun ReviewScanScreen(
                                                 saveCompletedSuccessfully = true
                                                 isSaving = false
                                                 subscriptionViewModel.trackPageUsageSync()
-                                                snackbarHostState.showSnackbar(context.getString(R.string.invoice_saved))
+                                                showFastSnackbar(context.getString(R.string.invoice_saved))
                                                 withContext(Dispatchers.IO) {
                                                     importSessionViewModel.advanceToNext(context)
                                                 }
                                                 if (!importSessionViewModel.hasNext) {
+                                                    showFastSnackbar(context.getString(R.string.import_complete))
+                                                    delay(1200)
                                                     importSessionViewModel.clear()
                                                     withContext(Dispatchers.IO) {
                                                         setPendingFeedbackAfterImportComplete(context)
@@ -1227,7 +1256,7 @@ fun ReviewScanScreen(
                                     return@launch
                                 }
                                 isSaving = true
-                                val shouldOpenCamera = imageUri != null && !fromImport
+                                val shouldOpenCamera = invoiceId == null && !fromImport
                                 viewModel.saveInvoice(
                                     invoice = invoice,
                                     source = "camera",
@@ -1236,7 +1265,7 @@ fun ReviewScanScreen(
                                             saveCompletedSuccessfully = true
                                             subscriptionViewModel.trackPageUsageSync()
                                             isSaving = false
-                                            snackbarHostState.showSnackbar(context.getString(R.string.invoice_saved))
+                                            showFastSnackbar(context.getString(R.string.invoice_saved))
                                             if (shouldOpenCamera) {
                                                 if (subscriptionViewModel.canScanPagesFresh(1)) {
                                                     navController?.navigate("${Routes.ScanCamera}/$invoiceType") {

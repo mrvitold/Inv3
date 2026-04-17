@@ -30,8 +30,8 @@ android {
         applicationId = "com.vitol.inv3"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "1.22"
+        versionCode = 23
+        versionName = "1.23"
         ndkVersion = "28.1.13356709"  // NDK r28: 16 KB page size support on by default
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

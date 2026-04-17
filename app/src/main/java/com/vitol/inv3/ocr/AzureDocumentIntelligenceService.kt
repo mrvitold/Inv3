@@ -11,8 +11,6 @@ import com.vitol.inv3.export.TaxCodeDeterminer
 import com.vitol.inv3.export.VatRateValidation
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.pow
@@ -53,7 +51,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
     
     /**
      * Extract invoice data from raw image/PDF bytes. Use this for import flow (no URI).
-     * Strategy: prebuilt-layout first (best OCR), then prebuilt-invoice (structured fields), merge.
+     * Strategy: start with prebuilt-invoice and call prebuilt-layout only when needed.
+     * This significantly reduces 429 rate limiting caused by parallel dual-model requests.
      */
     suspend fun extractFromBytes(
         imageBytes: ByteArray,
@@ -68,30 +67,29 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             return@withContext ParsedInvoice(extractionMessage = "OCR not configured. Enter details manually.")
         }
         val (bytes, finalMime) = compressImageIfNeeded(imageBytes, mimeType)
-        // Layout + invoice models in parallel (same bytes) to cut wall-clock time vs sequential submits.
-        var layoutJson: JsonObject? = null
-        var invoiceJson: JsonObject? = null
-        coroutineScope {
-            val layoutDeferred = async {
-                val op = submitDocumentToUrl(layoutAnalyzeUrl, bytes, finalMime)
-                if (op != null) pollForResults(op) else null
-            }
-            val invoiceDeferred = async {
-                val op = submitDocumentToUrl(analyzeUrl, bytes, finalMime)
-                if (op != null) pollForResults(op) else null
-            }
-            layoutJson = layoutDeferred.await()
-            invoiceJson = invoiceDeferred.await()
+        // Start with invoice model to avoid immediate dual-request throttling.
+        val invoiceOp = submitDocumentToUrl(analyzeUrl, bytes, finalMime)
+        val invoiceJson = if (invoiceOp != null) pollForResults(invoiceOp) else null
+        var parsed = if (invoiceJson != null) {
+            parseResultsToInvoice(invoiceJson, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+        } else {
+            ParsedInvoice(extractionMessage = "Could not send document. Check connection and try again.")
         }
-        var parsed = when {
-            layoutJson != null && invoiceJson != null -> {
-                val fromLayout = parseResultsToInvoice(layoutJson!!, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
-                val fromInvoice = parseResultsToInvoice(invoiceJson!!, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
-                mergeParsedInvoices(fromInvoice, fromLayout)
+
+        // Use layout only as fallback when invoice OCR is weak or key fields are missing.
+        val needsLayoutFallback =
+            parsed.lines.size < minLinesBeforeLayoutFallback ||
+                (parsed.companyName.isNullOrBlank() && parsed.vatNumber.isNullOrBlank() && parsed.companyNumber.isNullOrBlank())
+        if (needsLayoutFallback) {
+            Timber.d("Azure: invoice result sparse (${parsed.lines.size} lines), running layout fallback")
+            val layoutOp = submitDocumentToUrl(layoutAnalyzeUrl, bytes, finalMime)
+            if (layoutOp != null) {
+                val layoutJson = pollForResults(layoutOp)
+                if (layoutJson != null) {
+                    val fromLayout = parseResultsToInvoice(layoutJson, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
+                    parsed = mergeParsedInvoices(parsed, fromLayout)
+                }
             }
-            layoutJson != null -> parseResultsToInvoice(layoutJson!!, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
-            invoiceJson != null -> parseResultsToInvoice(invoiceJson!!, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
-            else -> ParsedInvoice(extractionMessage = "Could not send document. Check connection and try again.")
         }
         // 3) If still no text, try prebuilt-read
         if (parsed.lines.isEmpty()) {
@@ -676,12 +674,19 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             Timber.d("Azure: No company number extracted from text parsing. Parsed result companyNumber: ${parsedFromText.companyNumber}")
         }
         
-        // Also extract VAT number from text if not found and exclude own company VAT
-        if (vatNumber == null && parsedFromText.vatNumber != null) {
-            val extractedVat = parsedFromText.vatNumber
+        // VAT from parser is usually more reliable for LT invoices:
+        // structured CustomerTaxId/VendorTaxId can point to the wrong side of the transaction.
+        parsedFromText.vatNumber?.let { extractedVat ->
             if (excludeOwnVatNumber == null || !extractedVat.equals(excludeOwnVatNumber, ignoreCase = true)) {
-                vatNumber = extractedVat
-                Timber.d("Azure: Extracted VAT number from text: $vatNumber")
+                val isPurchase = invoiceType?.uppercase() == "P"
+                if (vatNumber == null) {
+                    vatNumber = extractedVat
+                    Timber.d("Azure: Extracted VAT number from text: $vatNumber")
+                } else if (isPurchase && !vatNumber.equals(extractedVat, ignoreCase = true)) {
+                    // For purchase invoices prefer parser VAT (seller block) over structured fallback.
+                    Timber.d("Azure: [PURCHASE] Replacing structured VAT '$vatNumber' with text VAT '$extractedVat'")
+                    vatNumber = extractedVat
+                }
             } else {
                 Timber.d("Azure: Skipped VAT number '$extractedVat' (same as own company VAT number)")
             }
@@ -797,10 +802,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         if (name.isNullOrBlank()) return false
         val lower = name.lowercase().trim()
         if (lower.contains("eurai") && lower.contains("centas")) return false // Amount-in-words
-        return lower.contains("uab") || lower.contains("ab") ||
-               lower.contains("mb") || lower.contains("iį") ||
-               lower.contains("ltd") || lower.contains("oy") ||
-               (lower.contains("as") && !lower.contains("centas")) || lower.contains("sp")
+        // Match legal forms as standalone tokens to avoid false positives from words like "tukstanciai".
+        return Regex("\\b(uab|ab|mb|iį|ii|ltd|oy|as|sp|zub)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
     }
     
     private suspend fun readImageFromUri(uri: Uri): ByteArray = withContext(Dispatchers.IO) {

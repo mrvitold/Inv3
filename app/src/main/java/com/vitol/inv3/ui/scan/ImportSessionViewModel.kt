@@ -52,6 +52,14 @@ class ImportSessionViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val appAnalytics: AppAnalytics
 ) : ViewModel() {
+    /** Treat pages without these signals as non-invoice continuation/footer pages. */
+    private fun hasPrimaryInvoiceSignal(parsed: ParsedInvoice): Boolean =
+        parsed.invoiceId?.isNotBlank() == true ||
+            parsed.amountWithoutVatEur?.isNotBlank() == true ||
+            parsed.vatAmountEur?.isNotBlank() == true ||
+            parsed.vatNumber?.isNotBlank() == true ||
+            parsed.companyNumber?.isNotBlank() == true
+
 
     private val _buildPagesResult = MutableStateFlow<BuildPagesResult>(BuildPagesResult.Idle)
     val buildPagesResult: StateFlow<BuildPagesResult> = _buildPagesResult.asStateFlow()
@@ -209,16 +217,25 @@ class ImportSessionViewModel @Inject constructor(
                     }
                     results.add(parsed)
                     _parsedInvoices.value = results.toList()
-                    // Brief delay between pages to reduce Azure rate limiting
-                    if (i < pages.size - 1) delay(1500)
+                    // Keep page-to-page pacing minimal; Azure fallback logic now handles throttling.
+                    if (i < pages.size - 1) delay(150)
                 }
-                val hasUsefulData = results.any {
-                    it.invoiceId?.isNotBlank() == true ||
-                        it.companyName?.isNotBlank() == true ||
-                        it.amountWithoutVatEur?.isNotBlank() == true ||
-                        it.vatAmountEur?.isNotBlank() == true ||
-                        it.vatNumber?.isNotBlank() == true ||
-                        it.companyNumber?.isNotBlank() == true
+                // Drop footer/terms pages that are rendered from the same PDF but are not real invoices.
+                val keptIndices = results.indices.filter { idx -> hasPrimaryInvoiceSignal(results[idx]) }
+                if (keptIndices.isNotEmpty() && keptIndices.size < results.size) {
+                    val dropped = results.indices.filterNot { it in keptIndices }
+                    Timber.d("Import extraction: dropping non-invoice pages $dropped")
+                    _pendingPages.value = keptIndices.map { pages[it] }
+                    _parsedInvoices.value = keptIndices.map { results[it] }
+                    _currentIndex.value = 0
+                } else {
+                    // Keep original pages when we could not confidently identify invoice pages.
+                    _pendingPages.value = pages
+                    _parsedInvoices.value = results.toList()
+                }
+                val finalResults = _parsedInvoices.value
+                val hasUsefulData = finalResults.any {
+                    it.companyName?.isNotBlank() == true || hasPrimaryInvoiceSignal(it)
                 }
                 appAnalytics.trackOcrCompleted(
                     source = "import",
@@ -227,7 +244,7 @@ class ImportSessionViewModel @Inject constructor(
                     hasUsefulData = hasUsefulData
                 )
                 _extractionState.value = ImportExtractionState.Done
-                Timber.d("Import extraction done: ${results.size} invoices")
+                Timber.d("Import extraction done: ${finalResults.size} invoices")
             } catch (e: Exception) {
                 Timber.e(e, "Import extraction failed")
                 appAnalytics.trackOcrFailed(

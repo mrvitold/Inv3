@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,6 +29,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -53,6 +55,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -458,6 +461,7 @@ fun HomeScreen(
     var showCompanySetupDialog by remember { mutableStateOf(false) }
     /** Sync guard so LaunchedEffect does not reopen the dialog before DataStore ack finishes writing. */
     var companySetupPromptDismissed by remember(currentUserId) { mutableStateOf(false) }
+    var addOwnCompanyDialogTrigger by remember { mutableStateOf(0) }
     
     // Validate activeCompanyId belongs to current user and load company name
     // Also auto-select if there's only one company and none is selected
@@ -582,6 +586,7 @@ fun HomeScreen(
                         snackbarHostState.showSnackbar(message)
                     }
                 },
+                addDialogTrigger = addOwnCompanyDialogTrigger,
                 navController = navController,
                 viewModel = ownCompanyViewModel
             )
@@ -788,6 +793,22 @@ fun HomeScreen(
                 .padding(horizontal = 16.dp)
                 .navigationBarsPadding()
                 .padding(bottom = 8.dp),
+            snackbar = { snackbarData ->
+                var dragAccumulation = 0f
+                Snackbar(
+                    modifier = Modifier.pointerInput(snackbarData) {
+                        detectHorizontalDragGestures(
+                            onHorizontalDrag = { _, dragAmount ->
+                                dragAccumulation += dragAmount
+                                if (kotlin.math.abs(dragAccumulation) > 80f) {
+                                    snackbarData.dismiss()
+                                }
+                            }
+                        )
+                    },
+                    snackbarData = snackbarData
+                )
+            }
         )
         
         // Version number at the bottom
@@ -842,7 +863,7 @@ fun HomeScreen(
                                 action = "open_add_own_company",
                                 allowed = true
                             )
-                            navController.navigate(Routes.AddOwnCompany)
+                            addOwnCompanyDialogTrigger += 1
                         },
                     ) {
                         Text(stringResource(R.string.company_setup_confirm))
