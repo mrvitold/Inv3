@@ -84,6 +84,22 @@ object FieldExtractors {
     private val ibanVatPattern = Regex("\\bLT[0-9]*(?:[1-3][0-9]{8}|[0-9]{6})", RegexOption.IGNORE_CASE)
     private val invoiceNumberPattern = Regex("(?:nr\\.?|numeris|serija)\\s*(?:[1-3][0-9]{8}|[0-9]{6})", RegexOption.IGNORE_CASE)
 
+    /**
+     * "Nr. VLN-VOBP-120792" — [120792] is the invoice serial suffix, not Įmonės kodas.
+     * The existing check only skipped digits immediately after "nr.", not when a hyphenated ID is in between.
+     */
+    private fun isHyphenatedInvoiceNrSuffix(line: String, candidate: String, matchStart: Int): Boolean {
+        val trimmed = line.trimStart()
+        if (!trimmed.startsWith("nr", ignoreCase = true)) return false
+        // Nr. / Nr: / Nr
+        if (trimmed.length < 3) return false
+        if (matchStart <= 0 || line[matchStart - 1] != '-') return false
+        val lastHyphen = line.lastIndexOf('-')
+        if (lastHyphen < 0) return false
+        val tail = line.substring(lastHyphen + 1).trim()
+        return tail == candidate
+    }
+
     /** e.g. OCR "202601 23" (YYYYMM + day) misread as company code — 202601 matches 6-digit branch. */
     private fun isYearMonthPlusDayFragment(candidate: String, line: String, matchEnd: Int): Boolean {
         if (candidate.length != 6 || !candidate.all { it.isDigit() }) return false
@@ -103,6 +119,22 @@ object FieldExtractors {
             if (diff > 1) return false
         }
         return diff == 1
+    }
+
+    /**
+     * Lithuanian invoices often show the seller phone as "+370 37 337952". The last 6 digits match our
+     * generic 6-digit company-code branch but they are the local subscriber number, not Įmonės kodas.
+     */
+    private fun isSixDigitSuffixOfLithuanianPhoneLine(line: String, candidate: String, matchStart: Int): Boolean {
+        if (candidate.length != 6 || !candidate.all { it.isDigit() }) return false
+        val marker = Regex("\\+370").find(line) ?: return false
+        if (matchStart < marker.range.first) return false
+        val fromMarker = line.substring(marker.range.first)
+        val digitsFromCountry = fromMarker.filter { it.isDigit() }
+        if (!digitsFromCountry.startsWith("370")) return false
+        val afterCountry = digitsFromCountry.drop(3)
+        if (afterCountry.length < 8) return false
+        return afterCountry.endsWith(candidate)
     }
 
     fun tryExtractDate(line: String): String? {
@@ -187,7 +219,27 @@ object FieldExtractors {
         }
         return null
     }
-    
+
+    /**
+     * Azure prebuilt-invoice [VendorTaxId]/[CustomerTaxId] can blend two columns so the partner VAT
+     * picks up the leading digits of the other party (e.g. buyer `LT11…` merged into seller VAT).
+     * A frequent bad pattern is **exactly 11** national digits after `LT` starting with `11`, while
+     * the real Lithuanian legal-entity VAT on the page has **10** digits — dropping the duplicated
+     * first `1` restores the intended value (e.g. `LT11343765219` → `LT1343765219`).
+     *
+     * Longer codes (e.g. buyer `LT1100008809112`) are left unchanged.
+     */
+    fun normalizeLithuanianVatColumnBleed(vat: String?): String? {
+        if (vat.isNullOrBlank()) return vat
+        val compact = vat.trim().uppercase().replace(" ", "").replace("-", "")
+        if (!compact.startsWith("LT")) return vat.trim()
+        val body = compact.drop(2).filter { it.isDigit() }
+        if (body.length != 11 || !body.startsWith("11")) return vat.trim()
+        val corrected = "LT${body.substring(1)}"
+        Timber.d("normalizeLithuanianVatColumnBleed: $compact -> $corrected")
+        return corrected
+    }
+
     /**
      * Extract company number (9 digits starting with 1, 2, or 3, OR 6 digits).
      * Ensures it's different from VAT number and own company number.
@@ -196,6 +248,15 @@ object FieldExtractors {
      * @param excludeOwnCompanyNumber Own company number to exclude
      */
     fun tryExtractCompanyNumber(line: String, excludeVatNumber: String? = null, excludeOwnCompanyNumber: String? = null): String? {
+        val lineLc = line.lowercase()
+        // Cash register / EKA lines (e.g. "EKA Nr. AM230152, kvito Nr.") — digits are not Įmonės kodas
+        if (lineLc.contains("eka nr") || lineLc.contains("eka numeris") ||
+            (lineLc.contains("eka") && (lineLc.contains("kvito") || lineLc.contains("kasos"))) ||
+            lineLc.contains("kasos kvit")
+        ) {
+            Timber.d("tryExtractCompanyNumber: Skipping cash register / EKA line: $line")
+            return null
+        }
         // First try with word boundaries (standard extraction)
         val matches = companyNumberRegex.findAll(line)
         for (match in matches) {
@@ -219,6 +280,26 @@ object FieldExtractors {
             if (charBefore.isDigit() || charAfter.isDigit()) {
                 Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - adjacent digits detected")
                 continue // Part of larger number, skip
+            }
+
+            if (isSixDigitSuffixOfLithuanianPhoneLine(line, candidate, matchStart)) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - part of +370 phone number line: $line")
+                continue
+            }
+
+            // Junk like "s100501" — letter immediately before 6-digit block without Įmonės kodas context
+            if (candidate.length == 6 && candidate.all { it.isDigit() } && charBefore.isLetter()) {
+                val lc = line.lowercase()
+                val hasKodasCtx = lc.contains("imon") && lc.contains("kod")
+                if (!hasKodasCtx) {
+                    Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - letter before 6-digit (no Įmonės kodas context): $line")
+                    continue
+                }
+            }
+
+            if (isHyphenatedInvoiceNrSuffix(line, candidate, matchStart)) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - hyphenated invoice Nr. suffix (not company code)")
+                continue
             }
             
             // Exclude if it's part of IBAN/VAT pattern
@@ -303,6 +384,25 @@ object FieldExtractors {
             
             // Must be separated by non-digit characters (allow spaces, punctuation, but not digits)
             if (charBefore.isDigit() || charAfter.isDigit()) {
+                continue
+            }
+
+            if (isSixDigitSuffixOfLithuanianPhoneLine(line, candidate, matchStart)) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - part of +370 phone in fallback: $line")
+                continue
+            }
+
+            if (candidate.length == 6 && candidate.all { it.isDigit() } && charBefore.isLetter()) {
+                val lc = line.lowercase()
+                val hasKodasCtx = lc.contains("imon") && lc.contains("kod")
+                if (!hasKodasCtx) {
+                    Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - letter before 6-digit in fallback (no Įmonės kodas context): $line")
+                    continue
+                }
+            }
+
+            if (isHyphenatedInvoiceNrSuffix(line, candidate, matchStart)) {
+                Timber.d("tryExtractCompanyNumber: Skipping '$candidate' - hyphenated invoice Nr. suffix in fallback (not company code)")
                 continue
             }
             

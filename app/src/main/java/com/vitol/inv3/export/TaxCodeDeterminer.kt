@@ -96,7 +96,12 @@ object TaxCodeDeterminer {
     fun inferVatRateFromAmounts(amountCandidate: Double?, vatAmount: Double?): VatAmountsInference? {
         if (amountCandidate == null) return null
         if (amountCandidate < 0) return null
-        val vat = vatAmount ?: 0.0
+        var vat = vatAmount ?: 0.0
+        // OCR / Azure may attach a minus to VAT while net is clearly positive (wrong cell or sign)
+        if (amountCandidate > 0 && vat < 0) {
+            Timber.d("VAT rate inference: negative VAT with positive net; using absolute value for inference (was $vat)")
+            vat = -vat
+        }
         if (vat < 0) return null
 
         if (amountCandidate == 0.0) {

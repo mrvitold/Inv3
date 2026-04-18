@@ -21,6 +21,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import timber.log.Timber
 import android.util.Base64
 import java.io.ByteArrayOutputStream
+import java.util.Locale
 
 /**
  * Service for processing invoices using Azure AI Document Intelligence REST API.
@@ -593,6 +594,22 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 }
             }
         }
+        // Second page / totals-only: VendorName is often the logo (e.g. retail brand), not the legal seller.
+        if (invoiceType?.uppercase() == "P" && companyName != null && !hasCompanyTypeSuffix(companyName)) {
+            val hasImones = lines.any { line ->
+                val x = line.lowercase()
+                x.contains("įmonės kodas") || x.contains("imones kodas")
+            }
+            val hasLtVat = lines.any { line ->
+                val compact = line.replace(" ", "").replace("\u00a0", "")
+                Regex("""\bLT[\s-]*\d{8,12}\b""", RegexOption.IGNORE_CASE).containsMatchIn(compact) ||
+                    Regex("""LT\d{9,12}""", RegexOption.IGNORE_CASE).containsMatchIn(compact)
+            }
+            if (!hasImones && !hasLtVat) {
+                Timber.d("Azure: [PURCHASE] Dropping VendorName without legal suffix (no Įmonės kodas / LT VAT in OCR; likely logo/continuation page)")
+                companyName = null
+            }
+        }
         val emptyExtractionMessage = "No text could be read from this page. Try a clearer scan or enter details manually."
         if (lines.isEmpty()) {
             val content = analyzeResult?.get("content")?.asString ?: result.get("content")?.asString
@@ -622,6 +639,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         // Pass invoice type so parser can prioritize buyer vs seller sections correctly
         val parsedFromText = InvoiceParser.parse(lines, excludeOwnCompanyNumber, excludeOwnVatNumber, excludeOwnCompanyName, invoiceType)
         
+        invoiceId = mergeInvoiceIdFromParsed(invoiceId, parsedFromText.invoiceId, vatNumber)
+        
         // Extract amounts if not found
         if (amountNoVat == null && parsedFromText.amountWithoutVatEur != null) {
             amountNoVat = parsedFromText.amountWithoutVatEur
@@ -631,19 +650,37 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             vatAmount = parsedFromText.vatAmountEur
             Timber.d("Azure: Extracted VAT amount from text: $vatAmount")
         }
-        
+        // Retail receipts: prebuilt-invoice often maps InvoiceTotal/Total into "subtotal" while VAT fields are empty.
+        // When OCR text has net+VAT that sums to Azure's "net" amount, replace with the real breakdown.
+        run {
+            val an = parsedFromText.amountWithoutVatEur ?: return@run
+            val va = parsedFromText.vatAmountEur ?: return@run
+            val ptN = an.replace(",", ".").toDoubleOrNull() ?: return@run
+            val ptV = va.replace(",", ".").toDoubleOrNull() ?: return@run
+            val az = amountNoVat?.replace(",", ".")?.toDoubleOrNull() ?: return@run
+            if (abs(ptN + ptV - az) < 0.06) {
+                amountNoVat = an
+                vatAmount = va
+                Timber.d(
+                    "Azure: Replaced structured net/VAT with text (net+VAT match total ${String.format(Locale.US, "%.2f", az)})",
+                )
+            }
+        }
+
         // Prefer text-based company name over document fields (VendorName/CustomerName).
         // Document fields can come from logo OCR; text comes from structured sections (Pardavėjas/Pirkėjas).
         // Never use section labels (Pirkėjas:, Pardavėjas:) as company name.
-        val textCompanyName = parsedFromText.companyName
-        if (textCompanyName != null && !isSectionLabel(textCompanyName) && hasCompanyTypeSuffix(textCompanyName)) {
+        val textCompanyName = parsedFromText.companyName?.takeUnless { CompanyNameUtils.isLikelyGarbageCompanyName(it) }
+        if (textCompanyName != null && !InvoiceParser.isLikelyRegistrarRegistryFooterLine(textCompanyName) &&
+            !isSectionLabel(textCompanyName) && hasCompanyTypeSuffix(textCompanyName)) {
             if (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(textCompanyName, excludeOwnCompanyName)) {
                 companyName = textCompanyName
                 Timber.d("Azure: Preferring company name from text over document fields: $companyName")
             } else {
                 Timber.d("Azure: Skipped company name '$textCompanyName' from text (matches own company name)")
             }
-        } else if (companyName == null && textCompanyName != null && !isSectionLabel(textCompanyName)) {
+        } else if (companyName == null && textCompanyName != null && !InvoiceParser.isLikelyRegistrarRegistryFooterLine(textCompanyName) &&
+            !isSectionLabel(textCompanyName)) {
             // Fallback: use text even without suffix when document fields gave nothing
             if (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(textCompanyName, excludeOwnCompanyName)) {
                 companyName = textCompanyName
@@ -695,14 +732,27 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         // Advanced extraction from text (Pardavėjas/Pirkėjas sections) - prefer over document fields
         if (lines.isNotEmpty()) {
             val extractedCompanyName = InvoiceParser.extractCompanyNameAdvanced(lines, companyNumber, vatNumber, excludeOwnCompanyNumber, excludeOwnCompanyName, invoiceType)
-            if (extractedCompanyName != null && !isSectionLabel(extractedCompanyName) && hasCompanyTypeSuffix(extractedCompanyName) &&
+                ?.takeUnless { CompanyNameUtils.isLikelyGarbageCompanyName(it) }
+            if (extractedCompanyName != null && !InvoiceParser.isLikelyRegistrarRegistryFooterLine(extractedCompanyName) &&
+                !isSectionLabel(extractedCompanyName) && hasCompanyTypeSuffix(extractedCompanyName) &&
                 (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(extractedCompanyName, excludeOwnCompanyName))) {
                 companyName = extractedCompanyName
                 Timber.d("Azure: Preferring company name from advanced text extraction: $companyName")
-            } else if (companyName == null && extractedCompanyName != null && !isSectionLabel(extractedCompanyName) &&
+            } else if (companyName == null && extractedCompanyName != null && !InvoiceParser.isLikelyRegistrarRegistryFooterLine(extractedCompanyName) &&
+                !isSectionLabel(extractedCompanyName) &&
                 (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(extractedCompanyName, excludeOwnCompanyName))) {
                 companyName = extractedCompanyName
                 Timber.d("Azure: Extracted company name using advanced extraction (no suffix): $companyName")
+            }
+        }
+
+        // Purchase: Azure VendorName is often logo text only (e.g. "KESKO" / "SENUKAI"). Prefer an OCR line
+        // that looks like a legal entity (UAB…), including OCR typo UAR for UAB.
+        if (invoiceType?.uppercase() == "P" && companyName != null && !hasCompanyTypeSuffix(companyName)) {
+            val legal = InvoiceParser.findSellerLegalNameFromOcrLines(lines, excludeOwnCompanyName)
+            if (legal != null) {
+                companyName = legal
+                Timber.d("Azure: [PURCHASE] Replaced logo-style vendor name with legal entity from OCR lines: $companyName")
             }
         }
         
@@ -713,7 +763,7 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             var candidate: String? = null
             for (n in 1..minOf(5, trimmed.size)) {
                 val joined = trimmed.take(n).joinToString(" ").trim()
-                if (joined.length >= 2 && hasCompanyTypeSuffix(joined)) {
+                if (joined.length >= 2 && hasCompanyTypeSuffix(joined) && !InvoiceParser.isLikelyRegistrarRegistryFooterLine(joined)) {
                     candidate = joined
                     break
                 }
@@ -721,15 +771,34 @@ class AzureDocumentIntelligenceService(private val context: Context) {
             if (candidate == null && trimmed.isNotEmpty()) {
                 candidate = trimmed.take(3).joinToString(" ").trim()
             }
-            if (!candidate.isNullOrBlank() &&
+            if (!candidate.isNullOrBlank() && !CompanyNameUtils.isLikelyGarbageCompanyName(candidate) &&
+                !InvoiceParser.isLikelyRegistrarRegistryFooterLine(candidate) &&
                 (excludeOwnCompanyName == null || !CompanyNameUtils.isSameAsOwnCompanyName(candidate, excludeOwnCompanyName))) {
                 companyName = candidate
                 Timber.d("Azure: Using first line(s) as company name (no structured data): $companyName")
+            } else if (!candidate.isNullOrBlank() && CompanyNameUtils.isLikelyGarbageCompanyName(candidate)) {
+                Timber.d("Azure: Skipping first line(s) as company name (likely OCR garbage): $candidate")
             }
         }
         
         // Extract VAT rate from text if available
         var vatRate: String? = parsedFromText.vatRate
+        // Azure sometimes assigns a negative VAT (wrong cell/sign) while net is positive — breaks rate inference.
+        run {
+            val netStr = amountNoVat
+            val vatStr = vatAmount
+            if (netStr != null && vatStr != null) {
+                val netVal = netStr.replace(",", ".").toDoubleOrNull()
+                val vatVal = vatStr.replace(",", ".").toDoubleOrNull()
+                if (netVal != null && vatVal != null && netVal > 0 && vatVal < 0) {
+                    vatAmount = TaxCodeDeterminer.formatAmountPreservingSeparator(
+                        kotlin.math.abs(vatVal),
+                        vatStr,
+                    )
+                    Timber.d("Azure: Corrected VAT sign error (net>0): was $vatStr -> $vatAmount")
+                }
+            }
+        }
         // Infer or override VAT rate from amounts when missing or inconsistent with net+VAT (e.g. discount "6,25%" misread as PVM)
         val amtNoVat = amountNoVat
         val vatAmt = vatAmount
@@ -765,6 +834,8 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         
         val vatRateOut = VatRateValidation.sanitizeOcrPercentToDisplayString(vatRate)
 
+        vatNumber = FieldExtractors.normalizeLithuanianVatColumnBleed(vatNumber)
+
         Timber.d("Azure Extracted - InvoiceID: $invoiceId, Date: $normalizedDate, Company: $companyName, " +
                 "AmountNoVat: $amountNoVat, VatAmount: $vatAmount, " +
                 "VatNumber: $vatNumber, CompanyNumber: $companyNumber, VatRate: $vatRateOut (raw=$vatRate)")
@@ -783,6 +854,33 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         )
     }
     
+    /**
+     * Azure often returns "1" (table quantity); local parser may find the real serial in OCR lines.
+     * Prefer parsed id when Azure is trivially wrong; never treat LT VAT codes as invoice numbers.
+     */
+    private fun mergeInvoiceIdFromParsed(azureId: String?, parsedId: String?, vatNumber: String?): String? {
+        val parsed = parsedId?.trim()?.takeIf { it.isNotEmpty() }
+        val azure = azureId?.trim()?.takeIf { it.isNotEmpty() }
+        fun isGarbageAzure(s: String?): Boolean {
+            if (s.isNullOrBlank()) return true
+            val t = s.trim()
+            if (t.matches(Regex("^[0-9]{1,2}$"))) return true
+            return false
+        }
+        if (parsed != null) {
+            if (InvoiceParser.isLikelyLithuanianVatCode(parsed)) {
+                return azure ?: parsed
+            }
+            if (vatNumber != null && parsed.equals(vatNumber, ignoreCase = true)) {
+                return azure ?: parsed
+            }
+            if (!InvoiceParser.isLikelyLithuanianVatCode(parsed) && isGarbageAzure(azure)) {
+                return parsed
+            }
+        }
+        return azure ?: parsed
+    }
+
     /** Section labels (Pardavėjas, Pirkėjas, etc.) must never be used as company name.
      * Includes OCR variants where "ė" is read as space: "tiek jas" -> Tiekėjas. */
     private fun isSectionLabel(name: String?): Boolean {
@@ -802,8 +900,10 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         if (name.isNullOrBlank()) return false
         val lower = name.lowercase().trim()
         if (lower.contains("eurai") && lower.contains("centas")) return false // Amount-in-words
+        // OCR: trailing UAB read as UAR; logo "KESKO/SENUKAI" has none of these.
+        if (Regex("""(?i),\s*uar\s*$""").containsMatchIn(lower)) return true
         // Match legal forms as standalone tokens to avoid false positives from words like "tukstanciai".
-        return Regex("\\b(uab|ab|mb|iį|ii|ltd|oy|as|sp|zub)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+        return Regex("\\b(uab|uad|ab|mb|iį|ii|ltd|oy|as|sp|zub)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
     }
     
     private suspend fun readImageFromUri(uri: Uri): ByteArray = withContext(Dispatchers.IO) {

@@ -82,6 +82,7 @@ import com.vitol.inv3.export.VatRateValidation
 import com.vitol.inv3.ocr.AzureDocumentIntelligenceService
 import com.vitol.inv3.ocr.CompanyNameUtils
 import com.vitol.inv3.ocr.ParsedInvoice
+import com.vitol.inv3.MainActivityViewModel
 import com.vitol.inv3.R
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -120,7 +121,9 @@ data class MergedFormData(
     val vatNumber: String = "",
     val companyNumber: String = "",
     val vatRate: String = "",
-    val taxCode: String = ""
+    val taxCode: String = "",
+    /** Full Azure parse of page 1 — identity can be recovered even when form fields were still empty. */
+    val page1ParsedInvoice: ParsedInvoice? = null,
 )
 
 @HiltViewModel
@@ -132,20 +135,6 @@ class ReviewScanViewModel @Inject constructor(
 
     private val _processingState = MutableStateFlow(ProcessingState())
     val processingState: StateFlow<ProcessingState> = _processingState.asStateFlow()
-    
-    private var mergedFormData: MergedFormData? = null
-    
-    fun setMergedFormData(data: MergedFormData) {
-        mergedFormData = data
-    }
-    
-    fun clearMergedFormData() {
-        mergedFormData = null
-    }
-    
-    fun getMergedFormData(): MergedFormData? {
-        return mergedFormData
-    }
 
     suspend fun getOwnCompany(companyId: String?): CompanyRecord? {
         if (companyId == null) return null
@@ -404,6 +393,8 @@ fun ReviewScanScreen(
     subscriptionViewModel: SubscriptionViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val activityViewModel: MainActivityViewModel =
+        hiltViewModel(viewModelStoreOwner = context as ComponentActivity)
     val lifecycleOwner = LocalLifecycleOwner.current
     val importSessionViewModel: ImportSessionViewModel? = if (fromImport) {
         hiltViewModel(viewModelStoreOwner = context as ComponentActivity)
@@ -479,6 +470,12 @@ fun ReviewScanScreen(
     val processingState by viewModel.processingState.collectAsState()
     
     // Load existing invoice if invoiceId is provided (edit mode)
+    LaunchedEffect(invoiceId, fromImport) {
+        if (invoiceId != null && invoiceId.isNotBlank() || fromImport) {
+            activityViewModel.clearPendingReviewScanMerge()
+        }
+    }
+
     LaunchedEffect(invoiceId) {
         if (invoiceId != null && invoiceId.isNotBlank()) {
             isLoading = true
@@ -533,26 +530,27 @@ fun ReviewScanScreen(
         // Fill form fields when invoice is parsed (only once)
         processingState.parsedInvoice?.let { parsedInvoice ->
             if (!hasProcessedInvoice) {
-                val mergedData = viewModel.getMergedFormData()
+                val mergedData = activityViewModel.getPendingReviewScanMerge()
                 val isMerge = mergedData != null
-                
-                // If merging, only fill empty fields; otherwise fill all fields
-                invoiceIdField = if (isMerge && invoiceIdField.isNotBlank()) invoiceIdField else (parsedInvoice.invoiceId ?: "")
-                dateField = if (isMerge && dateField.isNotBlank()) dateField else (parsedInvoice.date ?: "")
-                companyNameField = if (isMerge && companyNameField.isNotBlank()) companyNameField else (parsedInvoice.companyName ?: "")
-                amountWithoutVatField = if (isMerge && amountWithoutVatField.isNotBlank()) amountWithoutVatField else (parsedInvoice.amountWithoutVatEur ?: "")
-                vatAmountField = if (isMerge && vatAmountField.isNotBlank()) vatAmountField else (parsedInvoice.vatAmountEur ?: "")
-                vatNumberField = if (isMerge && vatNumberField.isNotBlank()) vatNumberField else (parsedInvoice.vatNumber ?: "")
-                companyNumberField = if (isMerge && companyNumberField.isNotBlank()) companyNumberField else (parsedInvoice.companyNumber ?: "")
-                vatRateField = if (isMerge && vatRateField.isNotBlank()) vatRateField else (
-                    VatRateValidation.sanitizeOcrPercentToDisplayString(parsedInvoice.vatRate) ?: ""
+
+                val merged = ReviewScanMerge.mergeFormFromOcr(
+                    mergedFromPage1 = mergedData,
+                    parsed = parsedInvoice,
+                    invoiceType = invoiceType,
+                    ownCompanyName = processingState.ownCompanyName,
+                    ownCompanyNumber = processingState.ownCompanyNumber,
+                    ownCompanyVatNumber = processingState.ownCompanyVatNumber,
                 )
-                
-                // If merging, restore other fields from merged data
-                if (isMerge && mergedData != null) {
-                    taxCodeField = mergedData.taxCode
-                }
-                
+                invoiceIdField = merged.invoiceId
+                dateField = merged.date
+                companyNameField = merged.companyName
+                amountWithoutVatField = merged.amountWithoutVat
+                vatAmountField = merged.vatAmount
+                vatNumberField = merged.vatNumber
+                companyNumberField = merged.companyNumber
+                vatRateField = merged.vatRate
+                taxCodeField = merged.taxCode
+
                 // Extract VAT code from invoice text if available
                 val invoiceText = parsedInvoice.lines.joinToString(" ")
                 val detectedTaxCode = com.vitol.inv3.export.TaxCodeDeterminer.determineTaxCode(
@@ -562,70 +560,55 @@ fun ReviewScanScreen(
                 if (detectedTaxCode.isNotBlank() && taxCodeField == "PVM1") {
                     taxCodeField = detectedTaxCode
                 }
-            
-            Timber.d("Extracted invoice data - Company: $companyNameField, VAT: $vatNumberField, Company Number: $companyNumberField, VAT Rate: $vatRateField (merge: $isMerge)")
-            
-            // CRITICAL: Exclude own company parameters - NEVER fill them
-            if (ownCompanyNumber != null && companyNumberField == ownCompanyNumber) {
-                Timber.d("Excluding own company number: $companyNumberField")
-                companyNumberField = ""
-            }
-            if (ownCompanyVatNumber != null && vatNumberField.equals(ownCompanyVatNumber, ignoreCase = true)) {
-                Timber.d("Excluding own VAT number: $vatNumberField")
-                vatNumberField = ""
-            }
-            if (processingState.ownCompanyName != null && CompanyNameUtils.isSameAsOwnCompanyName(companyNameField, processingState.ownCompanyName)) {
-                Timber.d("Excluding own company name: $companyNameField")
-                companyNameField = ""
-            }
-            
-            // Official Lithuanian register (all_lt_companies): canonical name; JA kodas from VAT when number missing.
-            // Merge mode keeps non-blank user fields from the prior screen — do not overwrite those with registry data.
-            val ltLookup = viewModel.lookupOfficialLtCompany(
-                companyNumber = companyNumberField.takeIf { it.isNotBlank() },
-                vatNumber = vatNumberField.takeIf { it.isNotBlank() }
-            )
-            if (ltLookup != null) {
-                val mergeKeepsCompanyName = isMerge && companyNameField.isNotBlank()
-                val mergeKeepsCompanyNumber = isMerge && companyNumberField.isNotBlank()
-                if (!mergeKeepsCompanyName) {
-                    ltLookup.officialName?.let {
-                        Timber.d("LT registry resolved official name for JA kodas")
-                        companyNameField = it
+
+                Timber.d("Extracted invoice data - Company: $companyNameField, VAT: $vatNumberField, Company Number: $companyNumberField, VAT Rate: $vatRateField (merge: $isMerge)")
+
+                // Official Lithuanian register (all_lt_companies): canonical name; JA kodas from VAT when number missing.
+                // Merge mode keeps non-blank user fields from the prior screen — do not overwrite those with registry data.
+                val ltLookup = viewModel.lookupOfficialLtCompany(
+                    companyNumber = companyNumberField.takeIf { it.isNotBlank() },
+                    vatNumber = vatNumberField.takeIf { it.isNotBlank() }
+                )
+                if (ltLookup != null) {
+                    val mergeKeepsCompanyName = isMerge && companyNameField.isNotBlank()
+                    val mergeKeepsCompanyNumber = isMerge && companyNumberField.isNotBlank()
+                    if (!mergeKeepsCompanyName) {
+                        ltLookup.officialName?.let {
+                            Timber.d("LT registry resolved official name for JA kodas")
+                            companyNameField = it
+                        }
+                    }
+                    if (!mergeKeepsCompanyNumber) {
+                        ltLookup.fillCompanyNumberIfBlank?.let { companyNumberField = it }
                     }
                 }
-                if (!mergeKeepsCompanyNumber) {
-                    ltLookup.fillCompanyNumberIfBlank?.let { companyNumberField = it }
+
+                // Lookup partner company from existing invoices (fill gaps only; register wins for name when matched above)
+                val partnerInvoice = if (!vatNumberField.isBlank() || !companyNumberField.isBlank()) {
+                    viewModel.findPartnerCompany(
+                        vatNumber = vatNumberField.takeIf { it.isNotBlank() },
+                        companyNumber = companyNumberField.takeIf { it.isNotBlank() }
+                    )
+                } else {
+                    null
                 }
-            }
-            
-            // Lookup partner company from existing invoices (fill gaps only; register wins for name when matched above)
-            val partnerInvoice = if (!vatNumberField.isBlank() || !companyNumberField.isBlank()) {
-                viewModel.findPartnerCompany(
-                    vatNumber = vatNumberField.takeIf { it.isNotBlank() },
-                    companyNumber = companyNumberField.takeIf { it.isNotBlank() }
-                )
-            } else {
-                null
-            }
-            
-            if (partnerInvoice != null) {
-                Timber.d("Found partner company from existing invoice: ${partnerInvoice.company_name}")
-                if (companyNameField.isBlank() && !partnerInvoice.company_name.isNullOrBlank()) {
-                    companyNameField = partnerInvoice.company_name
+
+                if (partnerInvoice != null) {
+                    Timber.d("Found partner company from existing invoice: ${partnerInvoice.company_name}")
+                    if (companyNameField.isBlank() && !partnerInvoice.company_name.isNullOrBlank()) {
+                        companyNameField = partnerInvoice.company_name
+                    }
+                    if (vatNumberField.isBlank() && !partnerInvoice.vat_number.isNullOrBlank()) {
+                        vatNumberField = partnerInvoice.vat_number
+                    }
+                    if (companyNumberField.isBlank() && !partnerInvoice.company_number.isNullOrBlank()) {
+                        companyNumberField = partnerInvoice.company_number
+                    }
                 }
-                if (vatNumberField.isBlank() && !partnerInvoice.vat_number.isNullOrBlank()) {
-                    vatNumberField = partnerInvoice.vat_number
-                }
-                if (companyNumberField.isBlank() && !partnerInvoice.company_number.isNullOrBlank()) {
-                    companyNumberField = partnerInvoice.company_number
-                }
-            }
-            
+
                 hasProcessedInvoice = true
-                // Clear merged data after processing
                 if (isMerge) {
-                    viewModel.clearMergedFormData()
+                    activityViewModel.clearPendingReviewScanMerge()
                 }
             }
         }
@@ -1053,6 +1036,7 @@ fun ReviewScanScreen(
                                     scope.launch {
                                         delay(1200)
                                         importSessionViewModel.clear()
+                                        activityViewModel.clearPendingReviewScanMerge()
                                         navController?.navigate(Routes.Home) {
                                             popUpTo(0) { inclusive = true }
                                         }
@@ -1111,6 +1095,7 @@ fun ReviewScanScreen(
                                                     withContext(Dispatchers.IO) {
                                                         setPendingFeedbackAfterImportComplete(context)
                                                     }
+                                                    activityViewModel.clearPendingReviewScanMerge()
                                                     navController?.navigate(Routes.Home) {
                                                         popUpTo(0) { inclusive = true }
                                                     }
@@ -1167,6 +1152,7 @@ fun ReviewScanScreen(
                         OutlinedButton(
                             onClick = {
                                 if (fromImport) importSessionViewModel?.clear()
+                                activityViewModel.clearPendingReviewScanMerge()
                                 navController?.navigate(Routes.Home) {
                                     popUpTo(0) { inclusive = true }
                                 }
@@ -1183,7 +1169,7 @@ fun ReviewScanScreen(
                         if (invoiceId == null && imageUri != null && !fromImport) {
                             OutlinedButton(
                                 onClick = {
-                                    viewModel.setMergedFormData(
+                                    activityViewModel.setPendingReviewScanMerge(
                                         MergedFormData(
                                             invoiceId = invoiceIdField,
                                             date = dateField,
@@ -1193,7 +1179,8 @@ fun ReviewScanScreen(
                                             vatNumber = vatNumberField,
                                             companyNumber = companyNumberField,
                                             vatRate = vatRateField,
-                                            taxCode = taxCodeField
+                                            taxCode = taxCodeField,
+                                            page1ParsedInvoice = processingState.parsedInvoice,
                                         )
                                     )
                                     navController?.navigate("${Routes.ScanCamera}/$invoiceType") {
@@ -1273,6 +1260,7 @@ fun ReviewScanScreen(
                                                     }
                                                 } else {
                                                     showUpgradeDialog = true
+                                                    activityViewModel.clearPendingReviewScanMerge()
                                                     navController?.navigate(Routes.Home) {
                                                         popUpTo(0) { inclusive = true }
                                                     }
@@ -1360,6 +1348,7 @@ fun ReviewScanScreen(
                         onClick = {
                             showCancelImportDialog = false
                             importSessionViewModel?.clear()
+                            activityViewModel.clearPendingReviewScanMerge()
                             navController?.navigate(Routes.Home) {
                                 popUpTo(0) { inclusive = true }
                             }

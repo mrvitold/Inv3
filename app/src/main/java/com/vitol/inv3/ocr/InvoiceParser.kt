@@ -5,6 +5,8 @@ import com.vitol.inv3.data.local.FieldRegion
 import com.vitol.inv3.export.TaxCodeDeterminer
 import com.vitol.inv3.export.VatRateValidation
 import timber.log.Timber
+import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -25,6 +27,89 @@ data class ParsedInvoice(
 object InvoiceParser {
     // Lithuanian VAT rates: 21%, 9%, 5%, and 0%
     private val LITHUANIAN_VAT_RATES = listOf(0.21, 0.09, 0.05, 0.0)
+
+    /**
+     * Fuel / retail LT receipts: a single tax row lists PVM, Be PVM, Su PVM as three amounts with VAT+net=gross
+     * (e.g. "21,00% 9,46 45,07 54,53" or three lines with one amount each). Azure often maps only the total
+     * into "subtotal" — this finds the real net and VAT.
+     */
+    fun tryExtractNetVatFromLtTaxBreakdown(lines: List<String>): Pair<String, String>? {
+        val money = Regex("""\b(\d{1,6}[,.]\d{2})\b""")
+        fun skipLineForFuelNoise(lower: String): Boolean {
+            if (Regex("""\d+[,.]\d+\s*(?:eur|€)\s*/\s*l\b""", RegexOption.IGNORE_CASE).containsMatchIn(lower)) return true
+            if (Regex("""\d+[,.]\d+\s*l\b""", RegexOption.IGNORE_CASE).containsMatchIn(lower) && lower.length < 40) return true
+            return false
+        }
+        fun parseDoubles(tokens: List<String>): List<Double>? {
+            val out = tokens.map { it.replace(",", ".").toDoubleOrNull() ?: return null }
+            return if (out.all { it in 0.01..999_999.0 }) out else null
+        }
+        fun toFormatted(net: Double, vat: Double): Pair<String, String>? {
+            val n = FieldExtractors.normalizeAmount(String.format(Locale.US, "%.2f", net).replace('.', ','))
+            val v = FieldExtractors.normalizeAmount(String.format(Locale.US, "%.2f", vat).replace('.', ','))
+            return if (n != null && v != null) Pair(n, v) else null
+        }
+        fun tryOnText(line: String, joinedFromThreeLines: Boolean): Pair<String, String>? {
+            val lower = line.lowercase()
+            if (skipLineForFuelNoise(lower)) return null
+            val raw = money.findAll(line).map { it.groupValues[1] }.toList()
+            if (raw.size < 3) return null
+            // Four tokens: rate%, VAT, net, gross (Circle K–style)
+            if (raw.size >= 4) {
+                val d = parseDoubles(raw.takeLast(4)) ?: return null
+                val rate = d[0]
+                val vatA = d[1]
+                val netA = d[2]
+                val grossA = d[3]
+                if (rate in 5.0..27.0 && abs(vatA + netA - grossA) <= 0.08) {
+                    val implied = vatA / netA * 100.0
+                    if (implied in 4.5..27.5) return toFormatted(netA, vatA)
+                }
+            }
+            val d3 = parseDoubles(raw.takeLast(3)) ?: return null
+            val vatA = d3[0]
+            val netA = d3[1]
+            val grossA = d3[2]
+            if (vatA <= 0.0 || netA <= 0.0 || grossA <= 0.0) return null
+            if (abs(vatA + netA - grossA) > 0.08) return null
+            val impliedRate = vatA / netA * 100.0
+            if (impliedRate !in 4.5..27.5) return null
+            // When OCR glues lines, a stray leading amount (e.g. unit price) can make a false triple — avoid tiny VAT
+            if (!joinedFromThreeLines && vatA < 0.2 && grossA > 5.0) return null
+            return toFormatted(netA, vatA)
+        }
+        for (line in lines) {
+            tryOnText(line, joinedFromThreeLines = false)?.let { return it }
+        }
+        for (i in 0 until lines.size - 2) {
+            val joined = listOf(lines[i], lines[i + 1], lines[i + 2]).joinToString(" ")
+            tryOnText(joined, joinedFromThreeLines = true)?.let { return it }
+        }
+        return null
+    }
+
+    /** Numeric invoice number segment: 3–15 digits, optional `-` + short suffix (e.g. `20260209-3`). */
+    private val invoiceNumberDigitsWithOptionalSuffix = Regex("^[0-9]{3,15}(?:-[0-9]{1,10})?$")
+
+    /** LT + 9–12 digits — VAT code, not an invoice serial (standalone OCR often mislabels it as "invoice id"). */
+    fun isLikelyLithuanianVatCode(s: String?): Boolean {
+        if (s.isNullOrBlank()) return false
+        return s.trim().uppercase().matches(Regex("^LT\\d{9,12}$"))
+    }
+
+    /**
+     * Footer line from VĮ Registrų centras (company registration boilerplate) — not a supplier trading name.
+     * OCR often picks this instead of the real UAB line below Tiekėjas when layout is two-column.
+     */
+    fun isLikelyRegistrarRegistryFooterLine(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        val l = text.lowercase()
+        if (Regex("(?i)registr[uų]\\s+centras").containsMatchIn(l)) return true
+        if (l.contains("kudirkos") && l.contains("vilnius") && (l.contains("nr ab") || l.contains("nr. ab"))) return true
+        if (Regex("(?i)imone\\s+ir\\.?\\s+v[iį]|įmonė\\s+ir\\.?\\s+v[iį]").containsMatchIn(l)) return true
+        if (l.contains("vĮ registr") || l.contains("vi registr")) return true
+        return false
+    }
 
     /** Line-item discount / margin columns often contain "6,25 %" which must not be read as PVM %. */
     private fun isLikelyNonVatPercentContext(line: String): Boolean {
@@ -255,8 +340,21 @@ object InvoiceParser {
             }
             
             if (hasCompanyCodeKeyword) {
-                // Extract company number from this line (right after the keyword)
-                val extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
+                // Extract company number from this line (right after the keyword), or from the next 1–2 lines
+                // when the label is alone (common on scans: "Įmonės kodas" on one line, "121320015" on the next).
+                var extracted = FieldExtractors.tryExtractCompanyNumber(line, vatNumber, excludeOwnCompanyNumber)
+                var numberLineIndex = i
+                if (extracted == null) {
+                    for (off in 1..2) {
+                        if (i + off >= lines.size) break
+                        val nextLine = lines[i + off]
+                        extracted = FieldExtractors.tryExtractCompanyNumber(nextLine, vatNumber, excludeOwnCompanyNumber)
+                        if (extracted != null) {
+                            numberLineIndex = i + off
+                            break
+                        }
+                    }
+                }
                 if (extracted != null) {
                     // Check if this is in buyer or seller section
                     val searchRange = max(0, i - 25)..min(lines.size - 1, i + 4)
@@ -270,14 +368,14 @@ object InvoiceParser {
                     }
                     
                     companyNumbersAfterKeyword.add(
-                        CompanyNumberWithSection(extracted, i, isInBuyerSection, isInSellerSection)
+                        CompanyNumberWithSection(extracted, numberLineIndex, isInBuyerSection, isInSellerSection)
                     )
                     val section = when {
                         isInBuyerSection && !isInSellerSection -> "buyer"
                         isInSellerSection && !isInBuyerSection -> "seller"
                         else -> "unknown"
                     }
-                    Timber.d("InvoiceParser: Pre-pass 2 found $section company number '$extracted' right after 'Įmonės kodas' on line $i")
+                    Timber.d("InvoiceParser: Pre-pass 2 found $section company number '$extracted' right after 'Įmonės kodas' on line $numberLineIndex")
                 }
             }
         }
@@ -526,14 +624,40 @@ object InvoiceParser {
                         true
                     }
                 }
-                
-                companyNumber = filteredCandidates.firstOrNull { (num, _) -> 
-                    excludeOwnCompanyNumber == null || num != excludeOwnCompanyNumber.trim() 
-                }?.first
-                ?: filteredCandidates.firstOrNull()?.first // Fallback to first if all are own company
-                
+
+                fun isLikelyLtCompanyCode9(num: String): Boolean =
+                    num.length == 9 && num[0] in '1'..'3' && num.all { it.isDigit() }
+
+                val nineDigit = filteredCandidates.filter { (num, _) -> isLikelyLtCompanyCode9(num) }
+                val pickNineDigit: Pair<String, Int>? = when {
+                    nineDigit.isEmpty() -> null
+                    nineDigit.size == 1 -> nineDigit.first()
+                    isPurchaseInvoice -> {
+                        // Retail: seller (partner) block usually above buyer — take earliest 9-digit line
+                        nineDigit.minByOrNull { it.second }
+                    }
+                    isSalesInvoice -> {
+                        // Partner is buyer — usually later in the document
+                        nineDigit.maxByOrNull { it.second }
+                    }
+                    else -> nineDigit.minByOrNull { it.second }
+                }
+
+                val nineAfterExclude = pickNineDigit?.let { picked ->
+                    val eligible = nineDigit.filter { (n, _) ->
+                        excludeOwnCompanyNumber == null || n != excludeOwnCompanyNumber.trim()
+                    }
+                    eligible.firstOrNull()?.first ?: picked.first
+                }
+
+                companyNumber = nineAfterExclude
+                    ?: filteredCandidates.firstOrNull { (num, _) ->
+                        excludeOwnCompanyNumber == null || num != excludeOwnCompanyNumber.trim()
+                    }?.first
+                    ?: filteredCandidates.firstOrNull()?.first // Fallback to first if all are own company
+
                 if (companyNumber != null) {
-                    Timber.d("InvoiceParser: Pre-pass 2 selected first valid company number '$companyNumber'")
+                    Timber.d("InvoiceParser: Pre-pass 2 selected company number '$companyNumber' (priority 5: prefer 9-digit Įm. kodas over 6-digit receipt/Kasos)")
                 }
             }
             
@@ -998,6 +1122,15 @@ object InvoiceParser {
             }
         }
         
+        // LT fuel / retail: tax line PVM + Be PVM + Su PVM (before keyword / totals heuristics)
+        if (amountNoVat == null || vatAmount == null) {
+            tryExtractNetVatFromLtTaxBreakdown(lines)?.let { (net, vat) ->
+                amountNoVat = net
+                vatAmount = vat
+                Timber.d("Extracted net+VAT from LT tax breakdown row: net=$net, VAT=$vat")
+            }
+        }
+        
         // Second pass: amounts with keywords
         if (amountNoVat == null) {
             val amountKeywords = listOf("suma be pvm", "suma bepvm", "sumabepvm", 
@@ -1005,7 +1138,8 @@ object InvoiceParser {
             for (i in lines.indices) {
                 val line = lines[i]
                 val l = line.lowercase()
-                if (amountKeywords.any { keyword -> l.contains(keyword) } && 
+                val hasBePvmColumn = Regex("""(?i)\bbe\s+pvm\b""").containsMatchIn(l) && !l.contains("su pvm")
+                if ((amountKeywords.any { keyword -> l.contains(keyword) } || hasBePvmColumn) &&
                     !l.contains("suma su pvm") && !l.contains("sumasupvm")) {
                     var extracted = FieldExtractors.tryExtractAmount(line)
                     if (extracted == null && i + 1 < lines.size) {
@@ -1444,6 +1578,7 @@ object InvoiceParser {
     private fun isInvalidCompanyName(name: String?): Boolean {
         if (name.isNullOrBlank()) return true
         if (isLikelySignaturePlaceholderName(name)) return true
+        if (isLikelyRegistrarRegistryFooterLine(name)) return true
         val lower = name.lowercase().trim()
         
         // Reject "Suma žodžiais" / "Suma zodžiais" (amount in words - Lithuanian)
@@ -1491,10 +1626,35 @@ object InvoiceParser {
      * Serial number usually goes after word "Serija", just before invoice number, or 1-2 words separated.
      */
     fun extractInvoiceIdWithSerialAndNumber(lines: List<String>): String? {
+        // 0) Header/title line often contains the real serial (e.g. "PVM SĄSKAITA FAKTŪRA BIK1858415")
+        for (line in lines.take(15)) {
+            val trimmed = line.trim()
+            val lower = trimmed.lowercase()
+            if (lower.contains("fakt") || lower.contains("saskaita") || lower.contains("invoice")) {
+                Regex("""\b([A-Z]{3,12}\d{5,}(?:-[0-9]{1,10})?)\b""", RegexOption.IGNORE_CASE).find(trimmed)?.let { m ->
+                    val id = m.groupValues[1].uppercase()
+                    if (!isLikelyLithuanianVatCode(id)) {
+                        Timber.d("extractInvoiceIdWithSerialAndNumber: id from invoice title line: $id")
+                        return id
+                    }
+                }
+            }
+        }
+        // 0b) Short alphanumeric serial (e.g. BIK1858415, DDV20260209-3) near top when title OCR is fragmented
+        for (line in lines.take(10)) {
+            Regex("""\b([A-Z]{3}\d{6,}(?:-[0-9]{1,10})?)\b""", RegexOption.IGNORE_CASE).find(line.trim())?.let { m ->
+                val id = m.groupValues[1].uppercase()
+                if (!id.startsWith("LT") && !isLikelyLithuanianVatCode(id)) {
+                    Timber.d("extractInvoiceIdWithSerialAndNumber: id from header token: $id")
+                    return id
+                }
+            }
+        }
+
         // Pattern for serial: 2-6 alphanumeric characters with at least one letter (e.g., "25DF", "SSP", "A1B2")
         val serialPattern = Regex("\\b([A-Z0-9]{2,6})\\b", RegexOption.IGNORE_CASE)
-        // Pattern for invoice number: 3-15 digits (e.g., "2569", "000393734", "41222181749")
-        val numberPattern = Regex("\\b([0-9]{3,15})\\b")
+        // Pattern for invoice number: 3-15 digits, optional hyphen + short suffix (e.g. "20260209-3", "2569")
+        val numberPattern = Regex("\\b([0-9]{3,15}(?:-[0-9]{1,10})?)\\b")
         
         // Look for "Serija" keyword (primary keyword for serial)
         val serialKeywords = listOf("serija", "series", "serijos", "serijos kodas", "serijos kodas:")
@@ -1547,8 +1707,8 @@ object InvoiceParser {
                                 if (numberMatch != null) {
                                     val numberCandidate = numberMatch.groupValues[1]
                                     
-                                    // Validate number: should be 3-15 digits, not a date component
-                                    if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                    // Validate number: 3–15 digits with optional hyphen suffix; not a lone day-of-month
+                                    if (invoiceNumberDigitsWithOptionalSuffix.matches(numberCandidate)) {
                                         val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                             num in 1..31 && numberCandidate.length <= 2
                                         } ?: false
@@ -1574,7 +1734,7 @@ object InvoiceParser {
                                         val numberMatch2 = numberPattern.find(afterNumberKeyword)
                                         if (numberMatch2 != null) {
                                             val numberCandidate = numberMatch2.groupValues[1]
-                                            if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                            if (invoiceNumberDigitsWithOptionalSuffix.matches(numberCandidate)) {
                                                 val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                                     num in 1..31 && numberCandidate.length <= 2
                                                 } ?: false
@@ -1603,7 +1763,7 @@ object InvoiceParser {
                                         val numberMatch3 = numberPattern.find(nextLine)
                                         if (numberMatch3 != null) {
                                             val numberCandidate = numberMatch3.groupValues[1]
-                                            if (numberCandidate.length >= 3 && numberCandidate.length <= 15) {
+                                            if (invoiceNumberDigitsWithOptionalSuffix.matches(numberCandidate)) {
                                                 val isDateComponent = numberCandidate.toIntOrNull()?.let { num ->
                                                     num in 1..31 && numberCandidate.length <= 2
                                                 } ?: false
@@ -1624,44 +1784,77 @@ object InvoiceParser {
         
         return null
     }
+
+    /** Cash register / receipt footer lines (e.g. "EKA Nr. AM230151, kvito Nr.") — not the VAT invoice number. */
+    private fun isCashRegisterOrReceiptInvoiceLine(line: String): Boolean {
+        val l = line.lowercase()
+        if (l.contains("eka") && (l.contains("kvito") || l.contains("kasos"))) return true
+        if (l.contains("kasos kvit")) return true
+        if (l.contains("kvito nr") && l.contains("eka")) return true
+        return false
+    }
     
     private fun extractInvoiceIdFromLine(line: String): String? {
-        // Pattern 1: "Nr. SSP000393734" or "Nr SSP000393734" or "Nr: SSP000393734"
-        val nrPattern = Regex("nr\\.?\\s*:?\\s*([A-Z]{2,}[0-9]+)", RegexOption.IGNORE_CASE)
-        val nrMatch = nrPattern.find(line)
+        val trimmed = line.trim()
+        if (isCashRegisterOrReceiptInvoiceLine(trimmed)) {
+            return null
+        }
+        // Common on LT invoices: "NR. VB-000077353" (hyphen). Older regex required letters+digits with no hyphen,
+        // so "VB-000077353" never matched and a later "EKA Nr. AM230151" could be mistaken for the invoice id.
+        val nrHyphenPattern = Regex("""nr\.?\s*:?\s*([A-Z]{2,12}-\d{4,12})""", RegexOption.IGNORE_CASE)
+        nrHyphenPattern.find(trimmed)?.let { m ->
+            val id = m.groupValues.getOrNull(1) ?: return@let
+            if (id.length >= 8 && id.uppercase() != "INVOICE") {
+                Timber.d("Extracted Invoice ID from 'Nr.' hyphen pattern: ${id.uppercase()}")
+                return id.uppercase()
+            }
+        }
+        // Pattern 1: "Nr. SSP000393734" or "Nr SSP000393734" or "Nr: SSP000393734" (optional "-N" suffix on the number)
+        val nrPattern = Regex("nr\\.?\\s*:?\\s*([A-Z]{2,}[0-9]+(?:-[0-9]{1,10})?)", RegexOption.IGNORE_CASE)
+        val nrMatch = nrPattern.find(trimmed)
         if (nrMatch != null) {
             val id = nrMatch.groupValues.getOrNull(1)
-            if (id != null && id.length >= 6 && id.uppercase() != "INVOICE") {
+            if (id != null && id.length >= 6 && id.uppercase() != "INVOICE" && !isLikelyLithuanianVatCode(id)) {
                 Timber.d("Extracted Invoice ID from 'Nr.' pattern: ${id.uppercase()}")
                 return id.uppercase()
             }
         }
+
+        // Hyphenated id without leading "Nr." (e.g. "VB-000077353"); exclude LT-… (VAT numbers)
+        Regex("""\b([A-Z]{2,12}-\d{6,})\b""", RegexOption.IGNORE_CASE).find(trimmed)?.let { m ->
+            val id = m.groupValues.getOrNull(1) ?: return@let
+            if (id.uppercase().startsWith("LT-")) return@let
+            if (id.length >= 8 && id.uppercase() != "INVOICE") {
+                Timber.d("Extracted Invoice ID from standalone hyphen pattern: ${id.uppercase()}")
+                return id.uppercase()
+            }
+        }
         
-        // Pattern 2: "SSP000393734" standalone (letters followed by numbers)
-        val invoiceIdPattern = Regex("\\b([A-Z]{2,}[0-9]{6,})\\b", RegexOption.IGNORE_CASE)
-        val idMatch = invoiceIdPattern.find(line)
+        // Pattern 2: "SSP000393734" standalone (letters + digits, optional "-N" suffix e.g. DDV20260209-3)
+        val invoiceIdPattern = Regex("\\b([A-Z]{2,}[0-9]{6,}(?:-[0-9]{1,10})?)\\b", RegexOption.IGNORE_CASE)
+        val idMatch = invoiceIdPattern.find(trimmed)
         if (idMatch != null) {
             val id = idMatch.value
-            if (id.uppercase() != "INVOICE" && id.length >= 6) {
+            if (id.uppercase() != "INVOICE" && id.length >= 6 && !isLikelyLithuanianVatCode(id)) {
                 Timber.d("Extracted Invoice ID from standalone pattern: ${id.uppercase()}")
                 return id.uppercase()
             }
         }
         
-        // Pattern 3: "Saskaitos numeris: SSP000393734" or similar
-        val colonPattern = Regex("(?:numeris|serija|number|id)[:.]?\\s*([A-Z]{2,}[0-9]+)", RegexOption.IGNORE_CASE)
-        val colonMatch = colonPattern.find(line)
+        // Pattern 3: "Saskaitos numeris: SSP000393734" or similar (optional "-N" suffix)
+        val colonPattern = Regex("(?:numeris|serija|number|id)[:.]?\\s*([A-Z]{2,}[0-9]+(?:-[0-9]{1,10})?)", RegexOption.IGNORE_CASE)
+        val colonMatch = colonPattern.find(trimmed)
         if (colonMatch != null) {
             val id = colonMatch.groupValues.getOrNull(1)
-            if (id != null && id.length >= 6 && id.uppercase() != "INVOICE") {
+            if (id != null && id.length >= 6 && id.uppercase() != "INVOICE" && !isLikelyLithuanianVatCode(id)) {
                 Timber.d("Extracted Invoice ID from colon pattern: ${id.uppercase()}")
                 return id.uppercase()
             }
         }
         
-        // Pattern 4: Combined serial and number on same line (e.g., "Serija: 25DF Numeris: 2569" or "Serija 01 Nr. 1442")
-        val serialNumberPattern = Regex("(?:serija|series)[:.]?\\s*([A-Z0-9]{2,6})\\s+(?:numeris|number|nr)[:.]?\\s*([0-9]{3,15})", RegexOption.IGNORE_CASE)
-        val serialNumberMatch = serialNumberPattern.find(line)
+        // Pattern 4: Combined serial and number on same line (e.g., "Serija: 25DF Numeris: 2569" or "Serija DDV Numeris 20260209-3")
+        val serialNumberPattern = Regex("(?:serija|series)[:.]?\\s*([A-Z0-9]{2,6})\\s+(?:numeris|number|nr)[:.]?\\s*([0-9]{3,15}(?:-[0-9]{1,10})?)", RegexOption.IGNORE_CASE)
+        val serialNumberMatch = serialNumberPattern.find(trimmed)
         if (serialNumberMatch != null) {
             val serial = serialNumberMatch.groupValues.getOrNull(1)?.uppercase()
             val number = serialNumberMatch.groupValues.getOrNull(2)
@@ -1986,8 +2179,18 @@ object InvoiceParser {
                     } else {
                         1..8
                     }
+                    // Two-column LT layout: consecutive "Pirkėjas" then "Pardavėjas" — OCR often puts the buyer
+                    // name on the first line after "Pardavėjas" and the seller on the second.
+                    val buyerLabelImmediatelyAbove = i > 0 &&
+                        normalizeForLabelCompare(lines[i - 1].trim()) == "pirkejas" &&
+                        line.length <= 40
+                    val startOffset = if (isPurchaseInvoice && priorityKeyword == "pardavejas" && buyerLabelImmediatelyAbove) {
+                        2
+                    } else {
+                        1
+                    }
                     
-                    for (j in searchRange) {
+                    for (j in startOffset..searchRange.last) {
                         if (i + j < lines.size) {
                             val nextLine = lines[i + j].trim()
                             val nextLower = nextLine.lowercase()
@@ -2111,6 +2314,26 @@ object InvoiceParser {
         }
         return null
     }
+
+    /**
+     * Finds a seller legal-entity line in OCR (UAB, MB, …), including OCR typo "UAR" for "UAB".
+     * Used to avoid using Azure's [VendorName] when it is only the logo (e.g. "KESKO" / "SENUKAI").
+     */
+    fun findSellerLegalNameFromOcrLines(lines: List<String>, excludeOwnCompanyName: String?): String? {
+        for (line in lines.take(45)) {
+            val t = line.trim()
+            if (t.length < 12) continue
+            val lower = t.lowercase()
+            if (isLikelyPaymentBankName(t) || isLikelySignaturePlaceholderName(t)) continue
+            if (isLikelyRegistrarRegistryFooterLine(t)) continue
+            if (isKnownSectionLabel(t)) continue
+            if (!isValidCompanyNameLine(t, lower)) continue
+            val cleaned = cleanCompanyName(t) ?: continue
+            if (excludeOwnCompanyName != null && isSameAsOwnCompanyName(cleaned, excludeOwnCompanyName)) continue
+            return cleaned
+        }
+        return null
+    }
     
     /** Normalize Lithuanian chars (ė, ē, į, ą, etc.) to ASCII for label matching so "PARDAVĖJAS" matches "pardavejas".
      * Also normalizes OCR-mangled variants where "ė" is read as space: "tiek jas" -> "tiekejas", etc. */
@@ -2137,7 +2360,8 @@ object InvoiceParser {
     /** Known section headers that must never be used as company name (seller, buyer, etc.). */
     private val KNOWN_SECTION_LABELS_NORMALIZED = setOf(
         "pardavejas", "tiekejas", "gavejas", "pirkėjas", "pirkėjo",
-        "seller", "buyer", "recipient", "supplier", "imone", "kompanija", "bendrove", "company"
+        "seller", "buyer", "recipient", "supplier", "imone", "kompanija", "bendrove", "company",
+        "adresas", // LT invoice address block header — not a company name
     )
     
     /** True if the string is a known section label (e.g. PARDAVĖJAS, TIEKĖJAS) - never use as company name. */
@@ -2187,6 +2411,9 @@ object InvoiceParser {
     
     private fun isValidCompanyNameLine(line: String, lower: String): Boolean {
         val trimmedLower = lower.trim()
+        if (isLikelyRegistrarRegistryFooterLine(line)) {
+            return false
+        }
         
         // Reject amount-in-words: "X eurai ir Y centas" (e.g. "Šešiasdešimt aštuoni eurai ir 51 centas")
         if (trimmedLower.contains("eurai") && trimmedLower.contains("centas")) {
@@ -2219,11 +2446,15 @@ object InvoiceParser {
         }
         
         // REQUIRE Lithuanian company type suffix (UAB, MB, IĮ, AB) - this is mandatory
-        // Exclude "as" when part of "centas" (amount-in-words)
-        val hasCompanyType = trimmedLower.contains("uab") || trimmedLower.contains("ab") ||
+        // Use word boundary for "as" (legal form) — loose contains("as") matched "Adresas", etc.
+        // Common OCR: trailing "UAB" misread as "UAR" (e.g. "KESKO SENUKAI LITHUANIA, UAR")
+        val hasUarTypo = Regex("""(?i)(,\s*uar\s*$|\blithuania.*\buar\b)""").containsMatchIn(trimmedLower)
+        val hasCompanyType = trimmedLower.contains("uab") || trimmedLower.contains("uad") ||
+                            trimmedLower.contains("ab") ||
                             trimmedLower.contains("mb") || trimmedLower.contains("iį") ||
                             trimmedLower.contains("ltd") || trimmedLower.contains("oy") ||
-                            (trimmedLower.contains("as") && !trimmedLower.contains("centas")) || trimmedLower.contains("sp")
+                            (Regex("""(?i)\bas\b""").containsMatchIn(trimmedLower) && !trimmedLower.contains("centas")) ||
+                            trimmedLower.contains("sp") || hasUarTypo
         
         // Only return true if it has company type suffix
         return hasCompanyType
@@ -2232,6 +2463,17 @@ object InvoiceParser {
     private fun cleanCompanyName(line: String): String? {
         // Preserve quotes in company names (e.g., "UAB "Vilniaus rentvėjus"")
         var cleaned = line.trim()
+        // "Pirkėjo/… pavadinimas: UAB …" — full label on the same line as the legal name (Azure advanced search passes whole line).
+        cleaned = Regex(
+            """(?i)^(pirk[eė]jo|pardav[eė]jo|tiek[eė]jo|gav[eė]jo)\s+pavadinimas\s*:\s*"""
+        ).replaceFirst(cleaned, "")
+        cleaned = Regex(
+            """(?i)^(buyer|seller|supplier|recipient)\s+name\s*:\s*"""
+        ).replaceFirst(cleaned, "")
+        // OCR misread of trailing UAB as UAR on retailer invoices (comma or word boundary)
+        // Raw strings: use \s (one backslash), not \\s — double backslash breaks whitespace matching.
+        cleaned = cleaned.replace(Regex("""(?i),\s*UAR\s*$"""), ", UAB")
+        cleaned = cleaned.replace(Regex("""(?i)(?<![A-Za-z])UAR\s*$"""), "UAB")
         
         // Remove label prefixes (Pardavėjas:, Pirkėjas:, Tiekėjas:, Gavėjas:, etc.)
         // Use [eė] for Lithuanian ė; also match OCR variant "tiek jas" (space instead of ė)
@@ -2262,11 +2504,13 @@ object InvoiceParser {
             return null
         }
         
-        // REQUIRE company type suffix
-        val hasCompanyType = cleanedLower.contains("uab") || cleanedLower.contains("ab") || 
+        // REQUIRE company type suffix (uad = common OCR for uab)
+        val hasCompanyType = cleanedLower.contains("uab") || cleanedLower.contains("uad") ||
+                            cleanedLower.contains("ab") ||
                             cleanedLower.contains("mb") || cleanedLower.contains("iį") ||
-                            cleanedLower.contains("ltd") || cleanedLower.contains("oy") || 
-                            cleanedLower.contains("as") || cleanedLower.contains("sp")
+                            cleanedLower.contains("ltd") || cleanedLower.contains("oy") ||
+                            Regex("""(?i)\bas\b""").containsMatchIn(cleanedLower) ||
+                            cleanedLower.contains("sp")
         
         if (cleaned.isNotBlank() && cleaned.length > 3 && hasCompanyType &&
             !cleaned.matches(Regex("^[0-9\\s.,]+$")) &&
