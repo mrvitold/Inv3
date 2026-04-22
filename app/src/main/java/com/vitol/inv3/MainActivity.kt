@@ -439,9 +439,12 @@ fun HomeScreen(
     val repo = mainActivityViewModel.repo
     val authManager = mainActivityViewModel.authManager
     val context = LocalContext.current
-    val fillCompanyFirst = stringResource(R.string.toast_fill_company_first)
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val pendingActionScan = "scan"
+    val pendingActionImport = "import"
+    var pendingHomeAction by remember { mutableStateOf<String?>(null) }
+    var forceOpenOwnCompanyDialog by remember { mutableStateOf(false) }
     
     // Get active own company ID from DataStore
     val activeCompanyIdFlow = remember { context.getActiveOwnCompanyIdFlow() }
@@ -523,6 +526,39 @@ fun HomeScreen(
         return !company.company_number.isNullOrBlank() && !company.company_name.isNullOrBlank()
     }
 
+    fun proceedWithAction(action: String) {
+        when (action) {
+            pendingActionScan -> {
+                if (subscriptionStatus?.canScan == true) {
+                    appAnalytics.trackHomeAction(action = "scan_camera", allowed = true)
+                    navController.navigate(Routes.SelectInvoiceType)
+                } else {
+                    appAnalytics.trackHomeAction(
+                        action = "scan_camera",
+                        allowed = false,
+                        failureReason = "scan_limit_reached"
+                    )
+                    appAnalytics.trackPaywallViewed(source = "scan_camera")
+                    showUpgradeDialog = true
+                }
+            }
+            pendingActionImport -> {
+                if (subscriptionStatus?.canScan == true) {
+                    appAnalytics.trackHomeAction(action = "import_files", allowed = true)
+                    navController.navigate(Routes.SelectImportType)
+                } else {
+                    appAnalytics.trackHomeAction(
+                        action = "import_files",
+                        allowed = false,
+                        failureReason = "scan_limit_reached"
+                    )
+                    appAnalytics.trackPaywallViewed(source = "import_files")
+                    showUpgradeDialog = true
+                }
+            }
+        }
+    }
+
     LaunchedEffect(currentUserId, isLoadingCompanies, ownCompanies, activeCompanyId) {
         val uid = currentUserId ?: return@LaunchedEffect
         if (companySetupPromptDismissed) return@LaunchedEffect
@@ -579,6 +615,19 @@ fun HomeScreen(
                         } else {
                             activeCompanyName = null
                         }
+
+                        val pending = pendingHomeAction
+                        if (pending != null && newCompanyId != null) {
+                            val selected = ownCompanies.find { it.id == newCompanyId }
+                                ?: repo.getCompanyById(newCompanyId)
+                            val isNowFilled = selected != null &&
+                                !selected.company_name.isNullOrBlank() &&
+                                !selected.company_number.isNullOrBlank()
+                            if (isNowFilled) {
+                                pendingHomeAction = null
+                                proceedWithAction(pending)
+                            }
+                        }
                     }
                 },
                 onShowSnackbar = { message ->
@@ -587,6 +636,8 @@ fun HomeScreen(
                     }
                 },
                 addDialogTrigger = addOwnCompanyDialogTrigger,
+                forceOpenAddDialog = forceOpenOwnCompanyDialog,
+                onAddDialogOpenHandled = { forceOpenOwnCompanyDialog = false },
                 navController = navController,
                 viewModel = ownCompanyViewModel
             )
@@ -617,21 +668,11 @@ fun HomeScreen(
                                     allowed = false,
                                     failureReason = "own_company_missing"
                                 )
-                                Toast.makeText(context, fillCompanyFirst, Toast.LENGTH_LONG).show()
+                                pendingHomeAction = pendingActionScan
+                                forceOpenOwnCompanyDialog = true
                                 return@Button
                             }
-                            if (subscriptionStatus?.canScan == true) {
-                                appAnalytics.trackHomeAction(action = "scan_camera", allowed = true)
-                                navController.navigate(Routes.SelectInvoiceType)
-                            } else {
-                                appAnalytics.trackHomeAction(
-                                    action = "scan_camera",
-                                    allowed = false,
-                                    failureReason = "scan_limit_reached"
-                                )
-                                appAnalytics.trackPaywallViewed(source = "scan_camera")
-                                showUpgradeDialog = true
-                            }
+                            proceedWithAction(pendingActionScan)
                         },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -657,21 +698,11 @@ fun HomeScreen(
                                     allowed = false,
                                     failureReason = "own_company_missing"
                                 )
-                                Toast.makeText(context, fillCompanyFirst, Toast.LENGTH_LONG).show()
+                                pendingHomeAction = pendingActionImport
+                                forceOpenOwnCompanyDialog = true
                                 return@Button
                             }
-                            if (subscriptionStatus?.canScan == true) {
-                                appAnalytics.trackHomeAction(action = "import_files", allowed = true)
-                                navController.navigate(Routes.SelectImportType)
-                            } else {
-                                appAnalytics.trackHomeAction(
-                                    action = "import_files",
-                                    allowed = false,
-                                    failureReason = "scan_limit_reached"
-                                )
-                                appAnalytics.trackPaywallViewed(source = "import_files")
-                                showUpgradeDialog = true
-                            }
+                            proceedWithAction(pendingActionImport)
                         },
                         modifier = Modifier
                             .fillMaxWidth()

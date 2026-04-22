@@ -755,6 +755,23 @@ class AzureDocumentIntelligenceService(private val context: Context) {
                 Timber.d("Azure: [PURCHASE] Replaced logo-style vendor name with legal entity from OCR lines: $companyName")
             }
         }
+        // Fallback for retail/logo-style vendors (e.g. KESKO/SENUKAI):
+        // even if legal name is missing, still try to fill seller company number near seller labels.
+        if (invoiceType?.uppercase() == "P" &&
+            !companyName.isNullOrBlank() &&
+            !hasCompanyTypeSuffix(companyName) &&
+            companyNumber.isNullOrBlank()
+        ) {
+            val sellerCompanyNo = extractSellerCompanyNumberNearLabels(
+                lines = lines,
+                vatNumber = vatNumber,
+                excludeOwnCompanyNumber = excludeOwnCompanyNumber
+            )
+            if (!sellerCompanyNo.isNullOrBlank()) {
+                companyNumber = sellerCompanyNo
+                Timber.d("Azure: [PURCHASE] Filled seller company number from seller-label fallback: $companyNumber")
+            }
+        }
         
         // When Azure returns very little OCR, use first lines as company name (same logic as when document fields exist)
         // Prefer a line or joined lines that contain legal suffix (UAB, AB, etc.) so "UAB" is not dropped
@@ -904,6 +921,93 @@ class AzureDocumentIntelligenceService(private val context: Context) {
         if (Regex("""(?i),\s*uar\s*$""").containsMatchIn(lower)) return true
         // Match legal forms as standalone tokens to avoid false positives from words like "tukstanciai".
         return Regex("\\b(uab|uad|ab|mb|iį|ii|ltd|oy|as|sp|zub)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+    }
+
+    private fun extractSellerCompanyNumberNearLabels(
+        lines: List<String>,
+        vatNumber: String?,
+        excludeOwnCompanyNumber: String?
+    ): String? {
+        if (lines.isEmpty()) return null
+
+        fun normalizeLabel(line: String): String {
+            val n = line.lowercase()
+                .replace('\u0117', 'e') // ė
+                .replace('\u0119', 'e') // ę
+                .replace('\u012f', 'i') // į
+                .replace('\u0105', 'a') // ą
+                .replace('\u0173', 'u') // ų
+                .replace('\u016b', 'u') // ū
+                .replace('\u0161', 's') // š
+                .replace('\u017e', 'z') // ž
+                .replace('\u010d', 'c') // č
+            return n.replace(Regex("\\s+"), " ")
+        }
+
+        fun isSellerLabel(line: String): Boolean {
+            val n = normalizeLabel(line)
+            return n.contains("pardavejas") || n.contains("tiekejas") ||
+                n.contains("seller") || n.contains("supplier")
+        }
+
+        fun isBuyerLabel(line: String): Boolean {
+            val n = normalizeLabel(line)
+            return n.contains("pirkejas") || n.contains("gavejas") ||
+                n.contains("buyer") || n.contains("recipient") || n.contains("customer")
+        }
+
+        val sellerStart = lines.indexOfFirst { isSellerLabel(it) }
+        if (sellerStart < 0) return null
+
+        var endExclusive = lines.size
+        for (i in sellerStart + 1 until lines.size) {
+            if (isBuyerLabel(lines[i])) {
+                endExclusive = i
+                break
+            }
+        }
+        endExclusive = minOf(endExclusive, sellerStart + 40)
+
+        fun hasCompanyCodeKeyword(line: String): Boolean {
+            val lower = line.lowercase()
+            if (lower.contains("įmonės kodas") || lower.contains("imones kodas") || lower.contains("im. kodas") || lower.contains("im.k")) {
+                return true
+            }
+            return Regex("\\bkodas\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) &&
+                !lower.contains("pvm kodas") &&
+                !lower.contains("saskaitos kodas")
+        }
+
+        for (i in sellerStart until endExclusive) {
+            if (!hasCompanyCodeKeyword(lines[i])) continue
+
+            val fromLine = FieldExtractors.tryExtractCompanyNumber(lines[i], vatNumber, excludeOwnCompanyNumber)
+            if (!fromLine.isNullOrBlank()) {
+                Timber.d("Azure: [PURCHASE] Seller company number fallback matched at line $i: ${lines[i]}")
+                return fromLine
+            }
+
+            for (off in 1..2) {
+                val j = i + off
+                if (j >= endExclusive) break
+                val next = FieldExtractors.tryExtractCompanyNumber(lines[j], vatNumber, excludeOwnCompanyNumber)
+                if (!next.isNullOrBlank()) {
+                    Timber.d("Azure: [PURCHASE] Seller company number fallback matched at line $j (near label line $i): ${lines[j]}")
+                    return next
+                }
+            }
+        }
+
+        // Last fallback inside seller block: take the first valid candidate.
+        for (i in sellerStart until endExclusive) {
+            val candidate = FieldExtractors.tryExtractCompanyNumber(lines[i], vatNumber, excludeOwnCompanyNumber)
+            if (!candidate.isNullOrBlank()) {
+                Timber.d("Azure: [PURCHASE] Seller company number fallback matched by block scan at line $i: ${lines[i]}")
+                return candidate
+            }
+        }
+
+        return null
     }
     
     private suspend fun readImageFromUri(uri: Uri): ByteArray = withContext(Dispatchers.IO) {

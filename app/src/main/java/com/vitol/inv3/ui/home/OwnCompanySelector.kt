@@ -37,6 +37,8 @@ fun OwnCompanySelector(
     onCompanySelected: (String?) -> Unit,
     onShowSnackbar: (String) -> Unit,
     addDialogTrigger: Int = 0,
+    forceOpenAddDialog: Boolean = false,
+    onAddDialogOpenHandled: (() -> Unit)? = null,
     navController: NavHostController?,
     viewModel: OwnCompanyViewModel = hiltViewModel()
 ) {
@@ -60,6 +62,15 @@ fun OwnCompanySelector(
             showAddForm = true
             companyToEdit = null
             expanded = false
+        }
+    }
+
+    LaunchedEffect(forceOpenAddDialog) {
+        if (forceOpenAddDialog) {
+            showAddForm = true
+            companyToEdit = null
+            expanded = false
+            onAddDialogOpenHandled?.invoke()
         }
     }
     
@@ -431,9 +442,15 @@ private fun AddCompanyDialog(
     var name by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.company_name ?: "") }
     var number by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.company_number ?: "") }
     var vat by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.vat_number ?: "") }
+    val suggestions by viewModel.nameSuggestions.collectAsState()
+    val isSearchingSuggestions by viewModel.isSearchingSuggestions.collectAsState()
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val scrollState = rememberScrollState()
+    val dismissDialog = {
+        viewModel.clearCompanyNameSuggestions()
+        onDismiss()
+    }
     val dialogTitle = if (companyToEdit != null) stringResource(R.string.dialog_edit_company)
     else stringResource(R.string.dialog_add_company)
     
@@ -441,10 +458,11 @@ private fun AddCompanyDialog(
         name = companyToEdit?.company_name ?: ""
         number = companyToEdit?.company_number ?: ""
         vat = companyToEdit?.vat_number ?: ""
+        viewModel.onCompanyNameInputChanged(name)
     }
     
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismissDialog,
         properties = DialogProperties(
             dismissOnBackPress = true,
             dismissOnClickOutside = false
@@ -467,16 +485,100 @@ private fun AddCompanyDialog(
                     text = dialogTitle,
                     style = MaterialTheme.typography.titleLarge
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = stringResource(R.string.own_company_autofill_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = {
+                        name = it
+                        viewModel.onCompanyNameInputChanged(it)
+                    },
                     label = { Text(stringResource(R.string.label_company_name)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                     keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) })
                 )
+
+                val shouldShowSuggestions = name.trim().length >= 2
+                if (shouldShowSuggestions) {
+                    when {
+                        isSearchingSuggestions -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            }
+                        }
+                        suggestions.isNotEmpty() -> {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    suggestions.forEach { suggestion ->
+                                        Text(
+                                            text = buildString {
+                                                append(suggestion.name)
+                                                val trailing = listOfNotNull(
+                                                    suggestion.jaKodas,
+                                                    suggestion.vatNumber
+                                                ).filter { it.isNotBlank() }
+                                                if (trailing.isNotEmpty()) {
+                                                    append("  •  ")
+                                                    append(trailing.joinToString(" • "))
+                                                }
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    name = suggestion.name
+                                                    number = suggestion.jaKodas.orEmpty()
+                                                    vat = suggestion.vatNumber.orEmpty()
+                                                    viewModel.clearCompanyNameSuggestions()
+                                                    focusManager.clearFocus()
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                        )
+                                        if (suggestion != suggestions.last()) {
+                                            HorizontalDivider()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        else -> {
+                            Text(
+                                text = stringResource(R.string.own_company_suggestions_empty),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
                 
                 OutlinedTextField(
                     value = number,
@@ -503,7 +605,7 @@ private fun AddCompanyDialog(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     OutlinedButton(
-                        onClick = onDismiss,
+                        onClick = dismissDialog,
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(stringResource(R.string.common_cancel))
@@ -524,7 +626,7 @@ private fun AddCompanyDialog(
                                         onSave(result.company.id, companyToEdit != null)
                                     }
                                     is OwnCompanyViewModel.SaveCompanyResult.LimitReached -> {
-                                        onDismiss()
+                                        dismissDialog()
                                         onLimitReached()
                                     }
                                     is OwnCompanyViewModel.SaveCompanyResult.Error -> {

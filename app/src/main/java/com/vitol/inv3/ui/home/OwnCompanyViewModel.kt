@@ -3,10 +3,15 @@ package com.vitol.inv3.ui.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vitol.inv3.analytics.AppAnalytics
+import com.vitol.inv3.data.remote.LithuanianOpenDataApi
+import com.vitol.inv3.data.remote.LtOpenDataCompanySuggestion
 import com.vitol.inv3.billing.SubscriptionLimitsProvider
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.SupabaseRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,6 +31,17 @@ class OwnCompanyViewModel @Inject constructor(
     
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    private val _companyNameQuery = MutableStateFlow("")
+    val companyNameQuery: StateFlow<String> = _companyNameQuery.asStateFlow()
+
+    private val _nameSuggestions = MutableStateFlow<List<LtOpenDataCompanySuggestion>>(emptyList())
+    val nameSuggestions: StateFlow<List<LtOpenDataCompanySuggestion>> = _nameSuggestions.asStateFlow()
+
+    private val _isSearchingSuggestions = MutableStateFlow(false)
+    val isSearchingSuggestions: StateFlow<Boolean> = _isSearchingSuggestions.asStateFlow()
+
+    private var suggestionSearchJob: Job? = null
 
     val maxOwnCompanies: Int
         get() = limitsProvider.getMaxOwnCompanies()
@@ -87,6 +103,40 @@ class OwnCompanyViewModel @Inject constructor(
             Timber.e(e, "Failed to remove own company")
             throw e
         }
+    }
+
+    fun onCompanyNameInputChanged(query: String) {
+        _companyNameQuery.value = query
+        val trimmed = query.trim()
+        suggestionSearchJob?.cancel()
+
+        if (trimmed.length < 2) {
+            _isSearchingSuggestions.value = false
+            _nameSuggestions.value = emptyList()
+            return
+        }
+
+        suggestionSearchJob = viewModelScope.launch {
+            _isSearchingSuggestions.value = true
+            try {
+                delay(280)
+                val suggestions = LithuanianOpenDataApi.searchCompaniesByName(trimmed)
+                _nameSuggestions.value = suggestions
+            } catch (_: CancellationException) {
+                // Expected while user is still typing.
+            } catch (e: Exception) {
+                Timber.w(e, "Own company name suggestion lookup failed")
+                _nameSuggestions.value = emptyList()
+            } finally {
+                _isSearchingSuggestions.value = false
+            }
+        }
+    }
+
+    fun clearCompanyNameSuggestions() {
+        suggestionSearchJob?.cancel()
+        _isSearchingSuggestions.value = false
+        _nameSuggestions.value = emptyList()
     }
 }
 

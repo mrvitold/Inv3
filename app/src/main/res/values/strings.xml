@@ -195,6 +195,8 @@
     <string name="dialog_add_company">Add Your Company</string>
     <string name="dialog_edit_company">Edit Company</string>
     <string name="label_company_name">Company name</string>
+    <string name="own_company_autofill_hint">Start typing your company name to get official suggestions and auto-fill VAT + company code.</string>
+    <string name="own_company_suggestions_empty">No matching companies found yet.</string>
     <string name="label_company_number">Company number</string>
     <string name="label_vat_number">VAT number</string>
     <string name="companies_title">Companies</string>
@@ -242,6 +244,7 @@
     <string name="review_title_scan">Review Scanned Invoice</string>
     <string name="review_previous">Previous</string>
     <string name="cd_view_original">View original invoice</string>
+    <string name="review_view_original_action">View Original</string>
     <string name="invoice_kind_sale">Sale</string>
     <string name="invoice_kind_purchase">Purchase</string>
     <string name="extracting_invoice_progress">Extracting invoice %1$d of %2$d…</string>

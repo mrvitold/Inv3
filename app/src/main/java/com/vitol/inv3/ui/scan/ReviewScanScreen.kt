@@ -3,6 +3,7 @@ package com.vitol.inv3.ui.scan
 import android.content.Context
 import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -29,6 +30,7 @@ import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -76,6 +78,7 @@ import com.vitol.inv3.data.local.setPendingFeedbackAfterImportComplete
 import com.vitol.inv3.data.remote.CompanyRecord
 import com.vitol.inv3.data.remote.InvoiceRecord
 import com.vitol.inv3.data.remote.LithuanianCompanyRegistry
+import com.vitol.inv3.data.remote.LithuanianOpenDataApi
 import com.vitol.inv3.data.remote.LtCompanyLookupResult
 import com.vitol.inv3.data.remote.SupabaseRepository
 import com.vitol.inv3.export.VatRateValidation
@@ -156,19 +159,27 @@ class ReviewScanViewModel @Inject constructor(
     }
 
     /**
-     * Resolve official name from `all_lt_companies` using 9-digit JA kodas from the company number
-     * or from LT + 9-digit VAT. Fills company code when it was missing but VAT carried it.
+     * Resolve official name from Lithuania open data API using 9-digit JA kodas from company number
+     * or LT VAT-derived code. Fills company code when it was missing but VAT carried it.
      */
     suspend fun lookupOfficialLtCompany(companyNumber: String?, vatNumber: String?): LtCompanyLookupResult? {
         return try {
             val jaKodas = LithuanianCompanyRegistry.resolveJaKodas(companyNumber, vatNumber)
-                ?: return null
-            val row = repo.findLtCompanyByJaKodas(jaKodas) ?: return null
+            val row = LithuanianOpenDataApi.lookupCompany(
+                jaKodas = jaKodas,
+                vatNumber = vatNumber
+            ) ?: return null
             val hadValidCodeInNumberField =
                 LithuanianCompanyRegistry.normalizeJaKodas(companyNumber) != null
-            val fillCompanyNumberIfBlank = if (!hadValidCodeInNumberField) jaKodas else null
-            val rawName = row.ja_pavadinimas?.trim()?.takeIf { it.isNotEmpty() }
-            val officialName = rawName?.takeUnless { LithuanianCompanyRegistry.isUninformativeRegisterName(it) }
+            val fillCompanyNumberIfBlank = if (!hadValidCodeInNumberField) {
+                LithuanianCompanyRegistry.normalizeJaKodas(row.jaKodas ?: jaKodas)
+            } else {
+                null
+            }
+            val rawName = row.name?.trim()?.takeIf { it.isNotEmpty() }
+            val officialName = rawName
+                ?.takeUnless { LithuanianCompanyRegistry.isUninformativeRegisterName(it) }
+                ?.let { LithuanianCompanyRegistry.shortenLithuanianLegalForm(it) }
             if (officialName == null && fillCompanyNumberIfBlank == null) return null
             LtCompanyLookupResult(officialName = officialName, fillCompanyNumberIfBlank = fillCompanyNumberIfBlank)
         } catch (e: Exception) {
@@ -563,7 +574,7 @@ fun ReviewScanScreen(
 
                 Timber.d("Extracted invoice data - Company: $companyNameField, VAT: $vatNumberField, Company Number: $companyNumberField, VAT Rate: $vatRateField (merge: $isMerge)")
 
-                // Official Lithuanian register (all_lt_companies): canonical name; JA kodas from VAT when number missing.
+                // Official Lithuanian open registry: canonical name; JA kodas from VAT when number missing.
                 // Merge mode keeps non-blank user fields from the prior screen — do not overwrite those with registry data.
                 val ltLookup = viewModel.lookupOfficialLtCompany(
                     companyNumber = companyNumberField.takeIf { it.isNotBlank() },
@@ -775,7 +786,10 @@ fun ReviewScanScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = {
-                        if (fromImport) {
+                        if (showInvoiceOverlay) {
+                            showInvoiceOverlay = false
+                            overlayInvoiceUri = null
+                        } else if (fromImport) {
                             showCancelImportDialog = true
                         } else {
                             navController?.popBackStack()
@@ -794,7 +808,7 @@ fun ReviewScanScreen(
                         }
                     }
                     if (fromImport && importSessionViewModel != null && extractionState is ImportExtractionState.Done) {
-                        IconButton(
+                        FilledTonalButton(
                             onClick = {
                                 scope.launch {
                                     try {
@@ -811,6 +825,8 @@ fun ReviewScanScreen(
                                 imageVector = Icons.Default.Image,
                                 contentDescription = stringResource(R.string.cd_view_original)
                             )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = stringResource(R.string.review_view_original_action))
                         }
                     }
                     Text(
@@ -834,6 +850,10 @@ fun ReviewScanScreen(
         }
     ) { paddingValues ->
         Box(modifier = Modifier.fillMaxSize()) {
+        BackHandler(enabled = showInvoiceOverlay) {
+            showInvoiceOverlay = false
+            overlayInvoiceUri = null
+        }
         if (((isLoading || isProcessing) && invoiceId == null && !fromImport) || isWaitingForNextInvoice) {
             Box(
                 modifier = Modifier
@@ -1381,7 +1401,7 @@ fun ReviewScanScreen(
 
 /**
  * Full-screen overlay showing the original invoice at 2x zoom.
- * User can pan by dragging. Tap anywhere (without holding) to dismiss and return to verification.
+ * User can pan by dragging (2x pan sensitivity). Tap anywhere to dismiss.
  */
 @Composable
 private fun InvoicePreviewOverlay(
@@ -1397,10 +1417,11 @@ private fun InvoicePreviewOverlay(
                 detectDragGestures(
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        offset += dragAmount
-                    },
-                    onDragEnd = { onDismiss() },
-                    onDragCancel = { onDismiss() }
+                        offset += Offset(
+                            x = dragAmount.x * 2f,
+                            y = dragAmount.y * 2f
+                        )
+                    }
                 )
             }
             .pointerInput(Unit) {

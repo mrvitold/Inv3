@@ -187,6 +187,8 @@
     <string name="dialog_add_company">Pridėti įmonę</string>
     <string name="dialog_edit_company">Redaguoti įmonę</string>
     <string name="label_company_name">Įmonės pavadinimas</string>
+    <string name="own_company_autofill_hint">Pradėkite rašyti įmonės pavadinimą - pasiūlysime oficialias įmones ir automatiškai užpildysime PVM + įmonės kodą.</string>
+    <string name="own_company_suggestions_empty">Atitinkančių įmonių kol kas nerasta.</string>
     <string name="label_company_number">Įmonės kodas</string>
     <string name="label_vat_number">PVM kodas</string>
     <string name="companies_title">Įmonės</string>
@@ -232,6 +234,7 @@
     <string name="review_title_scan">Peržiūrėti nuskaitytą sąskaitą</string>
     <string name="review_previous">Atgal</string>
     <string name="cd_view_original">Žiūrėti originalą</string>
+    <string name="review_view_original_action">Rodyti originalą</string>
     <string name="invoice_kind_sale">Pardavimas</string>
     <string name="invoice_kind_purchase">Pirkimas</string>
     <string name="extracting_invoice_progress">Ištraukiama sąskaita %1$d iš %2$d…</string>

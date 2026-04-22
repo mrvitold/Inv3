@@ -3,10 +3,21 @@ package com.vitol.inv3.data.remote
 import java.util.Locale
 
 /**
- * Helpers for resolving Lithuanian juridinio asmens kodas (9 digits) from OCR fields
- * and querying `all_lt_companies` in Supabase.
+ * Helpers for resolving Lithuanian juridinio asmens kodas (9 digits) from OCR fields.
  */
 object LithuanianCompanyRegistry {
+    private val LEGAL_FORM_REPLACEMENTS = listOf(
+        Regex("""\bmažoji\s+bendrija\b""", RegexOption.IGNORE_CASE) to "MB",
+        Regex("""\bmazoji\s+bendrija\b""", RegexOption.IGNORE_CASE) to "MB",
+        Regex("""\buždaroji\s+akcinė\s+bendrovė\b""", RegexOption.IGNORE_CASE) to "UAB",
+        Regex("""\buzdaroji\s+akcine\s+bendrove\b""", RegexOption.IGNORE_CASE) to "UAB",
+        Regex("""\bindividuali\s+įmonė\b""", RegexOption.IGNORE_CASE) to "IĮ",
+        Regex("""\bindividuali\s+imone\b""", RegexOption.IGNORE_CASE) to "IĮ",
+        Regex("""\bviešoji\s+įstaiga\b""", RegexOption.IGNORE_CASE) to "VšĮ",
+        Regex("""\bviesoji\s+istaiga\b""", RegexOption.IGNORE_CASE) to "VšĮ",
+        Regex("""\bakcinė\s+bendrovė\b""", RegexOption.IGNORE_CASE) to "AB",
+        Regex("""\bakcine\s+bendrove\b""", RegexOption.IGNORE_CASE) to "AB",
+    )
 
     /**
      * JAR often stores only the legal form for individual enterprises, not the distinctive name.
@@ -39,6 +50,20 @@ object LithuanianCompanyRegistry {
     fun resolveJaKodas(companyNumber: String?, vatNumber: String?): String? {
         normalizeJaKodas(companyNumber)?.let { return it }
         return jaKodasFromLithuanianVat(vatNumber)
+    }
+
+    /**
+     * Convert full Lithuanian legal-form names to required short variants.
+     * Output abbreviations are normalized exactly as requested: MB, UAB, IĮ, VšĮ, AB.
+     */
+    fun shortenLithuanianLegalForm(companyName: String?): String? {
+        val input = companyName ?: return null
+        if (input.isBlank()) return input
+        var normalized = input
+        for ((pattern, shortForm) in LEGAL_FORM_REPLACEMENTS) {
+            normalized = pattern.replace(normalized, shortForm)
+        }
+        return normalized.replace(Regex("\\s+"), " ").trim()
     }
 }
 
