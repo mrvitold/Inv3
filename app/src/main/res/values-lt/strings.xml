@@ -188,7 +188,8 @@
     <string name="dialog_edit_company">Redaguoti įmonę</string>
     <string name="label_company_name">Įmonės pavadinimas</string>
     <string name="own_company_autofill_hint">Pradėkite rašyti įmonės pavadinimą - pasiūlysime oficialias įmones ir automatiškai užpildysime PVM + įmonės kodą.</string>
-    <string name="own_company_suggestions_empty">Atitinkančių įmonių kol kas nerasta.</string>
+    <string name="own_company_suggestions_empty">Atitinkančių įmonių nerasta.</string>
+    <string name="own_company_suggestions_timeout">Vis dar ieškoma... atitikmenų kol kas nėra. Tęskite rašymą arba patikslinkite pavadinimą.</string>
     <string name="label_company_number">Įmonės kodas</string>
     <string name="label_vat_number">PVM kodas</string>
     <string name="companies_title">Įmonės</string>

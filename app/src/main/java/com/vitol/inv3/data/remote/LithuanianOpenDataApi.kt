@@ -90,6 +90,13 @@ object LithuanianOpenDataApi {
         val allQueries = (phraseQueries + twoTokenQueries + tokenQueries).distinct().take(20)
 
         val merged = LinkedHashMap<String, LtOpenDataCompanySuggestion>()
+        // Prefer exact phrase prefixes first (e.g., "aldega" should beat "raldega").
+        phraseQueries.forEach { candidate ->
+            queryByNameStartsWith(candidate, pageSize = 40, maxPages = 2).forEach { suggestion ->
+                val key = "${suggestion.name.uppercase()}|${suggestion.jaKodas.orEmpty()}|${suggestion.vatNumber.orEmpty()}"
+                if (!merged.containsKey(key)) merged[key] = suggestion
+            }
+        }
         allQueries.forEach { candidate ->
             // Fetch multiple pages so relevant entries are not lost in API's first page.
             queryByNameContains(candidate, pageSize = 40, maxPages = 3).forEach { suggestion ->
@@ -136,6 +143,25 @@ object LithuanianOpenDataApi {
         return merged.values.toList()
     }
 
+    private fun queryByNameStartsWith(
+        query: String,
+        pageSize: Int,
+        maxPages: Int
+    ): List<LtOpenDataCompanySuggestion> {
+        val merged = LinkedHashMap<String, LtOpenDataCompanySuggestion>()
+        for (page in 0 until maxPages) {
+            val offset = page * pageSize
+            val batch = queryByNameStartsWithPage(query = query, limit = pageSize, offset = offset)
+            if (batch.isEmpty()) break
+            batch.forEach { suggestion ->
+                val key = "${suggestion.name.uppercase()}|${suggestion.jaKodas.orEmpty()}|${suggestion.vatNumber.orEmpty()}"
+                if (!merged.containsKey(key)) merged[key] = suggestion
+            }
+            if (batch.size < pageSize) break
+        }
+        return merged.values.toList()
+    }
+
     private fun queryByNameContainsPage(
         query: String,
         limit: Int,
@@ -161,6 +187,30 @@ object LithuanianOpenDataApi {
             }
         }.onFailure {
             Timber.w(it, "Open data API name search exception for query=$query")
+        }.getOrElse { emptyList() }
+    }
+
+    private fun queryByNameStartsWithPage(
+        query: String,
+        limit: Int,
+        offset: Int
+    ): List<LtOpenDataCompanySuggestion> {
+        val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.toString()).replace("+", "%20")
+        val url = BASE_URL.toHttpUrlOrNull()
+            ?.newBuilder()
+            ?.encodedQuery("startswith(pavadinimas,%22$encoded%22)&limit($limit)&offset($offset)")
+            ?.build()
+            ?: return emptyList()
+        val request = Request.Builder().url(url).get().build()
+
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@use emptyList()
+                }
+                val body = response.body?.string().orEmpty()
+                parseCompanySuggestions(body)
+            }
         }.getOrElse { emptyList() }
     }
 
@@ -263,14 +313,15 @@ object LithuanianOpenDataApi {
     }
 
     private fun buildQueryVariants(input: String): List<String> {
-        val lower = input.lowercase().trim()
-        if (lower.isBlank()) return emptyList()
+        val compact = input.trim().replace(Regex("\\s+"), " ")
+        if (compact.isBlank()) return emptyList()
 
-        val variants = LinkedHashSet<String>()
-        variants += lower
+        val lowercase = compact.lowercase()
+        val diacriticVariants = LinkedHashSet<String>()
+        diacriticVariants += lowercase
 
         fun expand(chars: CharArray, index: Int) {
-            if (variants.size >= 18) return
+            if (diacriticVariants.size >= 18) return
             for (i in index until chars.size) {
                 val options = ASCII_TO_LT[chars[i]] ?: continue
                 for (option in options) {
@@ -278,16 +329,49 @@ object LithuanianOpenDataApi {
                     val copy = chars.copyOf()
                     copy[i] = option
                     val candidate = String(copy)
-                    if (variants.add(candidate)) {
+                    if (diacriticVariants.add(candidate)) {
                         expand(copy, i + 1)
-                        if (variants.size >= 18) return
+                        if (diacriticVariants.size >= 18) return
                     }
                 }
             }
         }
 
-        expand(lower.toCharArray(), 0)
-        return variants.toList()
+        expand(lowercase.toCharArray(), 0)
+
+        // API string filters are case-sensitive, so include multiple case forms.
+        val queryVariants = LinkedHashSet<String>()
+        for (variant in diacriticVariants) {
+            queryVariants += variant
+            queryVariants += toTitleCaseWords(variant)
+            queryVariants += toAcronymAwareTitleCase(variant)
+            queryVariants += variant.uppercase()
+        }
+        return queryVariants.toList()
+    }
+
+    private fun toTitleCaseWords(input: String): String {
+        return input
+            .split(' ')
+            .joinToString(" ") { word ->
+                if (word.isBlank()) {
+                    word
+                } else {
+                    word.substring(0, 1).uppercase() + word.substring(1)
+                }
+            }
+    }
+
+    private fun toAcronymAwareTitleCase(input: String): String {
+        return input
+            .split(' ')
+            .joinToString(" ") { word ->
+                when {
+                    word.isBlank() -> word
+                    word.length <= 2 && word.all { it.isLetter() } -> word.uppercase()
+                    else -> word.substring(0, 1).uppercase() + word.substring(1)
+                }
+            }
     }
 
     private fun normalizeLtForSearch(input: String): String {
@@ -306,12 +390,24 @@ object LithuanianOpenDataApi {
         normalizedTokens: List<String>
     ): Int {
         val name = normalizeLtForSearch(suggestion.name)
+        val withoutLegalPrefix = name
+            .removePrefix("mb ")
+            .removePrefix("uab ")
+            .removePrefix("ab ")
+            .removePrefix("ii ")
+            .removePrefix("vsi ")
+            .trim()
+        val words = withoutLegalPrefix.split(' ').filter { it.isNotBlank() }
         var score = 0
 
         if (name == normalizedInput) score += 1000
-        if (name.removePrefix("mb ").removePrefix("uab ").removePrefix("ab ") == normalizedInput) score += 850
+        if (withoutLegalPrefix == normalizedInput) score += 1200
         if (name.startsWith(normalizedInput)) score += 600
         if (name.contains(normalizedInput)) score += 350
+        if (words.any { it == normalizedInput }) score += 1000
+        if (words.any { it.startsWith(normalizedInput) }) score += 500
+        if (words.any { it.contains(normalizedInput) }) score += 150
+        if (words.any { it.contains(normalizedInput) && !it.startsWith(normalizedInput) }) score -= 180
 
         // Strongly prefer candidates containing all typed words.
         val matchingTokens = normalizedTokens.count { token -> name.contains(token) }

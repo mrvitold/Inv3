@@ -442,8 +442,11 @@ private fun AddCompanyDialog(
     var name by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.company_name ?: "") }
     var number by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.company_number ?: "") }
     var vat by remember(companyToEdit?.id) { mutableStateOf(companyToEdit?.vat_number ?: "") }
+    var suppressSuggestionUi by remember(companyToEdit?.id) { mutableStateOf(false) }
     val suggestions by viewModel.nameSuggestions.collectAsState()
     val isSearchingSuggestions by viewModel.isSearchingSuggestions.collectAsState()
+    val hasCompletedSuggestionSearch by viewModel.hasCompletedSuggestionSearch.collectAsState()
+    val suggestionSearchTimedOut by viewModel.suggestionSearchTimedOut.collectAsState()
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val scrollState = rememberScrollState()
@@ -458,7 +461,8 @@ private fun AddCompanyDialog(
         name = companyToEdit?.company_name ?: ""
         number = companyToEdit?.company_number ?: ""
         vat = companyToEdit?.vat_number ?: ""
-        viewModel.onCompanyNameInputChanged(name)
+        suppressSuggestionUi = false
+        viewModel.clearCompanyNameSuggestions()
     }
     
     Dialog(
@@ -508,6 +512,7 @@ private fun AddCompanyDialog(
                     value = name,
                     onValueChange = {
                         name = it
+                        suppressSuggestionUi = false
                         viewModel.onCompanyNameInputChanged(it)
                     },
                     label = { Text(stringResource(R.string.label_company_name)) },
@@ -517,7 +522,7 @@ private fun AddCompanyDialog(
                     keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) })
                 )
 
-                val shouldShowSuggestions = name.trim().length >= 2
+                val shouldShowSuggestions = name.trim().length >= 2 && !suppressSuggestionUi
                 if (shouldShowSuggestions) {
                     when {
                         isSearchingSuggestions -> {
@@ -558,6 +563,7 @@ private fun AddCompanyDialog(
                                                     name = suggestion.name
                                                     number = suggestion.jaKodas.orEmpty()
                                                     vat = suggestion.vatNumber.orEmpty()
+                                                    suppressSuggestionUi = true
                                                     viewModel.clearCompanyNameSuggestions()
                                                     focusManager.clearFocus()
                                                 }
@@ -568,6 +574,21 @@ private fun AddCompanyDialog(
                                         }
                                     }
                                 }
+                            }
+                        }
+                        suggestionSearchTimedOut -> {
+                            Text(
+                                text = stringResource(R.string.own_company_suggestions_timeout),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        !hasCompletedSuggestionSearch -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             }
                         }
                         else -> {

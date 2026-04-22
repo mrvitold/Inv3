@@ -196,7 +196,8 @@
     <string name="dialog_edit_company">Edit Company</string>
     <string name="label_company_name">Company name</string>
     <string name="own_company_autofill_hint">Start typing your company name to get official suggestions and auto-fill VAT + company code.</string>
-    <string name="own_company_suggestions_empty">No matching companies found yet.</string>
+    <string name="own_company_suggestions_empty">No matching companies found.</string>
+    <string name="own_company_suggestions_timeout">Still searching... no matches yet. Please keep typing or try a more specific name.</string>
     <string name="label_company_number">Company number</string>
     <string name="label_vat_number">VAT number</string>
     <string name="companies_title">Companies</string>

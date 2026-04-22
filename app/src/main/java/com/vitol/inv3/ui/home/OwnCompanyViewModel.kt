@@ -41,7 +41,15 @@ class OwnCompanyViewModel @Inject constructor(
     private val _isSearchingSuggestions = MutableStateFlow(false)
     val isSearchingSuggestions: StateFlow<Boolean> = _isSearchingSuggestions.asStateFlow()
 
+    private val _hasCompletedSuggestionSearch = MutableStateFlow(false)
+    val hasCompletedSuggestionSearch: StateFlow<Boolean> = _hasCompletedSuggestionSearch.asStateFlow()
+
+    private val _suggestionSearchTimedOut = MutableStateFlow(false)
+    val suggestionSearchTimedOut: StateFlow<Boolean> = _suggestionSearchTimedOut.asStateFlow()
+
     private var suggestionSearchJob: Job? = null
+    private var suggestionTimeoutJob: Job? = null
+    private var suggestionSearchSequence: Long = 0L
 
     val maxOwnCompanies: Int
         get() = limitsProvider.getMaxOwnCompanies()
@@ -109,33 +117,64 @@ class OwnCompanyViewModel @Inject constructor(
         _companyNameQuery.value = query
         val trimmed = query.trim()
         suggestionSearchJob?.cancel()
+        suggestionTimeoutJob?.cancel()
 
         if (trimmed.length < 2) {
             _isSearchingSuggestions.value = false
+            _hasCompletedSuggestionSearch.value = false
+            _suggestionSearchTimedOut.value = false
             _nameSuggestions.value = emptyList()
             return
         }
 
+        suggestionSearchSequence += 1
+        val currentSequence = suggestionSearchSequence
+        _isSearchingSuggestions.value = true
+        _hasCompletedSuggestionSearch.value = false
+        _suggestionSearchTimedOut.value = false
+        _nameSuggestions.value = emptyList()
+
+        suggestionTimeoutJob = viewModelScope.launch {
+            delay(10_000)
+            if (currentSequence == suggestionSearchSequence &&
+                _isSearchingSuggestions.value &&
+                _nameSuggestions.value.isEmpty()
+            ) {
+                _suggestionSearchTimedOut.value = true
+            }
+        }
+
         suggestionSearchJob = viewModelScope.launch {
-            _isSearchingSuggestions.value = true
             try {
                 delay(280)
                 val suggestions = LithuanianOpenDataApi.searchCompaniesByName(trimmed)
-                _nameSuggestions.value = suggestions
+                if (currentSequence == suggestionSearchSequence) {
+                    _nameSuggestions.value = suggestions
+                    _suggestionSearchTimedOut.value = false
+                }
             } catch (_: CancellationException) {
                 // Expected while user is still typing.
             } catch (e: Exception) {
                 Timber.w(e, "Own company name suggestion lookup failed")
-                _nameSuggestions.value = emptyList()
+                if (currentSequence == suggestionSearchSequence) {
+                    _nameSuggestions.value = emptyList()
+                }
             } finally {
-                _isSearchingSuggestions.value = false
+                if (currentSequence == suggestionSearchSequence) {
+                    _isSearchingSuggestions.value = false
+                    _hasCompletedSuggestionSearch.value = true
+                    suggestionTimeoutJob?.cancel()
+                }
             }
         }
     }
 
     fun clearCompanyNameSuggestions() {
         suggestionSearchJob?.cancel()
+        suggestionTimeoutJob?.cancel()
         _isSearchingSuggestions.value = false
+        _hasCompletedSuggestionSearch.value = false
+        _suggestionSearchTimedOut.value = false
         _nameSuggestions.value = emptyList()
     }
 }
